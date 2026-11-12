@@ -17,30 +17,9 @@ import { PropNode, getProp, readPropertyList } from "./proplist.ts";
 // ---------------------------------------------------------------------------------------
 // Manifest types (consumed by the web renderer)
 
-export type Operand = { prop: string } | { value: number | string };
-export type Condition =
-  | { op: "and" | "or"; args: Condition[] }
-  | { op: "not"; arg: Condition }
-  | { op: "eq" | "ne" | "lt" | "gt" | "le" | "ge"; a: Operand; b: Operand }
-  | { op: "prop"; prop: string }
-  | { op: "const"; value: boolean };
+import type { AnimationEntry, Condition, Operand, ValueSpec } from "@webflight/fdm-core";
 
-export interface ValueSpec {
-  /** Absolute FG property path, normalised (no "[0]"); undefined = constant `start`. */
-  property?: string;
-  start: number;
-  factor: number;
-  offset: number;
-  min?: number;
-  max?: number;
-  /** Interpolation table [input, output]; when present factor/offset/min/max are ignored. */
-  table?: [number, number][];
-}
-
-export type AnimationEntry =
-  | { type: "rotate" | "spin"; nodes: string[]; value: ValueSpec; center: [number, number, number]; axis: [number, number, number]; condition?: Condition }
-  | { type: "translate"; nodes: string[]; value: ValueSpec; axis: [number, number, number]; condition?: Condition }
-  | { type: "select"; nodes: string[]; condition: Condition };
+export type { AnimationEntry, Condition, Operand, ValueSpec };
 
 // ---------------------------------------------------------------------------------------
 // Small linear algebra (row-major 4x4, column vectors)
@@ -366,17 +345,14 @@ function buildAcTree(ctx: Ctx, ac: AcFile, obj: AcObject, acDir: string, frame: 
   return node;
 }
 
-function detach(root: SceneNode, target: SceneNode): void {
+function findParent(root: SceneNode, target: SceneNode): SceneNode | undefined {
   const stack = [root];
   while (stack.length) {
     const n = stack.pop()!;
-    const i = n.children.indexOf(target);
-    if (i >= 0) {
-      n.children.splice(i, 1);
-      return;
-    }
+    if (n.children.includes(target)) return n;
     stack.push(...n.children);
   }
+  return undefined;
 }
 
 const ANIM_TYPES = new Set<string>(["rotate", "translate", "spin", "select"]);
@@ -457,12 +433,16 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
     const animName = text(a, "name")?.trim();
     if (animName && targets.length > 0) {
       // A named animation groups its objects so later animations can refer to the name.
+      // As in SimGear, the group takes the place of the first object under its current
+      // parent, so it stays inside any group (and select) that already contained it.
       const g: SceneNode = { name: uniqueName(ctx, animName), children: [], primitives: [] };
+      const host = findParent(group, targets[0]!) ?? group;
+      host.children.splice(host.children.indexOf(targets[0]!), 0, g);
       for (const t of targets) {
-        detach(group, t);
+        const parent = findParent(group, t);
+        if (parent && parent !== g) parent.children.splice(parent.children.indexOf(t), 1);
         g.children.push(t);
       }
-      group.children.push(g);
       (byName.get(animName) ?? byName.set(animName, []).get(animName)!).push(g);
       targets = [g];
     }

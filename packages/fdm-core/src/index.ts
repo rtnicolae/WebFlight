@@ -11,3 +11,4 @@ export type { PoseInput, Vec3 } from "./pose.ts";
 export { SNAPSHOT_CORE, SnapshotLayout, SnapshotReader, SnapshotWriter, snapshotBytes } from "./snapshot.ts";
 export { loadBundleAircraft } from "./bundle.ts";
 export type { BundleManifestCore } from "./bundle.ts";
+export type { AnimationEntry, Condition, Operand, ValueSpec } from "./bundle-types.ts";

@@ -5,6 +5,7 @@
  */
 import type { AircraftFiles } from "./fdm.ts";
 import type { AirbrakeRoute } from "./fg-bridge.ts";
+import type { AnimationEntry } from "./bundle-types.ts";
 
 export interface BundleManifestCore {
   format: 1;
@@ -12,8 +13,9 @@ export interface BundleManifestCore {
   setFile: string;
   description?: string;
   fdm: { model: string; files: string[]; hostProperties: Record<string, number> };
-  model: { file: string; animations: unknown[]; properties: Record<string, number | string | null> };
+  model: { file: string; animations: AnimationEntry[]; properties: Record<string, number | string | null> };
   input: { airbrake: AirbrakeRoute };
+  views: { cockpit: { eye: [number, number, number]; pitchDeg: number; fovDeg: number } };
 }
 
 export async function loadBundleAircraft(readText: (rel: string) => Promise<string>): Promise<{ manifest: BundleManifestCore; files: AircraftFiles }> {

@@ -1,6 +1,6 @@
 /**
  * Usage: build-bundle <AircraftFolder> <set-file> [--out <dir>]
- * Fetches the aircraft into the FGAddon cache if needed. Default out: apps/web/public/bundles
+ * Fetches the aircraft into the FGAddon cache if needed. Default out: apps/web/bundles
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -18,7 +18,7 @@ if (!aircraft || !setFile) {
 const cache = defaultCacheDir();
 const dir = path.join(cache, aircraft);
 if (!fs.existsSync(path.join(dir, setFile))) await fetchAircraft(aircraft, { dest: cache, log: console.log });
-const out = path.resolve(values.out ?? path.join(repoRoot(), "apps/web/public/bundles"));
+const out = path.resolve(values.out ?? path.join(repoRoot(), "apps/web/bundles"));
 const t0 = performance.now();
 const m = buildBundle(dir, setFile, out);
 console.log(`${m.aircraft}/${m.setFile} → ${path.relative(repoRoot(), path.join(out, m.aircraft))} in ${(performance.now() - t0).toFixed(0)} ms`);

@@ -12,6 +12,7 @@
     "build-bundle": "tsx src/cli/build-bundle.ts"
   },
   "dependencies": {
-    "fast-xml-parser": "^5.12.0"
+    "fast-xml-parser": "^5.12.0",
+    "@webflight/fdm-core": "workspace:*"
   }
 }

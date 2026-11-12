@@ -41,9 +41,13 @@ export interface BundleManifest {
     properties: Record<string, number | string | null>;
   };
   input: InputProfile;
+  /** Cockpit eye point in glTF/AC axes [m] and default view pitch, from /sim/view/config. */
+  views: { cockpit: { eye: [number, number, number]; pitchDeg: number; fovDeg: number } };
   stats: { objects: number; triangles: number; models: number; glbBytes: number; skippedAnimations: Record<string, number> };
   warnings: string[];
 }
+
+const num = (v: string | undefined): number => (v !== undefined && Number.isFinite(Number(v)) ? Number(v) : 0);
 
 export function buildBundle(aircraftDir: string, setFile: string, outRoot: string): BundleManifest {
   const aircraft = path.basename(aircraftDir);
@@ -69,8 +73,17 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
   const glb = buildGlb(model.nodes, model.roots, model.materials, model.images);
   fs.writeFileSync(path.join(out, "model.glb"), glb);
 
-  const properties: Record<string, number | string | null> = {};
+  // FG divides gear compression by /gear/gear[n]/max-compression-ft|m (JSBSim.cxx update_gear).
+  const props = new Set(model.properties);
   for (const p of model.properties) {
+    const g = /^(\/gear\/gear(?:\[\d+\])?)\/compression-norm$/.exec(p);
+    if (g) {
+      props.add(`${g[1]}/max-compression-ft`);
+      props.add(`${g[1]}/max-compression-m`);
+    }
+  }
+  const properties: Record<string, number | string | null> = {};
+  for (const p of [...props].sort()) {
     const v = getProp(tree, p);
     properties[p] = v === undefined ? null : v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : v.trim() === "true" ? 1 : v.trim() === "false" ? 0 : v;
   }
@@ -88,6 +101,14 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
     fdm: { model: fdm.model, files: Object.keys(fdm.files), hostProperties: fdm.hostProperties },
     model: { file: "model.glb", animations: model.animations, properties },
     input: INPUT_PROFILES[`${aircraft}/${setFile}`] ?? DEFAULT_INPUT,
+    views: {
+      cockpit: {
+        // FG view offsets: x right, y up, z aft → AC axes (x aft, y up, z left).
+        eye: [num(getProp(tree, "/sim/view/config/z-offset-m")), num(getProp(tree, "/sim/view/config/y-offset-m")), -num(getProp(tree, "/sim/view/config/x-offset-m"))],
+        pitchDeg: num(getProp(tree, "/sim/view/config/pitch-offset-deg")),
+        fovDeg: num(getProp(tree, "/sim/view/config/default-field-of-view-deg")) || 55,
+      },
+    },
     stats: { ...model.stats, glbBytes: glb.byteLength },
     warnings,
   };
