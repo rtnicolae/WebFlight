@@ -17,6 +17,9 @@ import type { FgResolver } from "./resolve.ts";
 export class PropNode {
   readonly children = new Map<string, PropNode>(); // key: "name[index]"
   value: string | undefined;
+  /** type= and alias= attributes. */
+  type: string | undefined;
+  alias: string | undefined;
   child(name: string, index: number): PropNode {
     const key = `${name}[${index}]`;
     let c = this.children.get(key);
@@ -72,6 +75,8 @@ function readInto(node: PropNode, elements: OrderedNode[], fromDir: string, opts
     }
     counters.set(tag, Math.max(counters.get(tag) ?? 0, index + 1));
     const child = node.child(tag, index);
+    if (attrs["type"]) child.type = attrs["type"];
+    if (attrs["alias"]) child.alias = attrs["alias"];
     if (attrs["include"]) loadInclude(child, attrs["include"], fromDir, opts);
     const body = el[tag];
     if (Array.isArray(body)) {
@@ -130,4 +135,30 @@ export function propToNumber(v: string | undefined): number | undefined {
   if (s === "false") return 0;
   const n = Number(s);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/** JSON form for the runtime (see fg-host PNode): ordered children, index, value, type, alias. */
+export interface PNodeJson {
+  n: string;
+  i: number;
+  v?: string;
+  t?: string;
+  a?: string;
+  c?: PNodeJson[];
+}
+
+export function toPNode(node: PropNode, name = "PropertyList", index = 0, skip: (path: string) => boolean = () => false, path = ""): PNodeJson {
+  const out: PNodeJson = { n: name, i: index };
+  if (node.value !== undefined && node.children.size === 0) out.v = node.value;
+  if (node.type) out.t = node.type;
+  if (node.alias) out.a = node.alias;
+  const kids: PNodeJson[] = [];
+  for (const [key, child] of node.children) {
+    const m = /^(.*)\[(\d+)\]$/.exec(key)!;
+    const childPath = `${path}/${m[1]}${m[2] !== "0" ? `[${m[2]}]` : ""}`;
+    if (skip(childPath)) continue;
+    kids.push(toPNode(child, m[1]!, Number(m[2]), skip, childPath));
+  }
+  if (kids.length) out.c = kids;
+  return out;
 }

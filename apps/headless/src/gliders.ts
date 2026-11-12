@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { defaultCacheDir, fetchAircraft, loadJsbsimFiles } from "@webflight/converter";
+import { buildBundle, defaultCacheDir, defaultFgdataDir, fetchAircraft, fetchFgdataFiles, loadJsbsimFiles } from "@webflight/converter";
 import { Fdm, LBS_PER_KG, P, type AircraftFiles, type FdmOptions } from "@webflight/fdm-core";
 
 export interface GliderProfile {
@@ -50,4 +50,23 @@ export async function createGlider(
   for (const [i, kg] of Object.entries(lo)) fdm.set(P.pointmassWeightLbs(Number(i)), kg * LBS_PER_KG);
   fdm.runIc(); // refresh mass properties
   return { fdm, massKg: fdm.get(P.weightLbs) / LBS_PER_KG };
+}
+
+/**
+ * Build (or reuse) the aircraft's web bundle in the local cache, fetching shared FGData
+ * files as needed. Returns the bundle directory (manifest.json, host.json, jsbsim/, ...).
+ */
+export async function ensureBundle(profile: GliderProfile, opts: { rebuild?: boolean } = {}): Promise<string> {
+  const dir = await ensureAircraft(profile);
+  const out = path.join(path.dirname(defaultCacheDir()), "bundles");
+  const bundleDir = path.join(out, profile.folder);
+  if (!opts.rebuild && fs.existsSync(path.join(bundleDir, "host.json"))) return bundleDir;
+  const fgdataDir = defaultFgdataDir();
+  let m = buildBundle(dir, profile.setFile, out, { fgdataDir });
+  for (let round = 0; round < 8 && m.missingShared.length > 0; round++) {
+    const { fetched } = await fetchFgdataFiles(m.missingShared, fgdataDir);
+    if (fetched.length === 0) break;
+    m = buildBundle(dir, profile.setFile, out, { fgdataDir });
+  }
+  return bundleDir;
 }

@@ -6,3 +6,6 @@ export type { JsbsimFileSet } from "./jsbsim-files.ts";
 export { buildBundle } from "./bundle.ts";
 export type { BundleManifest, InputProfile } from "./bundle.ts";
 export { convertFgModel } from "./fgmodel.ts";
+export { defaultFgdataDir, fetchFgdataFiles, FGDATA_REF } from "./fgdata.ts";
+export { FgResolver } from "./resolve.ts";
+export type { HostConfigJson, BuildOptions } from "./bundle.ts";

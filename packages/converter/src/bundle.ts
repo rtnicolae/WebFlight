@@ -10,7 +10,7 @@ import path from "node:path";
 import { buildGlb } from "./glb.ts";
 import { convertFgModel, type AnimationEntry } from "./fgmodel.ts";
 import { loadJsbsimFiles } from "./jsbsim-files.ts";
-import { getProp, readPropertyList } from "./proplist.ts";
+import { getProp, readPropertyList, toPNode, type PNodeJson, type PropNode } from "./proplist.ts";
 import { FgResolver } from "./resolve.ts";
 
 /** How the generic "airbrake lever" input reaches the aircraft (FG property, 0..1 = closed..open). */
@@ -42,6 +42,8 @@ export interface BundleManifest {
     properties: Record<string, number | string | null>;
   };
   input: InputProfile;
+  /** fg-host configuration file in the bundle. */
+  host?: string;
   /** Cockpit eye point in glTF/AC axes [m] and default view pitch, from /sim/view/config. */
   views: { cockpit: { eye: [number, number, number]; pitchDeg: number; fovDeg: number } };
   stats: { objects: number; triangles: number; models: number; glbBytes: number; skippedAnimations: Record<string, number> };
@@ -119,7 +121,59 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
     stats: { ...model.stats, glbBytes: glb.byteLength },
     warnings,
   };
+  // Host configuration for fg-host (property tree defaults, property rules, instruments).
+  const host = buildHostConfig(aircraftDir, aircraft, setFile, tree, resolver, fdm.files, warnings);
+  fs.writeFileSync(path.join(out, "host.json"), JSON.stringify(host));
+  manifest.host = "host.json";
   if (resolver.sharedUsed.size > 0) manifest.license.note += " Shared parts come from FGData (GPL-2.0-or-later).";
   fs.writeFileSync(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 1));
   return { ...manifest, missingShared: [...resolver.missing].sort() };
+}
+
+/** Subtrees of the -set.xml that the runtime never needs. */
+const SKIP_TREE = [/^\/nasal\b/, /^\/input\b/, /^\/sim\/(help|checklists|tutorials|gui|previews|tags|long-description)\b/];
+
+function readConfigFile(ref: string | undefined, aircraftDir: string, aircraft: string, resolver: FgResolver, warnings: string[]): PNodeJson | undefined {
+  if (!ref?.trim()) return undefined;
+  const file = resolver.resolve(ref.trim(), aircraftDir);
+  if (!file) {
+    warnings.push(`config file not found: ${ref.trim()}`);
+    return undefined;
+  }
+  return toPNode(readPropertyList(file, { aircraftDir, aircraftName: aircraft, warnings, resolver }));
+}
+
+export interface HostConfigJson {
+  aircraft: string;
+  setFile: string;
+  tree: PNodeJson;
+  propertyRules: { name: string; file: string; root: PNodeJson }[];
+  instrumentation?: PNodeJson;
+  systems?: PNodeJson;
+  gearCount: number;
+}
+
+function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string, tree: PropNode, resolver: FgResolver, fdmFiles: Record<string, string>, warnings: string[]): HostConfigJson {
+  const rules: HostConfigJson["propertyRules"] = [];
+  const systemsNode = tree.children.get("sim[0]")?.children.get("systems[0]");
+  for (const kind of ["property-rule", "autopilot"]) {
+    const entries = [...(systemsNode?.children ?? [])].filter(([k]) => k.startsWith(`${kind}[`)).sort((a, b) => Number(/\[(\d+)\]/.exec(a[0])![1]) - Number(/\[(\d+)\]/.exec(b[0])![1]));
+    for (const [, n] of entries) {
+      const file = n.children.get("path[0]")?.value?.trim();
+      const root = readConfigFile(file, aircraftDir, aircraft, resolver, warnings);
+      if (root && file) rules.push({ name: n.children.get("name[0]")?.value?.trim() ?? kind, file, root });
+    }
+  }
+  const instrumentation = readConfigFile(getProp(tree, "/sim/instrumentation/path"), aircraftDir, aircraft, resolver, warnings);
+  const systems = readConfigFile(getProp(tree, "/sim/systems/path"), aircraftDir, aircraft, resolver, warnings);
+  const gearCount = Object.values(fdmFiles).reduce((n, t) => n + (t.replace(/<!--[\s\S]*?-->/g, "").match(/<contact[\s>]/g)?.length ?? 0), 0);
+  return {
+    aircraft,
+    setFile,
+    tree: toPNode(tree, "PropertyList", 0, (p) => SKIP_TREE.some((re) => re.test(p))),
+    propertyRules: rules,
+    ...(instrumentation ? { instrumentation } : {}),
+    ...(systems ? { systems } : {}),
+    gearCount,
+  };
 }

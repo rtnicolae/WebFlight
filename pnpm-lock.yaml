@@ -29,6 +29,9 @@ importers:
       '@webflight/fdm-core':
         specifier: workspace:*
         version: link:../../packages/fdm-core
+      '@webflight/fg-host':
+        specifier: workspace:*
+        version: link:../../packages/fg-host
 
   apps/web:
     dependencies:
@@ -57,6 +60,12 @@ importers:
       '@0x62/jsbsim-wasm':
         specifier: 1.2.4-beta.4
         version: 1.2.4-beta.4
+
+  packages/fg-host:
+    dependencies:
+      '@webflight/fdm-core':
+        specifier: workspace:*
+        version: link:../fdm-core
 
 packages:
 

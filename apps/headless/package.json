@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@webflight/converter": "workspace:*",
-    "@webflight/fdm-core": "workspace:*"
+    "@webflight/fdm-core": "workspace:*",
+    "@webflight/fg-host": "workspace:*"
   }
 }
