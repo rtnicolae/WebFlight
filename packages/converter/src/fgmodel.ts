@@ -13,6 +13,7 @@ import path from "node:path";
 import { type AcFile, type AcObject, isPolygon, isSmooth, isTwoSided, parseAc3d } from "./ac3d.ts";
 import { type GlbImage, type GlbMaterial, type GlbNode, type GlbPrimitive } from "./glb.ts";
 import { PropNode, getProp, readPropertyList } from "./proplist.ts";
+import { FgResolver } from "./resolve.ts";
 
 // ---------------------------------------------------------------------------------------
 // Manifest types (consumed by the web renderer)
@@ -174,6 +175,7 @@ export interface ConvertedModel {
 interface Ctx {
   aircraftDir: string;
   aircraftName: string;
+  resolver: FgResolver;
   used: Set<string>;
   materials: GlbMaterial[];
   materialKeys: Map<string, number>;
@@ -193,14 +195,18 @@ function uniqueName(ctx: Ctx, base: string): string {
 }
 
 function resolveFile(ctx: Ctx, ref: string, fromDir: string): string | undefined {
-  const prefix = `Aircraft/${ctx.aircraftName}/`;
-  const cands = ref.startsWith(prefix) ? [path.join(ctx.aircraftDir, ref.slice(prefix.length))] : ref.startsWith("Aircraft/") ? [] : [path.join(fromDir, ref), path.join(ctx.aircraftDir, ref)];
-  return cands.find((c) => fs.existsSync(c));
+  return ctx.resolver.resolve(ref, fromDir);
+}
+
+/** Path for messages: aircraft-relative, or "FGData:" + FG_ROOT-relative. */
+function displayPath(ctx: Ctx, file: string): string {
+  const shared = ctx.resolver.sharedPathOf(file);
+  return shared ? `FGData:${shared}` : path.relative(ctx.aircraftDir, file);
 }
 
 function textureIndex(ctx: Ctx, file: string | undefined, acDir: string): number | undefined {
   if (!file) return undefined;
-  const resolved = [path.join(acDir, file), path.join(ctx.aircraftDir, file)].find((c) => fs.existsSync(c));
+  const resolved = ctx.resolver.resolve(file, acDir);
   if (!resolved) {
     ctx.warnings.push(`texture not found: ${file}`);
     return undefined;
@@ -361,12 +367,12 @@ const ANIM_TYPES = new Set<string>(["rotate", "translate", "spin", "select"]);
 function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
   ctx.stats.models++;
   const dir = path.dirname(file);
-  const rel = path.relative(ctx.aircraftDir, file);
+  const rel = displayPath(ctx, file);
   if (file.endsWith(".ac")) {
     const ac = parseAc3d(fs.readFileSync(file, "latin1"));
     return buildAcTree(ctx, ac, ac.root, dir, frame, new Map());
   }
-  const props = readPropertyList(file, { aircraftDir: ctx.aircraftDir, aircraftName: ctx.aircraftName, warnings: ctx.warnings });
+  const props = readPropertyList(file, { aircraftDir: ctx.aircraftDir, aircraftName: ctx.aircraftName, warnings: ctx.warnings, resolver: ctx.resolver });
   const own = mul4(frame, offsetsMatrix(child(props, "offsets")));
   const group: SceneNode = { name: uniqueName(ctx, `model:${rel}`), children: [], primitives: [] };
   const byName = new Map<string, SceneNode[]>();
@@ -404,7 +410,7 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
     if (!p) continue;
     const sub = resolveFile(ctx, p.trim(), dir);
     if (!sub) {
-      ctx.warnings.push(`${rel}: submodel skipped (not in aircraft folder): ${p.trim()}`);
+      ctx.warnings.push(`${rel}: submodel not found: ${p.trim()}`);
       continue;
     }
     if (!/\.(xml|ac)$/i.test(sub)) {
@@ -504,10 +510,11 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
   return group;
 }
 
-export function convertFgModel(aircraftDir: string, modelFile: string): ConvertedModel {
+export function convertFgModel(aircraftDir: string, modelFile: string, resolver: FgResolver = new FgResolver(aircraftDir, path.basename(aircraftDir))): ConvertedModel {
   const ctx: Ctx = {
     aircraftDir,
     aircraftName: path.basename(aircraftDir),
+    resolver,
     used: new Set(),
     materials: [],
     materialKeys: new Map(),

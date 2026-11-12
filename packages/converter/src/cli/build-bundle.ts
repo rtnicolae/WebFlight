@@ -7,6 +7,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { buildBundle } from "../bundle.ts";
 import { fetchAircraft } from "../fgaddon.ts";
+import { defaultFgdataDir, fetchFgdataFiles } from "../fgdata.ts";
 import { defaultCacheDir, repoRoot } from "../paths.ts";
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { out: { type: "string" } } });
@@ -20,11 +21,19 @@ const dir = path.join(cache, aircraft);
 if (!fs.existsSync(path.join(dir, setFile))) await fetchAircraft(aircraft, { dest: cache, log: console.log });
 const out = path.resolve(values.out ?? path.join(repoRoot(), "apps/web/bundles"));
 const t0 = performance.now();
-const m = buildBundle(dir, setFile, out);
+// Convert, fetch any shared FGData files the aircraft references, repeat until stable.
+const fgdataDir = defaultFgdataDir();
+let m = buildBundle(dir, setFile, out, { fgdataDir });
+for (let round = 0; round < 8 && m.missingShared.length > 0; round++) {
+  const { fetched } = await fetchFgdataFiles(m.missingShared, fgdataDir, console.log);
+  if (fetched.length === 0) break;
+  m = buildBundle(dir, setFile, out, { fgdataDir });
+}
 console.log(`${m.aircraft}/${m.setFile} → ${path.relative(repoRoot(), path.join(out, m.aircraft))} in ${(performance.now() - t0).toFixed(0)} ms`);
 console.log(`  FDM ${m.fdm.model}: ${m.fdm.files.length} files; host properties ${Object.keys(m.fdm.hostProperties).length}`);
 console.log(`  model: ${m.stats.models} model files, ${m.stats.objects} objects, ${m.stats.triangles} triangles, ${(m.stats.glbBytes / 1e6).toFixed(2)} MB glb`);
 const byType = m.model.animations.reduce<Record<string, number>>((a, x) => ((a[x.type] = (a[x.type] ?? 0) + 1), a), {});
 console.log(`  animations: ${JSON.stringify(byType)}; skipped ${JSON.stringify(m.stats.skippedAnimations)}`);
+console.log(`  shared FGData files missing upstream: ${m.missingShared.length}`);
 console.log(`  warnings: ${m.warnings.length}`);
 for (const w of m.warnings) console.log(`    - ${w}`);

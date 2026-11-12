@@ -13,6 +13,12 @@ served and shipped with the bundle.
 
 Check each new aircraft's `COPYING` before adding it to this table.
 
+## FGData (https://gitlab.com/flightgear/fgdata, branch `next`)
+
+Shared files an aircraft references (e.g. `Aircraft/Instruments-3d/glider/vario/ilec-sc7`,
+`Aircraft/Generic/...`) are fetched on demand into the git-ignored `.cache/fgdata/` and end up
+in that aircraft's bundle. FGData is GPL-2.0-or-later; the bundle's `COPYING` (GPL) covers them.
+
 ## Software
 
 | Component | License | Notes |

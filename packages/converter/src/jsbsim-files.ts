@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getProp, propToNumber, readPropertyList } from "./proplist.ts";
+import type { FgResolver } from "./resolve.ts";
 
 export interface JsbsimFileSet {
   /** FGAddon folder name, e.g. "ASK21". */
@@ -34,13 +35,14 @@ export function findAbsolutePropertyRefs(xml: string): string[] {
   return [...refs].sort();
 }
 
-export function loadJsbsimFiles(aircraftDir: string, setFileName: string): JsbsimFileSet {
+export function loadJsbsimFiles(aircraftDir: string, setFileName: string, resolver?: FgResolver): JsbsimFileSet {
   const aircraft = path.basename(aircraftDir);
   const warnings: string[] = [];
   const tree = readPropertyList(path.join(aircraftDir, setFileName), {
     aircraftDir,
     aircraftName: aircraft,
     warnings,
+    ...(resolver ? { resolver } : {}),
   });
   const fm = getProp(tree, "/sim/flight-model");
   if (fm !== "jsb") throw new Error(`${setFileName}: flight-model is "${fm}", only "jsb" is supported`);

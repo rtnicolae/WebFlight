@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { XMLParser } from "fast-xml-parser";
+import type { FgResolver } from "./resolve.ts";
 
 export class PropNode {
   readonly children = new Map<string, PropNode>(); // key: "name[index]"
@@ -41,6 +42,8 @@ const parser = new XMLParser({
 });
 
 export interface ReadOptions {
+  /** If given, used for include resolution (FGData-aware). */
+  resolver?: FgResolver;
   /** Aircraft folder on disk; `Aircraft/<name>/...` includes resolve here when name matches. */
   aircraftDir: string;
   aircraftName: string;
@@ -48,6 +51,7 @@ export interface ReadOptions {
 }
 
 function resolveInclude(file: string, fromDir: string, opts: ReadOptions): string | null {
+  if (opts.resolver) return opts.resolver.resolve(file, fromDir) ?? null;
   const prefix = `Aircraft/${opts.aircraftName}/`;
   const candidates = file.startsWith(prefix)
     ? [path.join(opts.aircraftDir, file.slice(prefix.length))]

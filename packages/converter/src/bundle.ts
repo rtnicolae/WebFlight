@@ -11,6 +11,7 @@ import { buildGlb } from "./glb.ts";
 import { convertFgModel, type AnimationEntry } from "./fgmodel.ts";
 import { loadJsbsimFiles } from "./jsbsim-files.ts";
 import { getProp, readPropertyList } from "./proplist.ts";
+import { FgResolver } from "./resolve.ts";
 
 /** How the generic "airbrake lever" input reaches the aircraft (FG property, 0..1 = closed..open). */
 export interface InputProfile {
@@ -49,13 +50,19 @@ export interface BundleManifest {
 
 const num = (v: string | undefined): number => (v !== undefined && Number.isFinite(Number(v)) ? Number(v) : 0);
 
-export function buildBundle(aircraftDir: string, setFile: string, outRoot: string): BundleManifest {
+export interface BuildOptions {
+  /** FGData cache for shared files (Aircraft/Generic, Instruments-3d, ...). */
+  fgdataDir?: string;
+}
+
+export function buildBundle(aircraftDir: string, setFile: string, outRoot: string, opts: BuildOptions = {}): BundleManifest & { missingShared: string[] } {
   const aircraft = path.basename(aircraftDir);
+  const resolver = new FgResolver(aircraftDir, aircraft, opts.fgdataDir);
   const out = path.join(outRoot, aircraft);
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
 
-  const fdm = loadJsbsimFiles(aircraftDir, setFile);
+  const fdm = loadJsbsimFiles(aircraftDir, setFile, resolver);
   for (const [rel, text] of Object.entries(fdm.files)) {
     const dst = path.join(out, "jsbsim", rel);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
@@ -63,12 +70,12 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
   }
 
   const warnings = [...fdm.warnings];
-  const tree = readPropertyList(path.join(aircraftDir, setFile), { aircraftDir, aircraftName: aircraft, warnings: [] });
+  const tree = readPropertyList(path.join(aircraftDir, setFile), { aircraftDir, aircraftName: aircraft, warnings: [], resolver });
   const modelPath = getProp(tree, "/sim/model/path");
   if (!modelPath) throw new Error(`${setFile}: no /sim/model/path`);
   const prefix = `Aircraft/${aircraft}/`;
   const modelFile = path.join(aircraftDir, modelPath.startsWith(prefix) ? modelPath.slice(prefix.length) : modelPath);
-  const model = convertFgModel(aircraftDir, modelFile);
+  const model = convertFgModel(aircraftDir, modelFile, resolver);
   warnings.push(...model.warnings);
   const glb = buildGlb(model.nodes, model.roots, model.materials, model.images);
   fs.writeFileSync(path.join(out, "model.glb"), glb);
@@ -112,6 +119,7 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
     stats: { ...model.stats, glbBytes: glb.byteLength },
     warnings,
   };
+  if (resolver.sharedUsed.size > 0) manifest.license.note += " Shared parts come from FGData (GPL-2.0-or-later).";
   fs.writeFileSync(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 1));
-  return manifest;
+  return { ...manifest, missingShared: [...resolver.missing].sort() };
 }
