@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebFlight</title>
+    <script>
+      // Cesium loads its workers and assets from here (served raw by vite.config.ts).
+      window.CESIUM_BASE_URL = "/cesium/";
+    </script>
+  </head>
+  <body>
+    <div id="cesium"></div>
+    <div id="hud"></div>
+    <div id="boot">Loading…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

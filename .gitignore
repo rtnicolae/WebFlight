@@ -4,4 +4,4 @@ dist/
 .cache/
 out/
 *.log
-apps/web/public/bundles/
+apps/web/bundles/

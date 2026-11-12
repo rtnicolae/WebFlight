@@ -1,0 +1,60 @@
+:root {
+  --hud-bg: rgba(14, 18, 22, 0.62);
+  --hud-fg: #f2f4f0;
+  --hud-dim: #b9c0b6;
+  --up: #6fdc8c;
+  --down: #ff8a7a;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1216; }
+#cesium { position: absolute; inset: 0; }
+#boot {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--hud-fg); font-size: 18px; background: #0e1216; z-index: 10;
+}
+#boot[hidden] { display: none; }
+#hud { position: absolute; inset: 0; pointer-events: none; color: var(--hud-fg); }
+.hud-panel {
+  position: absolute; top: 16px; left: 16px; display: flex; gap: 6px; align-items: stretch;
+  background: var(--hud-bg); border-radius: 10px; padding: 10px 12px;
+}
+.hud-cell { min-width: 84px; text-align: right; }
+.hud-label { font-size: 11px; letter-spacing: 0.08em; color: var(--hud-dim); }
+.hud-value { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.hud-value[data-sign="up"] { color: var(--up); }
+.hud-value[data-sign="down"] { color: var(--down); }
+.hud-unit { font-size: 11px; color: var(--hud-dim); }
+.hud-vario-track { position: relative; width: 8px; border-radius: 4px; background: rgba(255,255,255,0.12); margin-left: 4px; }
+.hud-vario-bar { position: absolute; left: 0; right: 0; border-radius: 4px; }
+.hud-vario-bar[data-sign="up"] { background: var(--up); }
+.hud-vario-bar[data-sign="down"] { background: var(--down); }
+.hud-sub {
+  position: absolute; top: 104px; left: 16px; display: flex; gap: 14px; font-size: 13px;
+  background: var(--hud-bg); border-radius: 8px; padding: 5px 10px; font-variant-numeric: tabular-nums;
+}
+.hud-controls {
+  position: absolute; bottom: 16px; left: 16px; display: flex; gap: 10px; align-items: end;
+  background: var(--hud-bg); border-radius: 10px; padding: 10px; font-size: 12px;
+}
+.hud-stick { position: relative; width: 64px; height: 64px; border: 1px solid rgba(255,255,255,0.35); border-radius: 6px; }
+.hud-stick::before, .hud-stick::after { content: ""; position: absolute; background: rgba(255,255,255,0.2); }
+.hud-stick::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+.hud-stick::after { top: 50%; left: 0; right: 0; height: 1px; }
+.hud-rudder { position: relative; width: 64px; height: 10px; border: 1px solid rgba(255,255,255,0.35); border-radius: 5px; }
+.hud-dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #ffd25c; top: 50%; left: 50%; }
+.hud-levers { display: grid; gap: 2px; color: var(--hud-dim); font-variant-numeric: tabular-nums; }
+.hud-status {
+  position: absolute; top: 16px; right: 16px; font-size: 12px; color: var(--hud-dim);
+  background: var(--hud-bg); border-radius: 8px; padding: 5px 10px;
+}
+.hud-help {
+  position: absolute; bottom: 16px; right: 16px; max-width: 520px; font-size: 12px; line-height: 1.5;
+  background: var(--hud-bg); border-radius: 8px; padding: 8px 12px; color: var(--hud-dim);
+}
+.hud-help b { color: var(--hud-fg); font-weight: 600; }
+.hud-help[hidden] { display: none; }
+@media (max-width: 640px) {
+  .hud-value { font-size: 24px; }
+  .hud-cell { min-width: 60px; }
+  .hud-help { display: none; }
+}

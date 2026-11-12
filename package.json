@@ -12,7 +12,9 @@
     "fetch:ask21": "pnpm --filter @webflight/converter fetch-fgaddon ASK21",
     "glide": "pnpm --filter @webflight/headless glide",
     "polar": "pnpm --filter @webflight/headless polar",
-    "bundle:ask21": "pnpm --filter @webflight/converter build-bundle ASK21 ask21-jsb-set.xml"
+    "bundle:ask21": "pnpm --filter @webflight/converter build-bundle ASK21 ask21-jsb-set.xml",
+    "dev": "pnpm --filter @webflight/web dev",
+    "build": "pnpm --filter @webflight/web build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
