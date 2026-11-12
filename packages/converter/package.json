@@ -1,0 +1,16 @@
+{
+  "name": "@webflight/converter",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "fetch-fgaddon": "tsx src/cli/fetch-fgaddon.ts"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.12.0"
+  }
+}

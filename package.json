@@ -1,0 +1,27 @@
+{
+  "name": "webflight",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "fetch:ask21": "pnpm --filter @webflight/converter fetch-fgaddon ASK21",
+    "glide": "pnpm --filter @webflight/headless glide",
+    "polar": "pnpm --filter @webflight/headless polar"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

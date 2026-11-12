@@ -1,0 +1,6 @@
+node_modules/
+dist/
+# FGAddon downloads (GPL aircraft) are cached locally, not committed
+.cache/
+out/
+*.log

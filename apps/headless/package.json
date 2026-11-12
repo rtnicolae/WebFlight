@@ -1,0 +1,15 @@
+{
+  "name": "@webflight/headless",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "glide": "tsx src/cli/glide.ts",
+    "polar": "tsx src/cli/polar.ts"
+  },
+  "dependencies": {
+    "@webflight/converter": "workspace:*",
+    "@webflight/fdm-core": "workspace:*"
+  }
+}
