@@ -1,8 +1,9 @@
 # Third-party licenses
 
 This repository contains no FlightGear aircraft files. They are downloaded from FGAddon
-into the git-ignored `.cache/fgaddon/` (see `pnpm fetch:ask21`). Any bundle built from
-them (Milestone 2 and later) must carry the aircraft's license alongside it.
+into the git-ignored `.cache/fgaddon/` (see `pnpm fetch:ask21`). Web bundles built from
+them (`apps/web/bundles/`, also git-ignored) include the aircraft's `COPYING`, which is
+served and shipped with the bundle.
 
 ## Aircraft (FGAddon, https://sourceforge.net/p/flightgear/fgaddon/)
 
@@ -19,3 +20,5 @@ Check each new aircraft's `COPYING` before adding it to this table.
 | JSBSim 1.2.4 (inside `@0x62/jsbsim-wasm`) | LGPL-2.1 | WebAssembly build, loaded at runtime |
 | `@0x62/jsbsim-wasm` SDK | MIT | npm dependency of `packages/fdm-core` |
 | `fast-xml-parser` | MIT | npm dependency of `packages/converter` |
+| CesiumJS 1.147 | Apache-2.0 | npm dependency of `apps/web` |
+| Vite | MIT | dev dependency of `apps/web` |
