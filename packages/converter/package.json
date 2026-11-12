@@ -8,7 +8,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p .",
-    "fetch-fgaddon": "tsx src/cli/fetch-fgaddon.ts"
+    "fetch-fgaddon": "tsx src/cli/fetch-fgaddon.ts",
+    "build-bundle": "tsx src/cli/build-bundle.ts"
   },
   "dependencies": {
     "fast-xml-parser": "^5.12.0"
