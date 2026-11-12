@@ -7,3 +7,5 @@ export { compileCondition, compileExpr, compileValue, interp } from "./expr.ts";
 export { PropertyRules } from "./rules.ts";
 export { lowPass, pressureAltitudeFt } from "./instruments.ts";
 export type { FdmLike } from "./fdm-interface.ts";
+export { NASAL_PORTS } from "./nasal/ports.ts";
+export * as nasalLib from "./nasal/lib.ts";

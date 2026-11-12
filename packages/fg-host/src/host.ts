@@ -25,6 +25,8 @@ export interface HostConfig {
   systems?: PNode;
   /** Number of JSBSim ground contacts (gear/unit[n]). */
   gearCount: number;
+  /** /nasal/<module>/file[n] from the -set.xml, in order (FG_ROOT-relative paths). */
+  nasal?: { module: string; files: string[] }[];
 }
 
 export interface Timer {
@@ -52,12 +54,18 @@ export interface ScriptApi {
   /** interpolate(path, value, time, value, time, ...): linear ramps, like FG's interpolate(). */
   interpolate(path: string, ...steps: number[]): void;
   log(msg: string): void;
+  /** screen.log.write / gui.popupTip: a message for the pilot. */
+  message(text: string): void;
+  /** Register a handler for a Nasal binding script (e.g. "doors.canopyF.toggle();"). */
+  command(script: string, fn: () => void): void;
+  /** Shared Nasal namespace (module) object, e.g. ns("ask21").probe. */
+  ns(module: string): Record<string, unknown>;
 }
 
-/** A Nasal module rewritten in TypeScript. */
+/** A Nasal file rewritten in TypeScript. `module` is the Nasal namespace it loads into. */
 export interface AircraftScript {
   readonly name: string;
-  init(api: ScriptApi): void;
+  init(api: ScriptApi, module: string): void;
 }
 
 interface TimerEntry {
@@ -69,7 +77,10 @@ interface TimerEntry {
 }
 
 export interface HostOptions {
+  /** Extra scripts run after the aircraft's Nasal ports. */
   scripts?: AircraftScript[];
+  /** Nasal file (FG_ROOT-relative) → TS port, or "not-applicable". */
+  nasalPorts?: Record<string, AircraftScript | "not-applicable">;
   env?: EnvironmentOptions;
   warn?: (msg: string) => void;
   log?: (msg: string) => void;
@@ -86,6 +97,12 @@ export class FgHost {
   private readonly ramps = new Map<string, { ref: PropRef; steps: [number, number][]; from: number; t0: number }>();
   private simTime = 0;
   readonly api: ScriptApi;
+  private readonly commands = new Map<string, () => void>();
+  private readonly namespaces = new Map<string, Record<string, unknown>>();
+  /** Pilot messages since the last drain. */
+  private pendingMessages: string[] = [];
+  /** Nasal files and whether they have a TS port. */
+  readonly nasalStatus: { module: string; file: string; status: "ported" | "not-applicable" | "not-ported"; note?: string }[] = [];
 
   constructor(
     readonly config: HostConfig,
@@ -163,15 +180,54 @@ export class FgHost {
         this.ramps.set(ref.path, { ref, steps: pairs, from: ref.num(), t0: this.simTime });
       },
       log: (m) => opts.log?.(m),
+      message: (t) => {
+        this.pendingMessages.push(t);
+        opts.log?.(t);
+      },
+      command: (script, fn) => this.commands.set(normScript(script), fn),
+      ns: (m) => {
+        let n = this.namespaces.get(m);
+        if (!n) this.namespaces.set(m, (n = {}));
+        return n;
+      },
     };
-    for (const s of opts.scripts ?? []) {
+    const run = (s: AircraftScript, module: string) => {
       try {
-        s.init(this.api);
+        s.init(this.api, module);
       } catch (e) {
         warn(`script ${s.name}: ${e instanceof Error ? e.message : String(e)}`);
       }
+    };
+    // Nasal modules listed by the aircraft, through the port registry.
+    const registry = opts.nasalPorts ?? {};
+    for (const m of config.nasal ?? []) {
+      for (const f of m.files) {
+        const port = registry[f];
+        if (!port) this.nasalStatus.push({ module: m.module, file: f, status: "not-ported" });
+        else if (port === "not-applicable") this.nasalStatus.push({ module: m.module, file: f, status: "not-applicable" });
+        else {
+          this.nasalStatus.push({ module: m.module, file: f, status: "ported" });
+          run(port, m.module);
+        }
+      }
     }
+    for (const s of opts.scripts ?? []) run(s, s.name);
     this.tree.set("/sim/signals/fdm-initialized", true);
+  }
+
+  /** Run a Nasal binding script if a TS port registered it. Returns false if unknown. */
+  runNasal(script: string): boolean {
+    const fn = this.commands.get(normScript(script));
+    if (!fn) return false;
+    fn();
+    return true;
+  }
+
+  /** Messages for the pilot since the last call. */
+  drainMessages(): string[] {
+    const m = this.pendingMessages;
+    this.pendingMessages = [];
+    return m;
   }
 
   /** FG controls → JSBSim. Call before stepping the FDM. */
@@ -228,6 +284,8 @@ export class FgHost {
     }
   }
 }
+
+const normScript = (s: string) => s.replace(/\s+/g, "").replace(/;+$/, "");
 
 function leafValue(p: PNode): PropValue {
   const v = (p.v ?? "").trim();

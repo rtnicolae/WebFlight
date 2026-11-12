@@ -151,6 +151,7 @@ export interface HostConfigJson {
   instrumentation?: PNodeJson;
   systems?: PNodeJson;
   gearCount: number;
+  nasal: { module: string; files: string[] }[];
 }
 
 function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string, tree: PropNode, resolver: FgResolver, fdmFiles: Record<string, string>, warnings: string[]): HostConfigJson {
@@ -166,6 +167,10 @@ function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string,
   }
   const instrumentation = readConfigFile(getProp(tree, "/sim/instrumentation/path"), aircraftDir, aircraft, resolver, warnings);
   const systems = readConfigFile(getProp(tree, "/sim/systems/path"), aircraftDir, aircraft, resolver, warnings);
+  const nasal = [...(tree.children.get("nasal[0]")?.children ?? [])].map(([key, mod]) => ({
+    module: key.replace(/\[\d+\]$/, ""),
+    files: [...mod.children].filter(([k]) => k.startsWith("file[")).map(([, f]) => (f.value ?? "").trim().replace(/^\/+/, "")),
+  }));
   const gearCount = Object.values(fdmFiles).reduce((n, t) => n + (t.replace(/<!--[\s\S]*?-->/g, "").match(/<contact[\s>]/g)?.length ?? 0), 0);
   return {
     aircraft,
@@ -175,5 +180,6 @@ function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string,
     ...(instrumentation ? { instrumentation } : {}),
     ...(systems ? { systems } : {}),
     gearCount,
+    nasal,
   };
 }
