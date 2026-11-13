@@ -10,6 +10,8 @@ export interface GlbMaterial {
   image?: number;
   /** Declare KHR_texture_transform (renderer animates it). */
   texTransform?: boolean;
+  /** Texture has cut-out transparency: alphaMode MASK. */
+  alphaMask?: boolean;
 }
 
 export interface GlbPrimitive {
@@ -115,7 +117,7 @@ export function buildGlb(nodes: readonly GlbNode[], roots: readonly number[], ma
       },
       emissiveFactor: m.emissive,
       doubleSided: m.doubleSided,
-      ...(m.baseColor[3] < 1 ? { alphaMode: "BLEND" } : {}),
+      ...(m.baseColor[3] < 1 ? { alphaMode: "BLEND" } : m.alphaMask ? { alphaMode: "MASK", alphaCutoff: 0.5 } : {}),
     })),
     textures: images.map((_, i) => ({ source: i, sampler: 0 })),
     images: gltfImages,

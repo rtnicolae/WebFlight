@@ -17,7 +17,7 @@ const base = process.argv[2] ?? "http://localhost:5173/";
   const read = () =>
     page.evaluate(() => {
       const w = window.webflight, g = (n) => w.reader.data[w.layout.at(n)];
-      return { iso: crossOriginIsolated, t: g("simulation/sim-time-sec"), agl: g("position/h-agl-ft") * 0.3048, wow: g("gear/unit[1]/compression-ft") > 0, status: document.querySelector(".hud-status").textContent };
+      return { iso: crossOriginIsolated, t: g("simulation/sim-time-sec"), agl: g("position/h-agl-ft") * 0.3048, wow: g("/gear/gear[1]/compression-norm") > 0, status: document.querySelector(".hud-status").textContent };
     });
   const samples = [];
   for (let i = 0; i < 400; i++) {

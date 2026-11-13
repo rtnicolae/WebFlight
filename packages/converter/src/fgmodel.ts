@@ -14,6 +14,7 @@ import { type AcFile, type AcObject, isPolygon, isSmooth, isTwoSided, parseAc3d 
 import { type GlbImage, type GlbMaterial, type GlbNode, type GlbPrimitive } from "./glb.ts";
 import { PropNode, getProp, readPropertyList, toPNode, type PNodeJson } from "./proplist.ts";
 import { FgResolver } from "./resolve.ts";
+import { pngTransparency } from "./png-alpha.ts";
 
 // ---------------------------------------------------------------------------------------
 // Manifest types (consumed by the web renderer)
@@ -230,6 +231,8 @@ interface Ctx {
   used: Set<string>;
   /** Nodes with texture animations: their textured primitives get their own materials. */
   texNodes: Set<SceneNode>;
+  /** Images with transparent pixels. */
+  maskedImages: Set<number>;
   materials: GlbMaterial[];
   materialKeys: Map<string, number>;
   images: GlbImage[];
@@ -272,8 +275,13 @@ function textureIndex(ctx: Ctx, file: string | undefined, acDir: string): number
   }
   let i = ctx.imageKeys.get(resolved);
   if (i === undefined) {
-    ctx.images.push({ mimeType: mime, data: new Uint8Array(fs.readFileSync(resolved)) });
+    const data = new Uint8Array(fs.readFileSync(resolved));
+    ctx.images.push({ mimeType: mime, data });
     i = ctx.images.length - 1;
+    if (mime === "image/png") {
+      const t = pngTransparency(data);
+      if (t.transparent > 0) ctx.maskedImages.add(i);
+    }
     ctx.imageKeys.set(resolved, i);
   }
   return i;
@@ -291,6 +299,7 @@ function materialIndex(ctx: Ctx, ac: AcFile, mat: number, image: number | undefi
       roughness: Math.min(1, Math.max(0.25, 1 - m.shi / 128)),
       doubleSided: twoSided,
       ...(image !== undefined ? { image } : {}),
+      ...(image !== undefined && ctx.maskedImages.has(image) ? { alphaMask: true } : {}),
     });
     i = ctx.materials.length - 1;
     ctx.materialKeys.set(key, i);
@@ -624,6 +633,7 @@ export function convertFgModel(aircraftDir: string, modelFile: string, resolver:
     resolver,
     used: new Set(),
     texNodes: new Set(),
+    maskedImages: new Set(),
     materials: [],
     materialKeys: new Map(),
     images: [],
