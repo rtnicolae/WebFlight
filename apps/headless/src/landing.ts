@@ -9,6 +9,7 @@
  */
 import { controlsToJsbsim, FT_PER_M, KMH_PER_KT, M_PER_FT, P, trimSteadyGlide, type AirbrakeRoute, type Fdm, type FgControls } from "@webflight/fdm-core";
 import { START } from "./glide.ts";
+import type { InitialConditions } from "@webflight/fdm-core";
 
 export interface LandingSample {
   t: number;
@@ -36,9 +37,9 @@ export interface LandingResult {
   rolloutM: number;
 }
 
-export function runLanding(fdm: Fdm, airbrake: AirbrakeRoute, opts: { startAglM?: number; easKmh?: number; maxS?: number; contacts?: number; flare?: boolean; approachSinkMs?: number } = {}): LandingResult {
+export function runLanding(fdm: Fdm, airbrake: AirbrakeRoute, opts: { startAglM?: number; easKmh?: number; maxS?: number; contacts?: number; flare?: boolean; approachSinkMs?: number; base?: InitialConditions; afterStep?: (fdm: Fdm) => void } = {}): LandingResult {
   const contacts = opts.contacts ?? 7;
-  const trim = trimSteadyGlide(fdm, { speed: { veKts: (opts.easKmh ?? 85) / KMH_PER_KT }, base: { ...START, "ic/h-agl-ft": (opts.startAglM ?? 40) * FT_PER_M } });
+  const trim = trimSteadyGlide(fdm, { speed: { veKts: (opts.easKmh ?? 85) / KMH_PER_KT }, base: { ...(opts.base ?? START), "ic/h-agl-ft": (opts.startAglM ?? 40) * FT_PER_M } });
   if (!trim.converged) throw new Error("approach trim failed");
   const ctl: FgControls = { aileron: 0, elevator: 0, rudder: 0, elevatorTrim: trim.control, airbrake: 0 };
   const apply = () => {
@@ -81,6 +82,7 @@ export function runLanding(fdm: Fdm, airbrake: AirbrakeRoute, opts: { startAglM?
     }
     apply();
     fdm.step();
+    opts.afterStep?.(fdm);
     const t = fdm.simTime;
     const s: LandingSample = {
       t,

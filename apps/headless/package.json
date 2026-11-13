@@ -11,6 +11,7 @@
   "dependencies": {
     "@webflight/converter": "workspace:*",
     "@webflight/fdm-core": "workspace:*",
-    "@webflight/fg-host": "workspace:*"
+    "@webflight/fg-host": "workspace:*",
+    "@webflight/environment": "workspace:*"
   }
 }
