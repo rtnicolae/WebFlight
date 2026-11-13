@@ -8,7 +8,8 @@ WebAssembly. The same flight model core runs headless in Node for training.
 | Package | Role |
 |---|---|
 | `packages/fdm-core` | Host-independent JSBSim WASM wrapper (`Fdm`), verified property names, steady-glide trim. No browser or Node APIs. |
-| `packages/converter` | FGAddon fetcher, FlightGear PropertyList reader, JSBSim file set, AC3D→glTF, animation manifest, web bundle. |
+| `packages/converter` | FGAddon and FGData fetchers, FlightGear PropertyList reader, JSBSim file set, AC3D→glTF, animation manifest, host config, web bundle. |
+| `packages/fg-host` | FlightGear host layer next to the FDM: property tree (`/fdm/jsbsim` mounted), FDM interface, property rules, FG instruments, Nasal rewritten in TS, cockpit bindings. No browser or Node APIs. |
 | `apps/headless` | Node experiments: glide run, speed polar, PNG plot. Later the gym API. |
 | `apps/web` | Browser app: FDM worker (120 Hz), Cesium scene, animated model, chase/cockpit camera, gamepad, HUD. |
 
@@ -26,5 +27,6 @@ pnpm dev           # browser sim at http://localhost:5173
 
 The FGAddon cache location can be overridden with `WEBFLIGHT_FGADDON_CACHE`.
 
-See `docs/glider-inventory.md` for the gliders available, `docs/milestone-1.md` and
-`docs/milestone-2.md` for results and findings, and `LICENSES.md` for licensing.
+See `docs/glider-inventory.md` for the gliders available, `docs/milestone-1.md`,
+`docs/milestone-2.md` and `docs/milestone-3.md` for results and findings, and `LICENSES.md`
+for licensing.
