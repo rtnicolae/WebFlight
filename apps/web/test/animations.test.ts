@@ -63,3 +63,15 @@ describe("AnimationRig", () => {
     expect(Math.atan2(b[1]!, b[0]!) * (180 / Math.PI)).toBeCloseTo(90, 6);
   });
 });
+
+describe("texture animations", () => {
+  it("steps and biases LCD digits like SGStepExpression, and flips v for glTF", async () => {
+    const { evaluateValue, texStep } = await import("../src/animations.ts");
+    // ILEC units digit: lcd 0.25 → step(0.25 + 0.005, 1) = 0 → offset 0; 1.7 → 1 → 0.1
+    const spec = { property: "/x", start: 0, factor: 0.1, offset: 0, bias: 0.005, step: 1 };
+    expect(evaluateValue(spec, () => 0.25)).toBe(0);
+    expect(evaluateValue(spec, () => 1.7)).toBeCloseTo(0.1, 12);
+    const m = texStep({ kind: "translate", axis: [0, 1], value: spec }, 0.25);
+    expect([m[6], m[7]]).toEqual([0, -0.25]);
+  });
+});

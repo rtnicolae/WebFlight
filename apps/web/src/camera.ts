@@ -11,6 +11,8 @@ export class ChaseCamera {
   /** Orbit offsets around the aircraft (mouse drag), radians. */
   orbit = { heading: 0, pitch: 0 };
   private heading: number | undefined;
+  /** Cockpit field of view (wheel zooms). */
+  fovDeg: number;
   private readonly target = new Cartesian3();
   private readonly eye = new Cartesian3();
 
@@ -19,23 +21,36 @@ export class ChaseCamera {
     /** Cockpit eye in glTF/AC axes [m] and default pitch. */
     private readonly cockpit: { eye: readonly number[]; pitchDeg: number; fovDeg: number },
   ) {
+    this.fovDeg = cockpit.fovDeg;
     let drag: { x: number; y: number } | undefined;
-    window.addEventListener("pointerdown", (e) => (drag = { x: e.clientX, y: e.clientY }));
+    window.addEventListener("pointerdown", (e) => {
+      if (!this.suspended) drag = { x: e.clientX, y: e.clientY };
+    });
     window.addEventListener("pointerup", () => (drag = undefined));
     window.addEventListener("pointermove", (e) => {
-      if (!drag || this.mode !== "chase") return;
+      if (!drag) return;
       this.orbit.heading += (e.clientX - drag.x) * 0.006;
       this.orbit.pitch = Math.max(-1.4, Math.min(1.2, this.orbit.pitch - (e.clientY - drag.y) * 0.006));
       drag = { x: e.clientX, y: e.clientY };
     });
     window.addEventListener("dblclick", () => (this.orbit = { heading: 0, pitch: 0 }));
     window.addEventListener("wheel", (e) => {
+      if (this.suspended) return;
+      if (this.mode === "cockpit") {
+        this.fovDeg = Math.min(100, Math.max(15, this.fovDeg * Math.exp(e.deltaY * 0.001)));
+        return;
+      }
       this.range = Math.min(300, Math.max(8, this.range * Math.exp(e.deltaY * 0.001)));
     }, { passive: true });
   }
 
+  /** Drag handling is suspended while a cockpit control is being operated. */
+  suspended = false;
+
   toggle(): void {
     this.mode = this.mode === "chase" ? "cockpit" : "chase";
+    this.orbit = { heading: 0, pitch: 0 };
+    this.fovDeg = this.cockpit.fovDeg;
     this.camera.lookAtTransform(Matrix4.IDENTITY);
     this.heading = undefined;
   }
@@ -51,11 +66,12 @@ export class ChaseCamera {
       );
     const frustum = this.camera.frustum as { fov?: number };
     if (this.mode === "cockpit") {
-      if (frustum.fov !== undefined) frustum.fov = CMath.toRadians(this.cockpit.fovDeg);
+      if (frustum.fov !== undefined) frustum.fov = CMath.toRadians(this.fovDeg);
       xf(this.cockpit.eye, this.eye);
       this.camera.setView({
         destination: this.eye,
-        orientation: { heading: att.psi, pitch: att.theta + CMath.toRadians(this.cockpit.pitchDeg), roll: att.phi },
+        // Mouse drag looks around the cockpit (orbit offsets as head turn).
+        orientation: { heading: att.psi + this.orbit.heading, pitch: att.theta + CMath.toRadians(this.cockpit.pitchDeg) + this.orbit.pitch, roll: att.phi },
       });
       return;
     }

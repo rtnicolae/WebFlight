@@ -8,6 +8,7 @@
  * systems → property rules → instruments → script timers/interpolations.
  */
 import { FdmInterface, type EnvironmentOptions, type FdmLike } from "./fdm-interface.ts";
+import { runAction, type BindingArgs } from "./bindings.ts";
 import { buildInstrumentation } from "./instruments.ts";
 import type { PNode } from "./plist.ts";
 import { PropertyTree, type PropRef, type PropValue } from "./props.ts";
@@ -27,6 +28,9 @@ export interface HostConfig {
   gearCount: number;
   /** /nasal/<module>/file[n] from the -set.xml, in order (FG_ROOT-relative paths). */
   nasal?: { module: string; files: string[] }[];
+  /** FG-tree properties the JSBSim XML reads / writes by absolute path. */
+  fdmHostInputs?: string[];
+  fdmHostOutputs?: string[];
 }
 
 export interface Timer {
@@ -129,7 +133,7 @@ export class FgHost {
     this.tree.set("/sim/aircraft", config.aircraft);
     this.tree.init("/sim/flight-model", "jsb");
     // 3. FDM interface, systems, rules, instruments.
-    this.fdmIf = new FdmInterface(this.tree, fdm, config.gearCount, opts.env);
+    this.fdmIf = new FdmInterface(this.tree, fdm, config.gearCount, opts.env, config.fdmHostInputs ?? [], config.fdmHostOutputs ?? []);
     this.fdmIf.fromFdm();
     const inst = buildInstrumentation(this.tree, config.systems, config.instrumentation, warn);
     this.updateSystems = inst.updateSystems;
@@ -223,11 +227,28 @@ export class FgHost {
     return true;
   }
 
+  /** Run a cockpit <action>/<increase>/<decrease> element (bindings), e.g. from a click. */
+  fireAction(action: PNode, phase: "down" | "up" = "down", args: BindingArgs = {}): string[] {
+    const problems = runAction(action, { ctx: { tree: this.tree, warn: (m) => this.warnings.push(m) }, runNasal: (s) => this.runNasal(s), interpolate: (p, ...st) => this.api.interpolate(p, ...st) }, phase, args);
+    for (const p of problems) this.warnings.push(p);
+    return problems;
+  }
+
   /** Messages for the pilot since the last call. */
   drainMessages(): string[] {
     const m = this.pendingMessages;
     this.pendingMessages = [];
     return m;
+  }
+
+  /**
+   * After the FDM was re-initialised (start position, reset): refresh FDM outputs and raise
+   * /sim/signals/reinit so scripts reset (e.g. the TE probe would otherwise see a jump).
+   */
+  reinit(): void {
+    this.fdmIf.fromFdm();
+    this.tree.set("/sim/signals/reinit", true);
+    this.tree.set("/sim/signals/reinit", false);
   }
 
   /** FG controls → JSBSim. Call before stepping the FDM. */

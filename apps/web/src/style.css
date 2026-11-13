@@ -58,3 +58,5 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1216; }
   .hud-cell { min-width: 60px; }
   .hud-help { display: none; }
 }
+.hud-toasts { position: absolute; top: 150px; left: 50%; transform: translateX(-50%); display: grid; gap: 6px; }
+.hud-toast { background: rgba(120, 30, 20, 0.8); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 14px; }

@@ -23,6 +23,8 @@ export interface JsbsimFileSet {
   files: Record<string, string>;
   /** Absolute host properties referenced by the JSBSim XML, with -set.xml defaults (0 if unset). */
   hostProperties: Record<string, number>;
+  /** Of those, the ones JSBSim writes (<output>/abs/path</output>). */
+  hostOutputs: string[];
   warnings: string[];
 }
 
@@ -83,5 +85,9 @@ export function loadJsbsimFiles(aircraftDir: string, setFileName: string, resolv
       hostProperties[ref] = propToNumber(getProp(tree, ref)) ?? 0;
     }
   }
-  return { aircraft, setFile: setFileName, model, files, hostProperties, warnings };
+  const hostOutputs = new Set<string>();
+  for (const text of Object.values(files)) {
+    for (const m of text.replace(/<!--[\s\S]*?-->/g, "").matchAll(/<output>\s*(\/[A-Za-z_][\w\-./[\]]*)\s*<\/output>/g)) hostOutputs.add(m[1]!);
+  }
+  return { aircraft, setFile: setFileName, model, files, hostProperties, hostOutputs: [...hostOutputs].sort(), warnings };
 }

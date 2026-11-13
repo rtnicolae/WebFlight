@@ -28,13 +28,21 @@ type Copy = { to: PropRef; from: () => number };
 export class FdmInterface {
   private readonly copies: Copy[] = [];
   private readonly controlsIn: { from: PropRef; to: string; scale: number }[] = [];
+  private readonly hostIn: { ref: PropRef; path: string }[] = [];
+  private readonly hostOut: { ref: PropRef; path: string }[] = [];
 
   constructor(
     private readonly tree: PropertyTree,
     private readonly fdm: FdmLike,
     private readonly gearCount: number,
     private readonly env: EnvironmentOptions = {},
+    hostInputs: readonly string[] = [],
+    hostOutputs: readonly string[] = [],
   ) {
+    // In FlightGear JSBSim's absolute paths are the FG tree itself; here they are two
+    // stores, so FG-owned inputs are copied in before each step and outputs back after.
+    for (const p of hostInputs) this.hostIn.push({ ref: tree.node(p), path: p });
+    for (const p of hostOutputs) this.hostOut.push({ ref: tree.node(p), path: p });
     const j = (name: string, scale = 1) => () => fdm.get(name) * scale;
     const add = (path: string, from: () => number) => this.copies.push({ to: tree.node(path), from });
     const varDeg = env.magneticVariationDeg ?? 0;
@@ -132,10 +140,12 @@ export class FdmInterface {
   /** FG → JSBSim (before stepping the FDM). Only controls that have been written. */
   toFdm(): void {
     for (const c of this.controlsIn) if (c.from.exists) this.fdm.set(c.to, c.from.num() * c.scale);
+    for (const h of this.hostIn) if (h.ref.exists) this.fdm.set(h.path, h.ref.num());
   }
 
   /** JSBSim → FG (after stepping). */
   fromFdm(): void {
     for (const c of this.copies) c.to.set(c.from());
+    for (const h of this.hostOut) h.ref.set(this.fdm.get(h.path));
   }
 }

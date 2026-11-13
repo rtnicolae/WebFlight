@@ -38,6 +38,9 @@ importers:
       '@webflight/fdm-core':
         specifier: workspace:*
         version: link:../../packages/fdm-core
+      '@webflight/fg-host':
+        specifier: workspace:*
+        version: link:../../packages/fg-host
       cesium:
         specifier: 1.147.0
         version: 1.147.0

@@ -8,6 +8,8 @@ export interface GlbMaterial {
   doubleSided: boolean;
   /** Index into images; undefined = untextured. */
   image?: number;
+  /** Declare KHR_texture_transform (renderer animates it). */
+  texTransform?: boolean;
 }
 
 export interface GlbPrimitive {
@@ -93,8 +95,10 @@ export function buildGlb(nodes: readonly GlbNode[], roots: readonly number[], ma
     return node;
   });
 
+  const usesTexTransform = materials.some((m) => m.texTransform && m.image !== undefined);
   const json = {
     asset: { version: "2.0", generator: "webflight converter (AC3D)" },
+    ...(usesTexTransform ? { extensionsUsed: ["KHR_texture_transform"] } : {}),
     scene: 0,
     scenes: [{ nodes: roots }],
     nodes: gltfNodes,
@@ -105,7 +109,9 @@ export function buildGlb(nodes: readonly GlbNode[], roots: readonly number[], ma
         baseColorFactor: m.baseColor,
         metallicFactor: 0,
         roughnessFactor: m.roughness,
-        ...(m.image !== undefined ? { baseColorTexture: { index: m.image } } : {}),
+        ...(m.image !== undefined
+          ? { baseColorTexture: { index: m.image, ...(m.texTransform ? { extensions: { KHR_texture_transform: { offset: [0, 1e-6] } } } : {}) } }
+          : {}),
       },
       emissiveFactor: m.emissive,
       doubleSided: m.doubleSided,

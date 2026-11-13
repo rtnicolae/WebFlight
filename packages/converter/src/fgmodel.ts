@@ -12,13 +12,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { type AcFile, type AcObject, isPolygon, isSmooth, isTwoSided, parseAc3d } from "./ac3d.ts";
 import { type GlbImage, type GlbMaterial, type GlbNode, type GlbPrimitive } from "./glb.ts";
-import { PropNode, getProp, readPropertyList } from "./proplist.ts";
+import { PropNode, getProp, readPropertyList, toPNode, type PNodeJson } from "./proplist.ts";
 import { FgResolver } from "./resolve.ts";
 
 // ---------------------------------------------------------------------------------------
 // Manifest types (consumed by the web renderer)
 
-import type { AnimationEntry, Condition, Operand, ValueSpec } from "@webflight/fdm-core";
+import type { AnimationEntry, Condition, Operand, TexTransform, ValueSpec } from "@webflight/fdm-core";
 
 export type { AnimationEntry, Condition, Operand, ValueSpec };
 
@@ -131,10 +131,22 @@ function parseCondition(n: PropNode, warn: (m: string) => void): Condition {
   return { op: "and", args: parts };
 }
 
-function parseValue(a: PropNode, unit: "-deg" | "-m" | "", warn: (m: string) => void): ValueSpec | undefined {
-  if (child(a, "expression")) {
-    warn(`<expression> not supported yet`);
-    return undefined;
+/** Properties read by an expression (PropertyList JSON). */
+function exprProperties(p: PNodeJson, out: Set<string>): void {
+  if (p.n === "property" && p.v?.trim()) out.add(normProp(p.v));
+  for (const c of p.c ?? []) exprProperties(c, out);
+}
+
+function parseValue(a: PropNode, unit: "-deg" | "-m" | "", warn: (m: string) => void, tex = false): ValueSpec | undefined {
+  const exprNode = child(a, "expression");
+  if (exprNode) {
+    const first = [...exprNode.children][0];
+    if (!first) {
+      warn("empty <expression>");
+      return undefined;
+    }
+    const m = /^(.*)\[(\d+)\]$/.exec(first[0])!;
+    return { expr: toPNode(first[1], m[1]!, Number(m[2])), start: 0, factor: 1, offset: 0 };
   }
   const prop = text(a, "property");
   const spec: ValueSpec = {
@@ -148,7 +160,44 @@ function parseValue(a: PropNode, unit: "-deg" | "-m" | "", warn: (m: string) => 
   if (max !== undefined) spec.max = max;
   const interp = child(a, "interpolation");
   if (interp) spec.table = childList(interp, "entry").map((e) => [num(e, "ind") ?? 0, num(e, "dep") ?? 0]);
+  if (tex) {
+    const bias = num(a, "bias"), step = num(a, "step"), scroll = num(a, "scroll");
+    if (bias) spec.bias = bias;
+    if (step) spec.step = step;
+    if (scroll) spec.scroll = scroll;
+  }
   return spec;
+}
+
+/** Merge a <model><overlay> into a model file's tree (overlay wins), like copyProperties. */
+function mergeOverlay(target: PropNode, src: PropNode): void {
+  for (const [key, sc] of src.children) {
+    let tc = target.children.get(key);
+    if (!tc) {
+      tc = new PropNode();
+      target.children.set(key, tc);
+    }
+    if (sc.children.size > 0) mergeOverlay(tc, sc);
+    else {
+      tc.value = sc.value;
+      if (sc.type) tc.type = sc.type;
+      if (sc.alias) tc.alias = sc.alias;
+    }
+  }
+}
+
+/** In model files, alias="/params/x" refers to this file's own tree: substitute the value. */
+function resolveDocAliases(root: PropNode, node: PropNode = root, depth = 0): void {
+  for (const c of node.children.values()) {
+    if (c.alias && depth < 64) {
+      const v = getProp(root, c.alias);
+      if (v !== undefined) {
+        c.value = v;
+        c.alias = undefined;
+      }
+    }
+    resolveDocAliases(root, c, depth + 1);
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -168,6 +217,8 @@ export interface ConvertedModel {
   animations: AnimationEntry[];
   /** Every property referenced by animations/conditions. */
   properties: string[];
+  /** glTF node name → parent node name (for picking: a click on a mesh inside a group). */
+  parents: Record<string, string>;
   warnings: string[];
   stats: { objects: number; triangles: number; models: number; skippedAnimations: Record<string, number> };
 }
@@ -177,6 +228,8 @@ interface Ctx {
   aircraftName: string;
   resolver: FgResolver;
   used: Set<string>;
+  /** Nodes with texture animations: their textured primitives get their own materials. */
+  texNodes: Set<SceneNode>;
   materials: GlbMaterial[];
   materialKeys: Map<string, number>;
   images: GlbImage[];
@@ -362,9 +415,11 @@ function findParent(root: SceneNode, target: SceneNode): SceneNode | undefined {
 }
 
 const ANIM_TYPES = new Set<string>(["rotate", "translate", "spin", "select"]);
+const TEX_TYPES = new Set<string>(["textranslate", "texrotate", "texmultiple"]);
+const PICK_TYPES = new Set<string>(["pick", "knob", "slider", "touch"]);
 
 /** Load a model file (.xml or .ac) under `frame` (its AC frame → top-level AC frame). */
-function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
+function loadModel(ctx: Ctx, file: string, frame: M4, overlay?: PropNode): SceneNode | undefined {
   ctx.stats.models++;
   const dir = path.dirname(file);
   const rel = displayPath(ctx, file);
@@ -373,6 +428,8 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
     return buildAcTree(ctx, ac, ac.root, dir, frame, new Map());
   }
   const props = readPropertyList(file, { aircraftDir: ctx.aircraftDir, aircraftName: ctx.aircraftName, warnings: ctx.warnings, resolver: ctx.resolver });
+  if (overlay) mergeOverlay(props, overlay);
+  resolveDocAliases(props);
   const own = mul4(frame, offsetsMatrix(child(props, "offsets")));
   const group: SceneNode = { name: uniqueName(ctx, `model:${rel}`), children: [], primitives: [] };
   const byName = new Map<string, SceneNode[]>();
@@ -417,7 +474,7 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
       ctx.warnings.push(`${rel}: submodel type not supported: ${p.trim()}`);
       continue;
     }
-    const node = loadModel(ctx, sub, mul4(own, offsetsMatrix(child(m, "offsets"))));
+    const node = loadModel(ctx, sub, mul4(own, offsetsMatrix(child(m, "offsets"))), child(m, "overlay"));
     if (!node) continue;
     group.children.push(node);
     const subName = text(m, "name")?.trim();
@@ -453,8 +510,9 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
       targets = [g];
     }
     if (!type) continue;
-    if (!ANIM_TYPES.has(type as string)) {
-      ctx.stats.skippedAnimations[type] = (ctx.stats.skippedAnimations[type] ?? 0) + 1;
+    const kind = type as string;
+    if (!ANIM_TYPES.has(kind) && !TEX_TYPES.has(kind) && !PICK_TYPES.has(kind)) {
+      ctx.stats.skippedAnimations[kind] = (ctx.stats.skippedAnimations[kind] ?? 0) + 1;
       continue;
     }
     if (targets.length === 0) continue;
@@ -462,16 +520,64 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
     const condNode = child(a, "condition");
     const condition = condNode ? parseCondition(condNode, warn) : undefined;
     use(condition);
+    if (TEX_TYPES.has(kind)) {
+      const cfgs = kind === "texmultiple" ? childList(a, "transform").map((t) => ({ cfg: t, sub: text(t, "subtype")?.trim() ?? "" })) : [{ cfg: a, sub: kind }];
+      const transforms: TexTransform[] = [];
+      for (const { cfg, sub } of cfgs) {
+        const ax = child(cfg, "axis");
+        const v = [num(ax, "x") ?? 0, num(ax, "y") ?? 0];
+        const len = Math.hypot(v[0]!, v[1]!) || 1;
+        if (sub === "textranslate") {
+          const value = parseValue(cfg, "", warn, true);
+          if (!value) continue;
+          if (value.property) ctx.properties.add(value.property);
+          value.start = num(cfg, "starting-position") ?? 0;
+          transforms.push({ kind: "translate", axis: [v[0]! / len, v[1]! / len], value });
+        } else if (sub === "texrotate") {
+          const value = parseValue(cfg, "-deg", warn, true);
+          if (!value) continue;
+          if (value.property) ctx.properties.add(value.property);
+          const c = child(cfg, "center");
+          transforms.push({ kind: "rotate", center: [num(c, "x") ?? 0, num(c, "y") ?? 0], value });
+        } else warn(`texture transform "${sub}" not supported`);
+      }
+      if (transforms.length) {
+        ctx.animations.push({ type: "tex", nodes, transforms, ...(condition ? { condition } : {}) });
+        for (const t of targets) ctx.texNodes.add(t);
+      }
+      continue;
+    }
+    if (PICK_TYPES.has(kind)) {
+      const pj = (name: string) => {
+        const n = child(a, name);
+        return n ? toPNode(n, name) : undefined;
+      };
+      const action = pj("action"), increase = pj("increase"), decrease = pj("decrease");
+      const drag = text(a, "drag-direction")?.trim();
+      const tip = child(child(child(a, "hovered"), "binding"), "label");
+      ctx.animations.push({
+        type: "pick",
+        nodes,
+        kind: kind as "pick" | "knob" | "slider" | "touch",
+        ...(action ? { action } : {}),
+        ...(increase ? { increase } : {}),
+        ...(decrease ? { decrease } : {}),
+        ...(drag === "vertical" || drag === "horizontal" ? { drag } : {}),
+        ...(tip?.value ? { tooltip: tip.value.trim() } : {}),
+      });
+      if (kind !== "knob" && kind !== "slider") continue;
+      // Knobs rotate and sliders translate their objects by the bound property.
+      if (!text(a, "property") && !child(a, "expression")) continue;
+    }
+    const motion: "rotate" | "translate" | "spin" = kind === "knob" ? "rotate" : kind === "slider" ? "translate" : (kind as "rotate" | "translate" | "spin");
     if (type === "select") {
       ctx.animations.push({ type, nodes, condition: condition ?? { op: "const", value: true } });
       continue;
     }
-    const value = parseValue(a, type === "translate" ? "-m" : type === "spin" ? "" : "-deg", warn);
-    if (!value) {
-      ctx.stats.skippedAnimations[`${type}(expression)`] = (ctx.stats.skippedAnimations[`${type}(expression)`] ?? 0) + 1;
-      continue;
-    }
+    const value = parseValue(a, motion === "translate" ? "-m" : motion === "spin" ? "" : "-deg", warn);
+    if (!value) continue;
     if (value.property) ctx.properties.add(value.property);
+    if (value.expr) exprProperties(value.expr, ctx.properties);
     const axisNode = child(a, "axis");
     let center = [0, 0, 0];
     let axis: number[];
@@ -492,19 +598,20 @@ function loadModel(ctx: Ctx, file: string, frame: M4): SceneNode | undefined {
       const c = child(a, "center");
       const centerTop = c ? xfPoint(own, fgToAc([num(c, "x-m") ?? 0, num(c, "y-m") ?? 0, num(c, "z-m") ?? 0])) : (p1.map((v, i) => (v + p2[i]!) / 2) as [number, number, number]);
       const axisTop = norm3(p2.map((v, i) => v - p1[i]!));
-      if (type === "translate") ctx.animations.push({ type, nodes, value, axis: axisTop, ...(condition ? { condition } : {}) });
-      else ctx.animations.push({ type, nodes, value, center: centerTop, axis: axisTop, ...(condition ? { condition } : {}) });
+      if (motion === "translate") ctx.animations.push({ type: motion, nodes, value, axis: axisTop, ...(condition ? { condition } : {}) });
+      else ctx.animations.push({ type: motion, nodes, value, center: centerTop, axis: axisTop, ...(condition ? { condition } : {}) });
       continue;
     } else {
-      axis = [num(axisNode, "x") ?? 0, num(axisNode, "y") ?? 0, num(axisNode, "z") ?? (type === "translate" ? 0 : 1)];
+      // Missing components are 0 (readVec3); only a missing <axis> defaults to +z for rotations.
+      axis = axisNode ? [num(axisNode, "x") ?? 0, num(axisNode, "y") ?? 0, num(axisNode, "z") ?? 0] : motion === "translate" ? [0, 0, 0] : [0, 0, 1];
     }
     const c = child(a, "center");
     if (c) center = [num(c, "x-m") ?? center[0]!, num(c, "y-m") ?? center[1]!, num(c, "z-m") ?? center[2]!];
     // FG frame → this file's AC frame → top-level AC frame.
     const axisTop = norm3(xfDir(own, fgToAc(axis)));
     const centerTop = xfPoint(own, fgToAc(center));
-    if (type === "translate") ctx.animations.push({ type, nodes, value, axis: axisTop, ...(condition ? { condition } : {}) });
-    else ctx.animations.push({ type, nodes, value, center: centerTop, axis: axisTop, ...(condition ? { condition } : {}) });
+    if (motion === "translate") ctx.animations.push({ type: motion, nodes, value, axis: axisTop, ...(condition ? { condition } : {}) });
+    else ctx.animations.push({ type: motion, nodes, value, center: centerTop, axis: axisTop, ...(condition ? { condition } : {}) });
   }
 
   return group;
@@ -516,6 +623,7 @@ export function convertFgModel(aircraftDir: string, modelFile: string, resolver:
     aircraftName: path.basename(aircraftDir),
     resolver,
     used: new Set(),
+    texNodes: new Set(),
     materials: [],
     materialKeys: new Map(),
     images: [],
@@ -527,6 +635,18 @@ export function convertFgModel(aircraftDir: string, modelFile: string, resolver:
   };
   const root = loadModel(ctx, modelFile, I4);
   if (!root) throw new Error(`could not load ${modelFile}`);
+  // Texture-animated nodes: own material copies flagged for KHR_texture_transform, so the
+  // renderer can move their UVs without affecting other objects sharing the texture.
+  const visit = (n: SceneNode) => {
+    for (const p of n.primitives) {
+      const m = ctx.materials[p.material]!;
+      if (m.image === undefined) continue;
+      ctx.materials.push({ ...m, name: `${m.name}@${n.name}`, texTransform: true });
+      p.material = ctx.materials.length - 1;
+    }
+    n.children.forEach(visit);
+  };
+  ctx.texNodes.forEach(visit);
   // Flatten to glTF node list.
   const nodes: GlbNode[] = [];
   const add = (n: SceneNode): number => {
@@ -536,6 +656,8 @@ export function convertFgModel(aircraftDir: string, modelFile: string, resolver:
     return i;
   };
   const rootIndex = add(root);
+  const parents: Record<string, string> = {};
+  for (const n of nodes) for (const c of n.children) parents[nodes[c]!.name] = n.name;
   return {
     nodes,
     roots: [rootIndex],
@@ -543,6 +665,7 @@ export function convertFgModel(aircraftDir: string, modelFile: string, resolver:
     images: ctx.images,
     animations: ctx.animations,
     properties: [...ctx.properties].sort(),
+    parents,
     warnings: ctx.warnings,
     stats: ctx.stats,
   };

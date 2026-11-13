@@ -18,6 +18,13 @@ export interface Component {
 export function updateLoop(api: ScriptApi, components: Component[], period = 0): Timer {
   let last = api.time;
   for (const c of components) c.reset?.();
+  // updateloop.nas resets its components on /sim/signals/reinit (sim reset/reposition).
+  api.setlistener("/sim/signals/reinit", (v) => {
+    if (v === true || v === 1 || v === "true") {
+      for (const c of components) c.reset?.();
+      last = api.time;
+    }
+  });
   const t = api.maketimer(period, () => {
     const dt = api.time - last;
     last = api.time;

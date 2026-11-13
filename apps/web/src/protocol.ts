@@ -29,7 +29,11 @@ export type ToWorker =
   /** Raw JSBSim property writes, e.g. position/terrain-elevation-asl-ft. */
   | { type: "set"; props: Record<string, number> }
   | { type: "reset"; start: StartState }
-  | { type: "pause"; paused: boolean };
+  | { type: "pause"; paused: boolean }
+  /** Cockpit interaction: run an <action>/<increase>/<decrease> element's bindings. */
+  | { type: "action"; action: import("@webflight/fdm-core").PNode; phase: "down" | "up"; offset?: number }
+  /** Write an FG property (e.g. a switch from the UI). */
+  | { type: "setprop"; path: string; value: number | boolean | string };
 
 export type FromWorker =
   | { type: "ready"; names: string[]; shared: SharedArrayBuffer | null; trim: { pitchTrim: number; alphaDeg: number; converged: boolean } }
@@ -37,6 +41,8 @@ export type FromWorker =
   | { type: "snapshot"; buffer: ArrayBuffer }
   | { type: "stats"; stepsPerSecond: number; simTime: number; lagMs: number }
   | { type: "log"; line: string }
+  /** Pilot messages (screen.log / popupTip in FG). */
+  | { type: "messages"; lines: string[] }
   | { type: "error"; message: string };
 
 export type IcFromStart = (s: StartState) => InitialConditions;

@@ -7,6 +7,7 @@ import { Hud } from "./hud.ts";
 import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker } from "./protocol.ts";
 import { addAirfield, createViewer, offsetNorthDeg, TerrainSampler } from "./scene.ts";
+import { CockpitInteraction } from "./interaction.ts";
 
 const params = new URLSearchParams(location.search);
 const AIRCRAFT = params.get("aircraft") ?? "ASK21";
@@ -80,7 +81,10 @@ async function main(): Promise<void> {
           fdmHz = m.stepsPerSecond;
           break;
         case "log":
-          if (/error|warn/i.test(m.line)) console.warn("[jsbsim]", m.line);
+          if (/error|warn|not ported|not supported/i.test(m.line)) console.warn("[fdm]", m.line);
+          break;
+        case "messages":
+          for (const l of m.lines) hud.message(l);
           break;
         case "error":
           setStatus(`FDM error: ${m.message}`);
@@ -99,7 +103,8 @@ async function main(): Promise<void> {
     jsbsimModuleUrl: new URL("/jsbsim/jsbsim_wasm.mjs", location.href).href,
     jsbsimWasmUrl: new URL("/jsbsim/jsbsim_wasm.wasm", location.href).href,
     rateHz: 120,
-    extraProperties: aircraft.snapshotProperties,
+    // FG properties for the animations plus what the HUD shows.
+    extraProperties: [...aircraft.snapshotProperties, "fcs/speedbrake-pos-norm", "/controls/flight/elevator-trim", "/instrumentation/ilec-sc7/te-reading-mps"],
     start: startState(),
     loadout: LOADOUT,
     allowShared: params.get("nosab") !== "1",
@@ -107,6 +112,8 @@ async function main(): Promise<void> {
   setStatus("Loading 3D model…");
   await Promise.all([ready, aircraft.load(viewer.scene)]);
   status.hidden = true;
+  const interaction = new CockpitInteraction(viewer, aircraft, send, cam);
+  if (aircraft.texMissing.length) console.warn("texture animations without readers:", aircraft.texMissing);
 
   let last = performance.now();
   let fps = 60;
@@ -119,7 +126,6 @@ async function main(): Promise<void> {
 
     const controls = input.update(dt);
     send({ type: "controls", controls });
-    aircraft.setControls(controls, manifest.input.airbrake);
     if (!reader || !layout) return;
     reader.read();
     const d = reader.data;
@@ -143,7 +149,8 @@ async function main(): Promise<void> {
         aglM: g("position/h-agl-ft") * M_PER_FT,
         varioMs: -sink,
         glideRatio: (g("velocities/vg-fps") * M_PER_FT) / sink,
-        controls,
+        controls: { ...controls, airbrake: g("fcs/speedbrake-pos-norm"), elevatorTrim: g("/controls/flight/elevator-trim") },
+        teVarioMs: g("/instrumentation/ilec-sc7/te-reading-mps"),
         fps,
         stepsPerSecond: fdmHz,
         shared,
@@ -155,7 +162,7 @@ async function main(): Promise<void> {
     );
   });
   // Expose for debugging and automated checks.
-  (window as unknown as { webflight: unknown }).webflight = { viewer, input, aircraft, cam, get layout() { return layout; }, get reader() { return reader; }, send };
+  (window as unknown as { webflight: unknown }).webflight = { viewer, input, aircraft, cam, interaction, get layout() { return layout; }, get reader() { return reader; }, send };
 }
 
 main().catch((e: unknown) => {

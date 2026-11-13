@@ -4,13 +4,18 @@
  * compiled from PropertyList JSON into closures over a PropertyTree.
  */
 import { kid, kids, kidText, parseBool, text, type PNode } from "./plist.ts";
-import { toNumber, type PropertyTree, type PropValue } from "./props.ts";
+import { toNumber, type PropRef, type PropValue } from "./props.ts";
 
 export type NumFn = () => number;
 export type BoolFn = () => boolean;
 
+/** What compilation needs from a tree: node lookup (PropertyTree, or a read-only adapter). */
+export interface TreeLike {
+  node(path: string): PropRef;
+}
+
 export interface CompileContext {
-  tree: PropertyTree;
+  tree: TreeLike;
   warn(msg: string): void;
 }
 
@@ -220,7 +225,7 @@ export function compileValue(p: PNode, ctx: CompileContext, def = 0, defOffset =
   if (valueNode) value = toNumber(text(valueNode));
 
   let source: NumFn | undefined;
-  let ref: ReturnType<PropertyTree["node"]> | undefined;
+  let ref: PropRef | undefined;
   const exprNode = kid(p, "expression");
   const propNode = kid(p, "property") ?? kid(p, "prop");
   if (exprNode?.c?.[0]) source = compileExpr(exprNode.c[0], ctx);

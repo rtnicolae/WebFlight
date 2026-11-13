@@ -16,7 +16,7 @@ describe("ASK21 web bundle", () => {
   }, 300_000);
 
   it("has the control-surface animations, defaults and input profile", () => {
-    const surf = manifest.model.animations.filter((a) => a.type !== "select" && a.value.property?.startsWith("/surface-positions/"));
+    const surf = manifest.model.animations.filter((a) => (a.type === "rotate" || a.type === "translate") && a.value.property?.startsWith("/surface-positions/"));
     const nodes = new Set(surf.flatMap((a) => a.nodes));
     for (const n of ["aileronL", "aileronR", "elevator", "rudder", "speedbrakeL", "speedbrakeR"]) expect(nodes).toContain(n);
     expect(manifest.model.properties["/sim/model/variant"]).toBe(0);

@@ -13,7 +13,9 @@ export interface BundleManifestCore {
   setFile: string;
   description?: string;
   fdm: { model: string; files: string[]; hostProperties: Record<string, number> };
-  model: { file: string; animations: AnimationEntry[]; properties: Record<string, number | string | null> };
+  model: { file: string; animations: AnimationEntry[]; properties: Record<string, number | string | null>; parents?: Record<string, string> };
+  /** fg-host configuration (host.json). */
+  host?: string;
   input: { airbrake: AirbrakeRoute };
   views: { cockpit: { eye: [number, number, number]; pitchDeg: number; fovDeg: number } };
 }

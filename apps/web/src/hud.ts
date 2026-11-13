@@ -6,6 +6,8 @@ export interface HudData {
   altM: number;
   aglM: number;
   varioMs: number;
+  /** ILEC SC7 total-energy vario reading [m/s] (fg-host). */
+  teVarioMs: number;
   glideRatio: number;
   controls: FgControls;
   fps: number;
@@ -37,6 +39,8 @@ export class Hud {
   private readonly status: HTMLElement;
   private readonly help: HTMLElement;
   private varioSmooth = 0;
+  private readonly toasts: HTMLElement;
+  private readonly te: HTMLElement;
 
   constructor(root: HTMLElement) {
     const panel = el("div", "hud-panel", root);
@@ -66,11 +70,21 @@ export class Hud {
     this.trim = el("div", "", right);
 
     this.status = el("div", "hud-status", root);
+    this.toasts = el("div", "hud-toasts", root);
+    this.te = el("span", "", sub);
     this.help = el("div", "hud-help", root);
     this.help.innerHTML = `
       <b>Gamepad</b>: left stick = aileron/elevator · LT/RT or right stick = rudder · LB/RB = airbrake ·
       d-pad ↑/↓ = trim · Start = reset · Back/Y = view · mouse drag = orbit, wheel = zoom<br>
+      <b>Cockpit</b> (V): click switches and canopy, mouse wheel on knobs and the airbrake lever, drag to look around<br>
       <b>Keyboard</b>: arrows = stick · Z/X = rudder · J/K = airbrake · [ / ] = trim · R reset · V view · P pause · H hide help`;
+  }
+
+  /** A pilot message (FG screen.log / popupTip), shown for a few seconds. */
+  message(text: string): void {
+    const t = el("div", "hud-toast", this.toasts);
+    t.textContent = text;
+    setTimeout(() => t.remove(), 6000);
   }
 
   toggleHelp(): void {
@@ -89,6 +103,7 @@ export class Hud {
     this.varioBar.style.top = frac >= 0 ? `${50 - frac * 50}%` : "50%";
     this.varioBar.dataset["sign"] = frac >= 0 ? "up" : "down";
     this.agl.textContent = `AGL ${d.aglM.toFixed(0)} m`;
+    this.te.textContent = `TE ${d.teVarioMs >= 0 ? "+" : ""}${d.teVarioMs.toFixed(1)}`;
     this.ld.textContent = Number.isFinite(d.glideRatio) && d.glideRatio > 0 && d.glideRatio < 200 ? `L/D ${d.glideRatio.toFixed(0)}` : "L/D –";
     const c = d.controls;
     this.stickDot.style.left = `${50 + c.aileron * 45}%`;

@@ -40,6 +40,8 @@ export interface BundleManifest {
     animations: AnimationEntry[];
     /** Defaults for every property animations read (from the -set.xml tree; null = unset). */
     properties: Record<string, number | string | null>;
+    /** glTF node → parent node. */
+    parents: Record<string, string>;
   };
   input: InputProfile;
   /** fg-host configuration file in the bundle. */
@@ -108,7 +110,7 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
     description: getProp(tree, "/sim/description"),
     license: { file: copying ? "COPYING" : undefined, note: "Aircraft files from FGAddon; see COPYING. Most FGAddon aircraft are GPL." },
     fdm: { model: fdm.model, files: Object.keys(fdm.files), hostProperties: fdm.hostProperties },
-    model: { file: "model.glb", animations: model.animations, properties },
+    model: { file: "model.glb", animations: model.animations, properties, parents: model.parents },
     input: INPUT_PROFILES[`${aircraft}/${setFile}`] ?? DEFAULT_INPUT,
     views: {
       cockpit: {
@@ -122,7 +124,7 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
     warnings,
   };
   // Host configuration for fg-host (property tree defaults, property rules, instruments).
-  const host = buildHostConfig(aircraftDir, aircraft, setFile, tree, resolver, fdm.files, warnings);
+  const host = buildHostConfig(aircraftDir, aircraft, setFile, tree, resolver, fdm, warnings);
   fs.writeFileSync(path.join(out, "host.json"), JSON.stringify(host));
   manifest.host = "host.json";
   if (resolver.sharedUsed.size > 0) manifest.license.note += " Shared parts come from FGData (GPL-2.0-or-later).";
@@ -152,9 +154,13 @@ export interface HostConfigJson {
   systems?: PNodeJson;
   gearCount: number;
   nasal: { module: string; files: string[] }[];
+  /** FG-tree properties the JSBSim XML reads / writes by absolute path. */
+  fdmHostInputs: string[];
+  fdmHostOutputs: string[];
 }
 
-function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string, tree: PropNode, resolver: FgResolver, fdmFiles: Record<string, string>, warnings: string[]): HostConfigJson {
+function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string, tree: PropNode, resolver: FgResolver, fdm: { files: Record<string, string>; hostProperties: Record<string, number>; hostOutputs: string[] }, warnings: string[]): HostConfigJson {
+  const fdmFiles = fdm.files;
   const rules: HostConfigJson["propertyRules"] = [];
   const systemsNode = tree.children.get("sim[0]")?.children.get("systems[0]");
   for (const kind of ["property-rule", "autopilot"]) {
@@ -181,5 +187,7 @@ function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string,
     ...(systems ? { systems } : {}),
     gearCount,
     nasal,
+    fdmHostInputs: Object.keys(fdm.hostProperties).filter((p) => !fdm.hostOutputs.includes(p)),
+    fdmHostOutputs: fdm.hostOutputs,
   };
 }

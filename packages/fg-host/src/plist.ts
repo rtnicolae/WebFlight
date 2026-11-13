@@ -2,19 +2,8 @@
  * PropertyList XML as JSON (written by the converter, read here). Children keep document
  * order; `i` is the SimGear index (from n= or position among same-named siblings).
  */
-export interface PNode {
-  /** Element name. */
-  n: string;
-  /** Index. */
-  i: number;
-  /** Text value of a leaf. */
-  v?: string;
-  /** type= attribute (double, bool, int, string, ...). */
-  t?: string;
-  /** alias= attribute (absolute property path). */
-  a?: string;
-  c?: PNode[];
-}
+import type { PNode } from "@webflight/fdm-core";
+export type { PNode };
 
 export const kids = (p: PNode | undefined, name?: string): PNode[] => (p?.c ?? []).filter((c) => name === undefined || c.n === name);
 export const kid = (p: PNode | undefined, name: string, index = 0): PNode | undefined => p?.c?.find((c) => c.n === name && c.i === index);
