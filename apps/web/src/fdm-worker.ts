@@ -11,6 +11,7 @@ import {
   FT_PER_M,
   KMH_PER_KT,
   LBS_PER_KG,
+  M_PER_FT,
   loadBundleAircraft,
   P,
   SnapshotLayout,
@@ -20,7 +21,8 @@ import {
   type AirbrakeRoute,
   type FgControls,
 } from "@webflight/fdm-core";
-import type { FromWorker, StartState, ToWorker } from "./protocol.ts";
+import { applyEnvironment, Environment, TerrariumTerrain, type EnvironmentOutput } from "@webflight/environment";
+import type { FromWorker, StartState, ThermalView, ToWorker, WorldConfig } from "./protocol.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
 const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
@@ -41,17 +43,78 @@ let stepsSinceT0 = 0;
 let statSteps = 0;
 let statT = 0;
 let lastLag = 0;
+let terrain: TerrariumTerrain | undefined;
+let env: Environment | undefined;
+let envOut: EnvironmentOutput | undefined;
+let envPostT = 0;
+let prefetchAt: { lat: number; lon: number } | undefined;
 
-function applyStart(s: StartState): { pitchTrim: number; alphaDeg: number; converged: boolean } {
+function setupWorld(w: WorldConfig): void {
+  terrain = w.terrain === "terrarium" ? new TerrariumTerrain({ zoom: 13 }) : undefined;
+  env = new Environment(w.environment, terrain);
+}
+
+/** Keep the tiles around the aircraft (and the ridge probes upwind) loaded ahead of time. */
+function prefetch(lat: number, lon: number): void {
+  if (!terrain) return;
+  const p = prefetchAt;
+  if (p && Math.hypot((lat - p.lat) * 111_132, (lon - p.lon) * 111_320 * Math.cos((lat * Math.PI) / 180)) < 1500) return;
+  prefetchAt = { lat, lon };
+  void terrain.load(lat, lon, 4000);
+}
+
+/** Environment → JSBSim (terrain height, wind incl. lift) and → FG tree (/environment/*). */
+function stepEnvironment(dt: number): void {
+  if (!env || !fdm) return;
+  envOut = applyEnvironment(env, fdm, dt);
+  prefetch(fdm.get("position/lat-geod-deg"), fdm.get("position/long-gc-deg"));
+  if (host) {
+    const t = host.tree, c = env.config;
+    t.set("/environment/thermal-lift-fps", envOut.thermalLiftFps);
+    t.set("/environment/ridge-lift-fps", envOut.ridgeLiftFps);
+    t.set("/environment/wind-from-heading-deg", c.windFromDeg);
+    t.set("/environment/wind-speed-kt", c.windKt);
+  }
+}
+
+function postEnvironment(): void {
+  if (!env || !envOut) return;
+  const thermals: ThermalView[] = (env.thermals?.thermals ?? []).map((th) => ({
+    latDeg: th.spec.latDeg,
+    lonDeg: th.spec.lonDeg,
+    topM: th.spec.heightMslFt * M_PER_FT,
+    groundM: th.spec.groundElevFt * M_PER_FT,
+    radiusM: (th.spec.diameterFt * M_PER_FT) / 2,
+    strengthMs: th.spec.strengthFps * M_PER_FT,
+    phase: th.phase,
+  }));
+  post({
+    type: "environment",
+    thermals,
+    windFromDeg: env.config.windFromDeg,
+    windKt: env.config.windKt,
+    thermalLiftMs: envOut.thermalLiftFps * M_PER_FT,
+    ridgeLiftMs: envOut.ridgeLiftFps * M_PER_FT,
+    groundM: envOut.groundElevFt === undefined ? undefined : envOut.groundElevFt * M_PER_FT,
+  });
+}
+
+async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg: number; converged: boolean }> {
   const f = fdm!;
+  // The ground under the start point must be known before trimming at a height above it.
+  let groundM = 0;
+  if (terrain) {
+    await terrain.load(s.latDeg, s.lonDeg, 4000);
+    groundM = await terrain.heightAtAsync(s.latDeg, s.lonDeg);
+  }
   const base = {
-    "ic/terrain-elevation-ft": s.terrainM * FT_PER_M,
+    "ic/terrain-elevation-ft": groundM * FT_PER_M,
     "ic/lat-geod-deg": s.latDeg,
     "ic/long-gc-deg": s.lonDeg,
     "ic/h-agl-ft": s.aglM * FT_PER_M,
     "ic/psi-true-deg": s.headingDeg,
   };
-  f.set(P.terrainElevationAslFt, s.terrainM * FT_PER_M);
+  f.set(P.terrainElevationAslFt, groundM * FT_PER_M);
   const t = trimSteadyGlide(f, { speed: { veKts: s.easKmh / KMH_PER_KT }, base });
   controls = { aileron: 0, elevator: 0, rudder: 0, elevatorTrim: t.control, airbrake: 0 };
   applied = { ...controls };
@@ -59,6 +122,7 @@ function applyStart(s: StartState): { pitchTrim: number; alphaDeg: number; conve
     for (const [p, v] of Object.entries(controlsToFgProperties(controls, airbrake))) host.tree.set(p, v);
     host.reinit();
   }
+  stepEnvironment(0);
   t0 = performance.now();
   stepsSinceT0 = 0;
   return { pitchTrim: t.control, alphaDeg: t.alphaDeg, converged: t.converged };
@@ -101,6 +165,7 @@ function tick(): void {
     if (due > 0) {
       applyControls();
       try {
+        stepEnvironment(due / rateHz);
         host?.preStep();
         fdm.step(due);
         host?.update(due / rateHz);
@@ -115,6 +180,10 @@ function tick(): void {
       publish();
     }
     lastLag = now - (t0 + (stepsSinceT0 * 1000) / rateHz);
+    if (now - envPostT > 1000) {
+      postEnvironment();
+      envPostT = now;
+    }
     if (now - statT > 1000) {
       post({ type: "stats", stepsPerSecond: (statSteps * 1000) / (now - statT), simTime: fdm.simTime, lagMs: lastLag });
       statSteps = 0;
@@ -151,7 +220,8 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         shared = msg.allowShared && typeof SharedArrayBuffer !== "undefined" && self.crossOriginIsolated;
         const buf = shared ? new SharedArrayBuffer(snapshotBytes(layout.names.length)) : new ArrayBuffer(snapshotBytes(layout.names.length));
         writer = new SnapshotWriter(buf, layout);
-        const trim = applyStart(msg.start);
+        setupWorld(msg.world);
+        const trim = await applyStart(msg.start);
         publish();
         post({ type: "ready", names: [...layout.names], shared: shared ? (buf as SharedArrayBuffer) : null, trim });
         statT = performance.now();
@@ -166,9 +236,18 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         break;
       case "reset":
         if (fdm) {
-          const trim = applyStart(msg.start);
+          const wasPaused = paused;
+          paused = true; // no steps while the start area's terrain loads
+          const trim = await applyStart(msg.start);
+          paused = wasPaused;
           publish();
           post({ type: "ready", names: [...layout!.names], shared: shared ? (writer!.buffer as SharedArrayBuffer) : null, trim });
+        }
+        break;
+      case "wind":
+        if (env) {
+          env.config.windFromDeg = msg.fromDeg;
+          env.config.windKt = msg.kt;
         }
         break;
       case "action":

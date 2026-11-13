@@ -7,8 +7,25 @@ export interface StartState {
   headingDeg: number;
   aglM: number;
   easKmh: number;
-  /** Ground height ASL under the start point [m] (terrain sampled by the renderer). */
-  terrainM: number;
+}
+
+/** The world the FDM flies in (the worker owns terrain and air motion for physics). */
+export interface WorldConfig {
+  /** "terrarium": real terrain from Terrarium tiles; "flat": the WGS84 ellipsoid. */
+  terrain: "terrarium" | "flat";
+  environment: import("@webflight/environment").EnvironmentConfig;
+}
+
+/** One thermal as drawn by the renderer. */
+export interface ThermalView {
+  latDeg: number;
+  lonDeg: number;
+  /** Cloud base / thermal top [m]. */
+  topM: number;
+  groundM: number;
+  radiusM: number;
+  strengthMs: number;
+  phase: "forming" | "formed" | "dying" | "dead";
 }
 
 export type ToWorker =
@@ -21,6 +38,7 @@ export type ToWorker =
       /** JSBSim properties to publish besides the core set. */
       extraProperties: string[];
       start: StartState;
+      world: WorldConfig;
       loadout: Record<number, number>;
       /** false forces the postMessage snapshot path (testing). */
       allowShared: boolean;
@@ -28,6 +46,8 @@ export type ToWorker =
   | { type: "controls"; controls: FgControls }
   /** Raw JSBSim property writes, e.g. position/terrain-elevation-asl-ft. */
   | { type: "set"; props: Record<string, number> }
+  /** Change the wind (other environment settings stay). */
+  | { type: "wind"; fromDeg: number; kt: number }
   | { type: "reset"; start: StartState }
   | { type: "pause"; paused: boolean }
   /** Cockpit interaction: run an <action>/<increase>/<decrease> element's bindings. */
@@ -41,6 +61,8 @@ export type FromWorker =
   | { type: "snapshot"; buffer: ArrayBuffer }
   | { type: "stats"; stepsPerSecond: number; simTime: number; lagMs: number }
   | { type: "log"; line: string }
+  /** About once a second: thermals and the air at the aircraft. */
+  | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number; groundM: number | undefined }
   /** Pilot messages (screen.log / popupTip in FG). */
   | { type: "messages"; lines: string[] }
   | { type: "error"; message: string };
