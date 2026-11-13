@@ -130,6 +130,31 @@ export class TerrariumTerrain {
     await Promise.all(jobs);
   }
 
+  /**
+   * A heightmap grid over a lon/lat rectangle, row 0 at the north edge (Cesium's
+   * HeightmapTerrainData layout), sampled bilinearly from the coarsest zoom whose pixels are
+   * no larger than the grid spacing (capped at this terrain's zoom). Near the aircraft the
+   * renderer's mesh therefore uses the very heights the FDM uses.
+   */
+  async heightmap(west: number, south: number, east: number, north: number, width: number, height: number): Promise<Float32Array> {
+    const spacingDeg = (east - west) / (width - 1);
+    const zoom = Math.max(0, Math.min(this.zoom, Math.ceil(Math.log2(360 / (256 * spacingDeg)))));
+    const [x0, y0] = lonLatToTile(west, north, zoom);
+    const [x1, y1] = lonLatToTile(east, south, zoom);
+    const n = 2 ** zoom;
+    const jobs: Promise<unknown>[] = [];
+    for (let x = Math.floor(x0 - 0.01); x <= Math.floor(x1 + 0.01); x++) {
+      for (let y = Math.max(0, Math.floor(y0 - 0.01)); y <= Math.min(n - 1, Math.floor(y1 + 0.01)); y++) jobs.push(this.loadTile(zoom, ((x % n) + n) % n, y));
+    }
+    await Promise.all(jobs);
+    const out = new Float32Array(width * height);
+    for (let r = 0; r < height; r++) {
+      const lat = north - ((north - south) * r) / (height - 1);
+      for (let c = 0; c < width; c++) out[r * width + c] = this.heightAt(lat, west + ((east - west) * c) / (width - 1), zoom) ?? 0;
+    }
+    return out;
+  }
+
   /** Height after loading what it needs. */
   async heightAtAsync(latDeg: number, lonDeg: number, zoom = this.zoom): Promise<number> {
     await this.load(latDeg, lonDeg, 50, zoom);

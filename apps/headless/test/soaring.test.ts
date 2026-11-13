@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { advance, applyEnvironment, Environment } from "@webflight/environment";
 import { ASK21, createGlider, ensureAircraft } from "../src/gliders.ts";
 import { runLanding } from "../src/landing.ts";
-import { GRENCHEN, JURA_CREST } from "../src/sites.ts";
+import { GRENCHEN, JURA_CREST } from "@webflight/environment";
 import { ASK21_AIRBRAKE, SoaringSim } from "../src/soaring.ts";
 import { nodeTerrain } from "../src/terrain.ts";
 

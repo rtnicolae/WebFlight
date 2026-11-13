@@ -21,7 +21,7 @@ export interface ThermalSpec {
   strengthFps: number;
   /** Diameter [ft]. FG: diameter-ft. */
   diameterFt: number;
-  /** Ground elevation at the thermal's foot [ft] (FG samples it every 10 s; fixed here). */
+  /** Ground elevation at the thermal's foot [ft]; re-sampled every 10 s as in FG when known. */
   groundElevFt: number;
 }
 
@@ -58,8 +58,14 @@ export class Thermal {
   sliceLatDeg: number;
   sliceLonDeg: number;
   private readonly rUpFrac = 0.9;
+  private groundTimer = Infinity;
 
-  constructor(readonly spec: ThermalSpec, private readonly rand: () => number) {
+  constructor(
+    readonly spec: ThermalSpec,
+    private readonly rand: () => number,
+    /** Ground [m] at a position, if known; with a cloud base [m] the top follows the ground. */
+    private readonly ground?: { at: (latDeg: number, lonDeg: number) => number | undefined; cloudBaseM: number },
+  ) {
     this.cycleTimer = 60 * Math.floor(rand() * 31);
     this.sliceLatDeg = spec.latDeg;
     this.sliceLonDeg = spec.lonDeg;
@@ -68,6 +74,16 @@ export class Thermal {
   /** FGAIThermal::Run */
   run(dt: number, user: UserState, wind: WindProfile): number {
     this.cycleTimer += dt;
+    // FGAIThermal: ground elevation under the thermal, every 10 s.
+    this.groundTimer += dt;
+    if (this.ground && this.groundTimer >= 10) {
+      const g = this.ground.at(this.spec.latDeg, this.spec.lonDeg);
+      if (g !== undefined) {
+        this.groundTimer = 0;
+        this.spec.groundElevFt = g / FT_TO_M;
+        this.spec.heightMslFt = Math.max(this.ground.cloudBaseM, g + 600) / FT_TO_M;
+      }
+    }
     const tmin1 = 5, tmin2 = 20, tmin3 = 25, tmin4 = 30;
     const alive = tmin3 * 60;
     const t1 = tmin1 / tmin3, t2 = tmin2 / tmin3, t3 = 1, t4 = tmin4 / tmin3;
@@ -172,7 +188,7 @@ export class ThermalField {
       const r = radius * Math.sqrt(rand()), a = rand() * 2 * Math.PI;
       const lat = o.centerLatDeg + (r * Math.cos(a)) / 111_132;
       const lon = o.centerLonDeg + (r * Math.sin(a)) / (111_320 * Math.cos((o.centerLatDeg * Math.PI) / 180));
-      const ground = o.groundAt?.(lat, lon) ?? 0;
+      const ground = o.groundAt?.(lat, lon) ?? 0; // until the terrain loads (then re-sampled)
       this.thermals.push(
         new Thermal(
           {
@@ -184,6 +200,7 @@ export class ThermalField {
             groundElevFt: ground / FT_TO_M,
           },
           rand,
+          o.groundAt ? { at: o.groundAt, cloudBaseM: base } : undefined,
         ),
       );
     }

@@ -99,3 +99,20 @@ describe("Environment", () => {
     expect(o.windDownFps === 0 || Object.is(o.windDownFps, -0)).toBe(true);
   });
 });
+
+describe("TerrariumTerrain.heightmap", () => {
+  it("samples a north-first grid at the matching zoom, equal to heightAt at full zoom", async () => {
+    const zooms = new Set<number>();
+    const t = new TerrariumTerrain({ zoom: 13, fetchTile: async (z) => (zooms.add(z), terrariumPng((x, y) => x + 2 * y)) });
+    // ~10 m spacing → zoom 13; check corners against heightAt.
+    const w = 33, west = 7.4, east = 7.4 + 32 * 0.0001, north = 47.2, south = 47.2 - 32 * 0.0001;
+    const g = await t.heightmap(west, south, east, north, w, w);
+    expect([...zooms]).toEqual([13]);
+    expect(g[0]).toBeCloseTo(t.heightAt(north, west)!, 3);
+    expect(g[w * w - 1]).toBeCloseTo(t.heightAt(south, east)!, 3);
+    // A coarse tile uses a coarse zoom.
+    zooms.clear();
+    await t.heightmap(0, 40, 10, 50, 33, 33);
+    expect(Math.max(...zooms)).toBeLessThan(13);
+  });
+});
