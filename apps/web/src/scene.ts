@@ -1,33 +1,28 @@
-/** Cesium viewer on the plain WGS84 ellipsoid with a grid for motion cues and a grass strip. */
+/** Cesium viewer: real terrain (Terrarium) or the plain ellipsoid, a grid or OSM imagery, runways, thermal clouds. */
 import {
   Cartesian3,
-  Cartographic,
   Color,
+  ColorMaterialProperty,
+  CustomHeightmapTerrainProvider,
   EllipsoidTerrainProvider,
+  GeographicTilingScheme,
   GridImageryProvider,
   ImageryLayer,
   JulianDate,
   OpenStreetMapImageryProvider,
-  Rectangle,
-  sampleTerrainMostDetailed,
   Viewer,
+  type Entity,
   type TerrainProvider,
 } from "cesium";
-
-export interface Airfield {
-  latDeg: number;
-  lonDeg: number;
-  /** Runway heading [deg true]; runway is drawn north-aligned for now. */
-  lengthM: number;
-  widthM: number;
-}
+import type { TerrariumTerrain } from "@webflight/environment";
+import type { ThermalView } from "./protocol.ts";
 
 const M_PER_DEG_LAT = 111_132;
 
-export function createViewer(container: HTMLElement, opts: { osm: boolean }): Viewer {
+export function createViewer(container: HTMLElement, opts: { osm: boolean; terrain?: TerrariumTerrain }): Viewer {
   const viewer = new Viewer(container, {
     baseLayer: false,
-    terrainProvider: new EllipsoidTerrainProvider(),
+    terrainProvider: opts.terrain ? terrariumTerrainProvider(opts.terrain) : new EllipsoidTerrainProvider(),
     animation: false,
     timeline: false,
     geocoder: false,
@@ -68,74 +63,97 @@ export function createViewer(container: HTMLElement, opts: { osm: boolean }): Vi
   return viewer;
 }
 
-/** Grass strip with threshold bars, north-aligned, centred on the airfield point. */
-export function addAirfield(viewer: Viewer, a: Airfield): void {
-  const dLat = a.lengthM / 2 / M_PER_DEG_LAT;
-  const dLon = a.widthM / 2 / (M_PER_DEG_LAT * Math.cos((a.latDeg * Math.PI) / 180));
-  const rect = (lat0: number, lat1: number, lon0: number, lon1: number, color: Color) =>
-    viewer.entities.add({ rectangle: { coordinates: Rectangle.fromDegrees(lon0, lat0, lon1, lat1), material: color } });
-  rect(a.latDeg - dLat, a.latDeg + dLat, a.lonDeg - dLon, a.lonDeg + dLon, Color.fromCssColorString("#7da552"));
-  // Threshold and centre-line markers.
-  const mLat = 1 / M_PER_DEG_LAT;
+export interface Runway {
+  latDeg: number;
+  lonDeg: number;
+  /** True heading of the runway's low-numbered direction [deg]. */
+  headingDeg: number;
+  lengthM: number;
+  widthM: number;
+  /** Paved (grey, white markings) or grass. */
+  paved: boolean;
+}
+
+/** Runway with thresholds and centre line, draped on the terrain, centred on its midpoint. */
+export function addRunway(viewer: Viewer, r: Runway): void {
+  const h = (r.headingDeg * Math.PI) / 180;
+  const cosLat = Math.cos((r.latDeg * Math.PI) / 180);
+  /** Position at `along` m in the heading direction and `across` m to its right. */
+  const at = (along: number, across: number) => {
+    const n = along * Math.cos(h) - across * Math.sin(h);
+    const e = along * Math.sin(h) + across * Math.cos(h);
+    return Cartesian3.fromDegrees(r.lonDeg + e / (M_PER_DEG_LAT * cosLat), r.latDeg + n / M_PER_DEG_LAT);
+  };
+  const quad = (a0: number, a1: number, c0: number, c1: number, color: Color, zIndex: number) =>
+    viewer.entities.add({ polygon: { hierarchy: [at(a0, c0), at(a1, c0), at(a1, c1), at(a0, c1)], material: color, zIndex } });
+  const L = r.lengthM / 2, W = r.widthM / 2;
+  quad(-L, L, -W, W, Color.fromCssColorString(r.paved ? "#55585c" : "#7da552"), 0);
+  const mark = Color.WHITE.withAlpha(0.85);
   for (const end of [-1, 1]) {
-    const lat = a.latDeg + end * (dLat - 15 * mLat);
+    // Threshold bars.
     for (let i = -3; i <= 3; i++) {
-      const lon = a.lonDeg + (i / 3.5) * dLon * 0.85;
-      rect(lat - 10 * mLat, lat + 10 * mLat, lon - dLon * 0.05, lon + dLon * 0.05, Color.WHITE.withAlpha(0.85));
+      if (i === 0) continue;
+      const c = (i / 3.6) * W;
+      const a = end * (L - 6);
+      quad(a - end * 30, a, c - W * 0.06, c + W * 0.06, mark, 1);
     }
   }
-  for (let d = -dLat + 60 * mLat; d < dLat - 60 * mLat; d += 50 * mLat) {
-    rect(a.latDeg + d, a.latDeg + d + 20 * mLat, a.lonDeg - dLon * 0.04, a.lonDeg + dLon * 0.04, Color.WHITE.withAlpha(0.7));
-  }
+  for (let a = -L + 60; a < L - 80; a += 50) quad(a, a + 25, -0.45, 0.45, mark, 1);
 }
 
 /**
- * Ground height for the FDM. globe.getHeight() reads whatever tiles happen to be loaded,
- * and coarse tiles can be kilometres off (their facets cut below the ellipsoid), so this
- * queries the terrain provider at its most detailed level instead, in the background,
- * and re-queries when the aircraft has moved. heightAt() is undefined until the first
- * accurate answer for the area arrives.
+ * Cesium terrain from the same Terrarium tiles and decoder the FDM worker uses (geographic
+ * tiling, 33×33 samples per tile; at level 15+ the samples come from zoom 13, as physics).
  */
-export class TerrainSampler {
-  private lastQuery: { lat: number; lon: number } | undefined;
-  private value: number | undefined;
-  private pending = false;
+export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProvider {
+  const tiling = new GeographicTilingScheme();
+  const deg = 180 / Math.PI;
+  return new CustomHeightmapTerrainProvider({
+    width: 33,
+    height: 33,
+    tilingScheme: tiling,
+    credit: "Terrain Tiles © Mapzen and others (SRTM, GMTED2010, ETOPO1, …)",
+    callback: (x, y, level) => {
+      const r = tiling.tileXYToRectangle(x, y, level);
+      return terrain.heightmap(r.west * deg, r.south * deg, r.east * deg, r.north * deg, 33, 33);
+    },
+  });
+}
+
+/** Cumulus clouds at the top of each thermal; with `columns`, the lift columns too. */
+export class ThermalLayer {
+  private readonly entities = new Map<number, { cloud: Entity; column?: Entity }>();
 
   constructor(
-    private readonly provider: TerrainProvider,
-    /** Re-sample after moving this far [m]. */
-    private readonly spacingM = 15,
+    private readonly viewer: Viewer,
+    private readonly columns = false,
   ) {}
 
-  /** The plain ellipsoid is height 0 everywhere, exactly (and has no tile availability). */
-  private get flat(): boolean {
-    return this.provider instanceof EllipsoidTerrainProvider;
-  }
-
-  /** Await an accurate height at a point (e.g. before starting the FDM there). */
-  async prime(latDeg: number, lonDeg: number): Promise<number> {
-    if (this.flat) return (this.value = 0);
-    const [c] = await sampleTerrainMostDetailed(this.provider, [Cartographic.fromDegrees(lonDeg, latDeg)]);
-    this.value = c?.height ?? 0;
-    this.lastQuery = { lat: latDeg, lon: lonDeg };
-    return this.value;
-  }
-
-  heightAt(latDeg: number, lonDeg: number): number | undefined {
-    if (this.flat) return 0;
-    const q = this.lastQuery;
-    const moved = q ? Math.hypot((latDeg - q.lat) * M_PER_DEG_LAT, (lonDeg - q.lon) * M_PER_DEG_LAT * Math.cos((latDeg * Math.PI) / 180)) : Infinity;
-    if (moved > this.spacingM && !this.pending) {
-      this.pending = true;
-      this.lastQuery = { lat: latDeg, lon: lonDeg };
-      sampleTerrainMostDetailed(this.provider, [Cartographic.fromDegrees(lonDeg, latDeg)])
-        .then(([c]) => {
-          if (c && Number.isFinite(c.height)) this.value = c.height;
-        })
-        .catch(() => {})
-        .finally(() => (this.pending = false));
-    }
-    return this.value;
+  update(list: ThermalView[]): void {
+    list.forEach((t, i) => {
+      let e = this.entities.get(i);
+      const alpha = t.phase === "formed" ? 0.9 : t.phase === "forming" ? 0.55 : t.phase === "dying" ? 0.35 : 0;
+      const pos = Cartesian3.fromDegrees(t.lonDeg, t.latDeg, t.topM + t.radiusM * 0.5);
+      if (!e) {
+        const cloud = this.viewer.entities.add({
+          position: pos,
+          ellipsoid: { radii: new Cartesian3(t.radiusM * 1.6, t.radiusM * 1.6, t.radiusM * 0.6), material: Color.WHITE.withAlpha(alpha) },
+        });
+        e = { cloud };
+        if (this.columns) {
+          const len = t.topM - t.groundM;
+          e.column = this.viewer.entities.add({
+            position: Cartesian3.fromDegrees(t.lonDeg, t.latDeg, t.groundM + len / 2),
+            cylinder: { length: len, topRadius: t.radiusM, bottomRadius: t.radiusM, material: Color.ORANGE.withAlpha(0.12), outline: false },
+          });
+        }
+        this.entities.set(i, e);
+      }
+      const g = e.cloud.ellipsoid!;
+      g.material = new ColorMaterialProperty(Color.WHITE.withAlpha(alpha));
+      e.cloud.show = alpha > 0;
+      if (e.column) e.column.show = alpha > 0;
+    });
   }
 }
 

@@ -16,6 +16,9 @@ export interface HudData {
   input: string;
   view: string;
   paused: boolean;
+  /** Air at the aircraft (from the worker, ~1 Hz). */
+  air?: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number };
+  site?: string;
 }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, parent: HTMLElement) => {
@@ -41,6 +44,7 @@ export class Hud {
   private varioSmooth = 0;
   private readonly toasts: HTMLElement;
   private readonly te: HTMLElement;
+  private readonly air: HTMLElement;
 
   constructor(root: HTMLElement) {
     const panel = el("div", "hud-panel", root);
@@ -72,6 +76,7 @@ export class Hud {
     this.status = el("div", "hud-status", root);
     this.toasts = el("div", "hud-toasts", root);
     this.te = el("span", "", sub);
+    this.air = el("div", "hud-sub hud-air", root);
     this.help = el("div", "hud-help", root);
     this.help.innerHTML = `
       <b>Gamepad</b>: left stick = aileron/elevator · LT/RT or right stick = rudder · LB/RB = airbrake ·
@@ -105,6 +110,11 @@ export class Hud {
     this.agl.textContent = `AGL ${d.aglM.toFixed(0)} m`;
     this.te.textContent = `TE ${d.teVarioMs >= 0 ? "+" : ""}${d.teVarioMs.toFixed(1)}`;
     this.ld.textContent = Number.isFinite(d.glideRatio) && d.glideRatio > 0 && d.glideRatio < 200 ? `L/D ${d.glideRatio.toFixed(0)}` : "L/D –";
+    if (d.air) {
+      const a = d.air;
+      const sgn = (x: number) => (x >= 0 ? "+" : "") + x.toFixed(1);
+      this.air.textContent = `Wind ${a.windKt > 0 ? `${a.windFromDeg.toFixed(0).padStart(3, "0")}° / ${a.windKt.toFixed(0)} kt` : "calm"} · thermal ${sgn(a.thermalLiftMs)} · ridge ${sgn(a.ridgeLiftMs)} m/s`;
+    }
     const c = d.controls;
     this.stickDot.style.left = `${50 + c.aileron * 45}%`;
     this.stickDot.style.top = `${50 + c.elevator * 45}%`;
@@ -112,6 +122,6 @@ export class Hud {
     this.brake.textContent = `Airbrake ${(c.airbrake * 100).toFixed(0)} %`;
     this.trim.textContent = `Trim ${(c.elevatorTrim * 100).toFixed(0)} %`;
     this.status.textContent =
-      `${d.fps.toFixed(0)} fps · FDM ${d.stepsPerSecond.toFixed(0)} Hz${d.shared ? " (shared)" : " (postMessage)"} · ${d.view} · ${d.input}` + (d.paused ? " · PAUSED" : "");
+      (d.site ? `${d.site} · ` : "") + `${d.fps.toFixed(0)} fps · FDM ${d.stepsPerSecond.toFixed(0)} Hz${d.shared ? " (shared)" : " (postMessage)"} · ${d.view} · ${d.input}` + (d.paused ? " · PAUSED" : "");
   }
 }

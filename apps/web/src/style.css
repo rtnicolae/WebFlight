@@ -32,6 +32,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1216; }
   position: absolute; top: 104px; left: 16px; display: flex; gap: 14px; font-size: 13px;
   background: var(--hud-bg); border-radius: 8px; padding: 5px 10px; font-variant-numeric: tabular-nums;
 }
+.hud-air { top: 138px; }
+.hud-air:empty { display: none; }
 .hud-controls {
   position: absolute; bottom: 16px; left: 16px; display: flex; gap: 10px; align-items: end;
   background: var(--hud-bg); border-radius: 10px; padding: 10px; font-size: 12px;
