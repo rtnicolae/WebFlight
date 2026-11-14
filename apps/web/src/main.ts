@@ -8,6 +8,9 @@ import { Hud } from "./hud.ts";
 import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, ThermalLayer, type Runway } from "./scene.ts";
+import { addImagery, type ImageryMode } from "./imagery.ts";
+import { sunPosition } from "./sun.ts";
+import { showMenu } from "./menu.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
@@ -21,6 +24,9 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   start=final (straight-in final, runway 07) | ridge (Jura SE face) | thermal (high over the field)
  *         | winch | aerotow (on runway 07: L starts the launch, O opens the hook)
  *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
+ *   time=morning | noon | afternoon (default) | evening | HH:MM (local summer time, CEST)
+ *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
+ *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   wind=150@20 (from° @ kt) · thermals=0|1 · seed=N · columns=1 (draw lift columns)
  *   dist, agl, eas: start distance from the runway [m], height above ground [m], speed [km/h]
  */
@@ -41,6 +47,18 @@ function parseWind(): { fromDeg: number; kt: number } {
 const WIND = parseWind();
 const THERMALS = SITE !== "flat" && params.get("thermals") !== "0";
 const SEED = Number(params.get("seed") ?? 1);
+
+/** Mid-July over Switzerland (CEST = UTC+2). */
+function simTime(): Date {
+  const presets: Record<string, string> = { morning: "07:15", noon: "13:15", afternoon: "16:30", evening: "20:50" };
+  const v = params.get("time") ?? "afternoon";
+  const hm = presets[v] ?? (/^\d{1,2}:\d{2}$/.test(v) ? v : "16:30");
+  const [h, m] = hm.split(":").map(Number) as [number, number];
+  return new Date(Date.UTC(2026, 6, 15, h - 2, m));
+}
+const TIME = simTime();
+const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
+const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
 
 /** Renderer-side terrain (same tiles as the worker's); set in main(). */
 let renderTerrain: TerrariumTerrain | undefined;
@@ -104,8 +122,12 @@ async function main(): Promise<void> {
 
   // The renderer draws the same Terrarium heights the worker flies on.
   if (WORLD.terrain === "terrarium") renderTerrain = new TerrariumTerrain({ zoom: 13 });
-  const viewer = createViewer(document.getElementById("cesium")!, { osm: params.get("map") === "osm", ...(renderTerrain ? { terrain: renderTerrain } : {}) });
-  addRunway(viewer, RUNWAY);
+  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, ...(renderTerrain ? { terrain: renderTerrain } : {}) });
+  const sun = sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg);
+  // Photos show the real runway; otherwise draw ours.
+  void addImagery(viewer, SITE === "flat" && IMAGERY === "photo" ? "grid" : IMAGERY, sun).then((mode) => {
+    if (mode !== "photo") addRunway(viewer, RUNWAY);
+  });
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1");
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
@@ -131,6 +153,7 @@ async function main(): Promise<void> {
     release: () => send({ type: "launch", action: "release" }),
     winchFaster: () => send({ type: "launch", action: "faster" }),
     winchSlower: () => send({ type: "launch", action: "slower" }),
+    menu: () => location.assign(`?menu&time=${encodeURIComponent(params.get("time") ?? "afternoon")}`),
   });
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -233,6 +256,7 @@ async function main(): Promise<void> {
         altM: g("position/geod-alt-ft") * M_PER_FT,
         aglM: g("position/h-agl-ft") * M_PER_FT,
         varioMs: -sink,
+        headingDeg: g("attitude/psi-rad") * (180 / Math.PI),
         glideRatio: (g("velocities/vg-fps") * M_PER_FT) / sink,
         controls: { ...controls, airbrake: g("fcs/speedbrake-pos-norm"), elevatorTrim: g("/controls/flight/elevator-trim") },
         teVarioMs: g("/instrumentation/ilec-sc7/te-reading-mps"),
@@ -253,7 +277,9 @@ async function main(): Promise<void> {
   (window as unknown as { webflight: unknown }).webflight = { viewer, input, aircraft, cam, interaction, get layout() { return layout; }, get reader() { return reader; }, send };
 }
 
-main().catch((e: unknown) => {
+// An empty URL (or ?menu) shows the title screen; any other parameters start a flight.
+const MENU = location.search === "" || params.has("menu");
+(MENU ? showMenu(params) : main()).catch((e: unknown) => {
   setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
   console.error(e);
 });

@@ -26,6 +26,8 @@ export interface InputEvents {
   release?(): void;
   winchFaster?(): void;
   winchSlower?(): void;
+  /** Back to the title screen. */
+  menu?(): void;
 }
 
 const DEADZONE = 0.06;
@@ -62,6 +64,7 @@ export class PilotInput {
         case "KeyP": events.togglePause(); break;
         case "KeyH": events.toggleHelp(); break;
         case "KeyL": events.launch?.(); break;
+        case "Escape": events.menu?.(); break;
         case "KeyO": events.release?.(); break;
         case "Equal": case "NumpadAdd": events.winchFaster?.(); break;
         case "Minus": case "NumpadSubtract": events.winchSlower?.(); break;

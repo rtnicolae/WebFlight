@@ -1,15 +1,15 @@
-/** Cesium viewer: real terrain (Terrarium) or the plain ellipsoid, a grid or OSM imagery, runways, thermal clouds. */
+/** Cesium viewer: real terrain (Terrarium) or the plain ellipsoid, light and atmosphere, runways, cumulus. */
 import {
+  Cartesian2,
   Cartesian3,
+  CloudCollection,
   Color,
-  ColorMaterialProperty,
+  type CumulusCloud,
   CustomHeightmapTerrainProvider,
   EllipsoidTerrainProvider,
   GeographicTilingScheme,
-  GridImageryProvider,
-  ImageryLayer,
   JulianDate,
-  OpenStreetMapImageryProvider,
+  ShadowMode,
   Viewer,
   type Entity,
   type TerrainProvider,
@@ -19,7 +19,21 @@ import type { ThermalView } from "./protocol.ts";
 
 const M_PER_DEG_LAT = 111_132;
 
-export function createViewer(container: HTMLElement, opts: { osm: boolean; terrain?: TerrariumTerrain }): Viewer {
+export interface LookOptions {
+  terrain?: TerrariumTerrain;
+  /** Simulation date/time (sun position). */
+  time: Date;
+  /** Glider shadow on the ground (costs a shadow map pass). */
+  shadows: boolean;
+  /**
+   * "low": no shadows, no HDR, no MSAA. "high" (default): soft shadows + FXAA.
+   * "ultra": + HDR and 4× MSAA (not verified on every GPU: in a software renderer MSAA, and
+   * HDR together with shadows, broke the globe).
+   */
+  quality?: "low" | "high" | "ultra";
+}
+
+export function createViewer(container: HTMLElement, opts: LookOptions): Viewer {
   const viewer = new Viewer(container, {
     baseLayer: false,
     terrainProvider: opts.terrain ? terrariumTerrainProvider(opts.terrain) : new EllipsoidTerrainProvider(),
@@ -33,33 +47,45 @@ export function createViewer(container: HTMLElement, opts: { osm: boolean; terra
     fullscreenButton: false,
     infoBox: false,
     selectionIndicator: false,
-    shadows: false,
+    msaaSamples: opts.quality === "ultra" ? 4 : 1,
+    shadows: opts.shadows,
+    terrainShadows: opts.shadows ? ShadowMode.RECEIVE_ONLY : ShadowMode.DISABLED,
   });
   const scene = viewer.scene;
-  scene.globe.baseColor = Color.fromCssColorString("#5f7f3e");
+  // Ground colour while imagery streams in.
+  scene.globe.baseColor = Color.fromCssColorString("#56703c");
+  // Sun-lit globe with atmosphere: haze towards the horizon, warm light at low sun.
+  scene.highDynamicRange = opts.quality === "ultra";
   scene.globe.enableLighting = true;
+  scene.globe.dynamicAtmosphereLighting = true;
+  scene.globe.dynamicAtmosphereLightingFromSun = true;
   scene.globe.showGroundAtmosphere = true;
+  scene.globe.atmosphereLightIntensity = 12;
+  scene.globe.maximumScreenSpaceError = 1.5;
+  scene.globe.tileCacheSize = 400;
+  scene.globe.preloadSiblings = true;
   scene.fog.enabled = true;
-  if (opts.osm) {
-    viewer.imageryLayers.add(new ImageryLayer(new OpenStreetMapImageryProvider({ url: "https://tile.openstreetmap.org/" })));
-  } else {
-    viewer.imageryLayers.add(
-      new ImageryLayer(
-        new GridImageryProvider({
-          cells: 8,
-          color: Color.fromCssColorString("#d9e6c3").withAlpha(0.55),
-          glowColor: Color.fromCssColorString("#d9e6c3").withAlpha(0.08),
-          backgroundColor: Color.fromCssColorString("#5f7f3e"),
-        }),
-      ),
-    );
+  scene.fog.density = 1.6e-4;
+  scene.fog.minimumBrightness = 0.08;
+  scene.fog.screenSpaceErrorFactor = 4;
+  if (scene.skyAtmosphere) {
+    scene.skyAtmosphere.hueShift = -0.02;
+    scene.skyAtmosphere.saturationShift = 0.05;
+    scene.skyAtmosphere.brightnessShift = 0.04;
   }
-  // Midday light (summer, central Europe).
-  viewer.clock.currentTime = JulianDate.fromIso8601("2026-06-21T10:30:00Z");
+  scene.postProcessStages.fxaa.enabled = true;
+  if (opts.shadows) {
+    const sm = scene.shadowMap;
+    sm.softShadows = true;
+    sm.size = 2048;
+    sm.maximumDistance = 800;
+    sm.darkness = 0.35;
+  }
+  viewer.clock.currentTime = JulianDate.fromDate(opts.time);
   viewer.clock.shouldAnimate = false;
   // The app drives the camera; keep Cesium's mouse handlers out of the way.
   scene.screenSpaceCameraController.enableInputs = false;
-  viewer.cesiumWidget.creditContainer.setAttribute("style", "opacity:0.6;font-size:10px");
+  viewer.cesiumWidget.creditContainer.setAttribute("style", "opacity:0.55;font-size:10px");
   return viewer;
 }
 
@@ -103,56 +129,81 @@ export function addRunway(viewer: Viewer, r: Runway): void {
 
 /**
  * Cesium terrain from the same Terrarium tiles and decoder the FDM worker uses (geographic
- * tiling, 33×33 samples per tile; at level 15+ the samples come from zoom 13, as physics).
+ * tiling, 65×65 samples per tile; at level 14+ the samples come from zoom 13, as physics).
  */
 export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProvider {
   const tiling = new GeographicTilingScheme();
   const deg = 180 / Math.PI;
   return new CustomHeightmapTerrainProvider({
-    width: 33,
-    height: 33,
+    width: 65,
+    height: 65,
     tilingScheme: tiling,
     credit: "Terrain Tiles © Mapzen and others (SRTM, GMTED2010, ETOPO1, …)",
     callback: (x, y, level) => {
       const r = tiling.tileXYToRectangle(x, y, level);
-      return terrain.heightmap(r.west * deg, r.south * deg, r.east * deg, r.north * deg, 33, 33);
+      return terrain.heightmap(r.west * deg, r.south * deg, r.east * deg, r.north * deg, 65, 65);
     },
   });
 }
 
-/** Cumulus clouds at the top of each thermal; with `columns`, the lift columns too. */
+/**
+ * A cumulus over each thermal (Cesium's procedural cumulus impostors): a cluster of puffs
+ * with a flat base at the thermal top (cloud base), growing while the thermal forms and
+ * fading as it dies. With `columns`, the lift columns are drawn too.
+ */
 export class ThermalLayer {
-  private readonly entities = new Map<number, { cloud: Entity; column?: Entity }>();
+  private readonly clouds = new CloudCollection({ noiseDetail: 16.0, noiseOffset: Cartesian3.ZERO });
+  private readonly sets = new Map<number, { puffs: { cloud: CumulusCloud; w: number; h: number }[]; column?: Entity }>();
 
   constructor(
     private readonly viewer: Viewer,
     private readonly columns = false,
-  ) {}
+  ) {
+    viewer.scene.primitives.add(this.clouds);
+  }
 
   update(list: ThermalView[]): void {
     list.forEach((t, i) => {
-      let e = this.entities.get(i);
-      const alpha = t.phase === "formed" ? 0.9 : t.phase === "forming" ? 0.55 : t.phase === "dying" ? 0.35 : 0;
-      const pos = Cartesian3.fromDegrees(t.lonDeg, t.latDeg, t.topM + t.radiusM * 0.5);
-      if (!e) {
-        const cloud = this.viewer.entities.add({
-          position: pos,
-          ellipsoid: { radii: new Cartesian3(t.radiusM * 1.6, t.radiusM * 1.6, t.radiusM * 0.6), material: Color.WHITE.withAlpha(alpha) },
-        });
-        e = { cloud };
+      let set = this.sets.get(i);
+      if (!set) {
+        set = { puffs: [] };
+        // Deterministic per thermal: a few puffs around the core, the tallest in the middle.
+        let seed = (i + 1) * 9301;
+        const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+        const n = 5 + Math.floor(rnd() * 4);
+        const r = Math.max(250, t.radiusM);
+        const cosLat = Math.cos((t.latDeg * Math.PI) / 180);
+        for (let k = 0; k < n; k++) {
+          const a = rnd() * 2 * Math.PI, d = k === 0 ? 0 : r * (0.4 + 0.9 * rnd());
+          const w = r * (k === 0 ? 2.2 : 1.2 + 0.8 * rnd());
+          const h = w * (k === 0 ? 0.75 : 0.45 + 0.25 * rnd());
+          const lat = t.latDeg + (d * Math.cos(a)) / M_PER_DEG_LAT, lon = t.lonDeg + (d * Math.sin(a)) / (M_PER_DEG_LAT * cosLat);
+          const cloud = this.clouds.add({
+            position: Cartesian3.fromDegrees(lon, lat, t.topM + h * 0.42),
+            scale: new Cartesian2(w, h),
+            maximumSize: new Cartesian3(w, h, w * 0.7),
+            slice: 0.36 + 0.1 * rnd(),
+            brightness: 1.0,
+          });
+          set.puffs.push({ cloud, w, h });
+        }
         if (this.columns) {
           const len = t.topM - t.groundM;
-          e.column = this.viewer.entities.add({
+          set.column = this.viewer.entities.add({
             position: Cartesian3.fromDegrees(t.lonDeg, t.latDeg, t.groundM + len / 2),
             cylinder: { length: len, topRadius: t.radiusM, bottomRadius: t.radiusM, material: Color.ORANGE.withAlpha(0.12), outline: false },
           });
         }
-        this.entities.set(i, e);
+        this.sets.set(i, set);
       }
-      const g = e.cloud.ellipsoid!;
-      g.material = new ColorMaterialProperty(Color.WHITE.withAlpha(alpha));
-      e.cloud.show = alpha > 0;
-      if (e.column) e.column.show = alpha > 0;
+      const size = t.phase === "formed" ? 1 : t.phase === "forming" ? 0.65 : t.phase === "dying" ? 0.8 : 0;
+      const bright = t.phase === "dying" ? 0.82 : 1;
+      for (const p of set.puffs) {
+        p.cloud.show = size > 0;
+        p.cloud.scale = new Cartesian2(p.w * size, p.h * size);
+        p.cloud.brightness = bright;
+      }
+      if (set.column) set.column.show = size > 0;
     });
   }
 }
