@@ -12,7 +12,8 @@ WebAssembly. The same flight model core runs headless in Node for training.
 | `packages/fg-host` | FlightGear host layer next to the FDM: property tree (`/fdm/jsbsim` mounted), FDM interface, property rules, FG instruments, Nasal rewritten in TS, cockpit bindings. No browser or Node APIs. |
 | `packages/environment` | Terrarium terrain heights, FlightGear ridge lift and thermals (ported), seeded thermal field, sites. No browser or Node APIs. |
 | `packages/launch` | Winch launch, aerotow rope and tow plane, ported from FlightGear (`hitch.nas`, ASK21 `dragrobot.nas`), forces into JSBSim `external_reactions`. No browser or Node APIs. |
-| `apps/headless` | Node experiments: glide run, speed polar, PNG plot, soaring over real terrain (`SoaringSim`), ground launches (`GroundLaunchSim`). Later the gym API. |
+| `packages/gym` | Gymnasium-style environments (`landing`, `aerotow`): seeded, bit-deterministic, ~300–380× real time per core; observation-only baseline policies. No browser or Node APIs. |
+| `apps/headless` | Node experiments: glide run, speed polar, PNG plot, soaring over real terrain (`SoaringSim`), ground launches (`GroundLaunchSim`), the gym over stdio (`gym-server`) and its benchmark. |
 | `apps/web` | Browser app: FDM worker (120 Hz), Cesium scene on real terrain, thermal clouds, animated model, chase/cockpit camera, gamepad, HUD. |
 
 ## Quick start
@@ -25,11 +26,13 @@ pnpm glide         # out/ask21-solo-glide.csv + summary
 pnpm polar         # out/ask21-solo-polar.csv + out/ask21-solo-polar.png
 pnpm bundle:ask21  # web bundle → apps/web/bundles/ASK21
 pnpm bundle:models # tow plane and winch models → apps/web/bundles/_models
+pnpm gym:bench landing 20   # gym speed and baseline score (see docs/milestone-6.md)
+python3 python/webflight_gym.py landing   # Python client (numpy; gymnasium optional)
 pnpm dev           # browser sim at http://localhost:5173 (?start=ridge|thermal|winch|aerotow; see docs/milestone-4.md, docs/milestone-5.md)
 ```
 
 The FGAddon cache location can be overridden with `WEBFLIGHT_FGADDON_CACHE`.
 
 See `docs/glider-inventory.md` for the gliders available, `docs/milestone-1.md`,
-`docs/milestone-2.md`, `docs/milestone-3.md`, `docs/milestone-4.md` and `docs/milestone-5.md` for results and findings, and `LICENSES.md`
+`docs/milestone-2.md`, `docs/milestone-3.md`, `docs/milestone-4.md`, `docs/milestone-5.md` and `docs/milestone-6.md` for results and findings, and `LICENSES.md`
 for licensing.
