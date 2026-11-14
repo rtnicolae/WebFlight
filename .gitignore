@@ -6,3 +6,4 @@ out/
 *.log
 apps/web/bundles/
 
+__pycache__/

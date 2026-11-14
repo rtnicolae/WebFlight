@@ -15,7 +15,8 @@
     "bundle:ask21": "pnpm --filter @webflight/converter build-bundle ASK21 ask21-jsb-set.xml",
     "dev": "pnpm --filter @webflight/web dev",
     "build": "pnpm --filter @webflight/web build",
-    "bundle:models": "pnpm --filter @webflight/converter build-model AI/Aircraft/DR400/Models/dr400-ai.xml dr400 && pnpm --filter @webflight/converter build-model Models/Airport/supacat_winch.xml winch"
+    "bundle:models": "pnpm --filter @webflight/converter build-model AI/Aircraft/DR400/Models/dr400-ai.xml dr400 && pnpm --filter @webflight/converter build-model Models/Airport/supacat_winch.xml winch",
+    "gym:bench": "pnpm --filter @webflight/headless gym-bench"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

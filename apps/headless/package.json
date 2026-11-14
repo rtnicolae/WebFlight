@@ -6,7 +6,9 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "glide": "tsx src/cli/glide.ts",
-    "polar": "tsx src/cli/polar.ts"
+    "polar": "tsx src/cli/polar.ts",
+    "gym-server": "tsx src/cli/gym-server.ts",
+    "gym-bench": "tsx src/cli/gym-bench.ts"
   },
   "dependencies": {
     "@webflight/converter": "workspace:*",
