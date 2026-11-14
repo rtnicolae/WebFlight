@@ -28,3 +28,15 @@ These screenshots were taken in a cloud container whose network blocks the photo
 
 - **Terrain cliffs at tile edges.** `TerrariumTerrain.heightmap()` sampled through the shared tile cache after awaiting its loads. Concurrent requests evicted those tiles in between, so some heights read 0 m, which showed up as walls along tile edges. It now samples from the tile arrays it loaded. Coarse levels went from up to −645 m mean error to about 1 m.
 - **Coarse terrain flattened the ridges.** Terrain tiles are now 65×65 samples instead of 33×33.
+
+## Next: scenery (planned)
+
+| Feature | Source (open data, no key) | Approach |
+|---|---|---|
+| Buildings | swisstopo swissBUILDINGS3D (3D Tiles) in Switzerland; OpenStreetMap footprints + heights elsewhere | Cesium 3D Tiles. swisstopo heights include the geoid (~+49 m here), but our terrain treats Terrarium heights as ellipsoidal, so the tileset is shifted down by the local geoid separation. Elsewhere, extrude OSM footprints. |
+| Trees and forest | swisstopo swissTLM3D forest areas / single trees; OSM `landuse=forest` / `natural=wood` | Instanced tree models (a few species, LOD to billboards at range), scattered deterministically inside forest polygons. Trees cast shadows. |
+| Water | swissTLM3D lakes and rivers; OSM `natural=water`, `waterway=*` | Cesium water material (animated normals, sky reflection) on clamped polygons; lake surfaces flattened to their level in the terrain. |
+| High-resolution ground | SWISSIMAGE 10 cm (already used for photos); swissALTI3D 0.5–2 m terrain | Deeper imagery levels near the glider. Optionally swissALTI3D for rendering only, while physics keeps Terrarium so the ground stays consistent. Detail textures (grass, crops, asphalt) blended in close to the ground. |
+| Runway | swissTLM3D / OSM aerodrome geometry | Real runway outline and markings, and the physics and gym runway frames taken from the same data. |
+
+The data hosts (e.g. `vectortiles.geo.admin.ch`, `data.geo.admin.ch`, an Overpass mirror) must be reachable from the browser; this cloud container's network currently blocks them, so verifying the result needs them allowed here.
