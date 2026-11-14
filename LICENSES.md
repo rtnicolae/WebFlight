@@ -19,6 +19,25 @@ Shared files an aircraft references (e.g. `Aircraft/Instruments-3d/glider/vario/
 `Aircraft/Generic/...`) are fetched on demand into the git-ignored `.cache/fgdata/` and end up
 in that aircraft's bundle. FGData is GPL-2.0-or-later; the bundle's `COPYING` (GPL) covers them.
 
+Standalone FGData models are converted the same way into `apps/web/bundles/_models/` (also
+git-ignored): the AI tow plane `AI/Aircraft/DR400/Models/dr400-ai.xml` (with its light
+submodels) and the winch `Models/Airport/supacat_winch.xml`, both GPL-2.0-or-later as part of
+FGData.
+
+## Code ported from FlightGear (GPL-2.0-or-later)
+
+Several modules are TypeScript ports of FlightGear code and are therefore derivative works
+of GPL-2.0-or-later sources. This repository has no license file of its own yet; whatever
+is chosen must be compatible with these:
+
+| Module | Ported from |
+|---|---|
+| `packages/fg-host/src/rules.ts`, `instruments.ts`, `expr.ts` | FlightGear `src/Autopilot`, `src/Instrumentation`, SimGear `props/condition.cxx`, `structure/SGExpression.cxx`, `inputvalue.cxx` |
+| `packages/fg-host/src/nasal/ask21.ts` | ASK21 `Nasal/*.nas` (FGAddon) |
+| `packages/environment/src/ridge.ts`, `thermals.ts` | FlightGear `src/Environment/ridge_lift.cxx`, `src/AIModel/AIThermal.cxx`, `AIManager.cxx` |
+| `packages/launch/src/winch.ts`, `aerotow.ts` | FGData `Nasal/towing/hitch.nas` (D-NXKT, Bea Wolf) |
+| `packages/launch/src/tug.ts` | ASK21 `Nasal/dragrobot.nas` (Klaus Kerner, Bea Wolf) |
+
 ## Terrain data
 
 Elevation comes from the AWS Terrain Tiles open dataset (Terrarium encoding, originally by

@@ -11,7 +11,8 @@ WebAssembly. The same flight model core runs headless in Node for training.
 | `packages/converter` | FGAddon and FGData fetchers, FlightGear PropertyList reader, JSBSim file set, AC3D→glTF, animation manifest, host config, web bundle. |
 | `packages/fg-host` | FlightGear host layer next to the FDM: property tree (`/fdm/jsbsim` mounted), FDM interface, property rules, FG instruments, Nasal rewritten in TS, cockpit bindings. No browser or Node APIs. |
 | `packages/environment` | Terrarium terrain heights, FlightGear ridge lift and thermals (ported), seeded thermal field, sites. No browser or Node APIs. |
-| `apps/headless` | Node experiments: glide run, speed polar, PNG plot, soaring over real terrain (`SoaringSim`). Later the gym API. |
+| `packages/launch` | Winch launch, aerotow rope and tow plane, ported from FlightGear (`hitch.nas`, ASK21 `dragrobot.nas`), forces into JSBSim `external_reactions`. No browser or Node APIs. |
+| `apps/headless` | Node experiments: glide run, speed polar, PNG plot, soaring over real terrain (`SoaringSim`), ground launches (`GroundLaunchSim`). Later the gym API. |
 | `apps/web` | Browser app: FDM worker (120 Hz), Cesium scene on real terrain, thermal clouds, animated model, chase/cockpit camera, gamepad, HUD. |
 
 ## Quick start
@@ -23,11 +24,12 @@ pnpm test          # includes the timed 120 s headless glide
 pnpm glide         # out/ask21-solo-glide.csv + summary
 pnpm polar         # out/ask21-solo-polar.csv + out/ask21-solo-polar.png
 pnpm bundle:ask21  # web bundle → apps/web/bundles/ASK21
-pnpm dev           # browser sim at http://localhost:5173 (?start=ridge, ?start=thermal; see docs/milestone-4.md)
+pnpm bundle:models # tow plane and winch models → apps/web/bundles/_models
+pnpm dev           # browser sim at http://localhost:5173 (?start=ridge|thermal|winch|aerotow; see docs/milestone-4.md, docs/milestone-5.md)
 ```
 
 The FGAddon cache location can be overridden with `WEBFLIGHT_FGADDON_CACHE`.
 
 See `docs/glider-inventory.md` for the gliders available, `docs/milestone-1.md`,
-`docs/milestone-2.md`, `docs/milestone-3.md` and `docs/milestone-4.md` for results and findings, and `LICENSES.md`
+`docs/milestone-2.md`, `docs/milestone-3.md`, `docs/milestone-4.md` and `docs/milestone-5.md` for results and findings, and `LICENSES.md`
 for licensing.
