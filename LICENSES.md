@@ -24,6 +24,16 @@ git-ignored): the AI tow plane `AI/Aircraft/DR400/Models/dr400-ai.xml` (with its
 submodels) and the winch `Models/Airport/supacat_winch.xml`, both GPL-2.0-or-later as part of
 FGData.
 
+## Imagery
+
+Fetched at runtime by the browser, never stored in the repository:
+
+| Source | Use | License / terms |
+|---|---|---|
+| swisstopo SWISSIMAGE (`wmts.geo.admin.ch`) | aerial photos over Switzerland | Free geodata (OGD) of the Swiss Confederation; attribution "© swisstopo" (shown in the credits) |
+| EOX Sentinel-2 cloudless 2016 (`tiles.maps.eox.at`, layer `s2cloudless_3857`) | imagery elsewhere | CC BY 4.0: "Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)". Later years are CC BY-NC-SA, so the 2016 layer is used deliberately |
+| Painted terrain | fallback when the photo servers can't be reached | generated in the browser from Terrarium heights (no third-party imagery) |
+
 ## Code ported from FlightGear (GPL-2.0-or-later)
 
 Several modules are TypeScript ports of FlightGear code and are therefore derivative works

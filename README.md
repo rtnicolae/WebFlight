@@ -28,11 +28,11 @@ pnpm bundle:ask21  # web bundle → apps/web/bundles/ASK21
 pnpm bundle:models # tow plane and winch models → apps/web/bundles/_models
 pnpm gym:bench landing 20   # gym speed and baseline score (see docs/milestone-6.md)
 python3 python/webflight_gym.py landing   # Python client (numpy; gymnasium optional)
-pnpm dev           # browser sim at http://localhost:5173 (?start=ridge|thermal|winch|aerotow; see docs/milestone-4.md, docs/milestone-5.md)
+pnpm dev           # http://localhost:5173: title screen; or deep-link ?start=final|ridge|thermal|winch|aerotow&time=evening&quality=ultra (see docs/look.md)
 ```
 
 The FGAddon cache location can be overridden with `WEBFLIGHT_FGADDON_CACHE`.
 
 See `docs/glider-inventory.md` for the gliders available, `docs/milestone-1.md`,
-`docs/milestone-2.md`, `docs/milestone-3.md`, `docs/milestone-4.md`, `docs/milestone-5.md` and `docs/milestone-6.md` for results and findings, and `LICENSES.md`
+`docs/milestone-2.md`, `docs/milestone-3.md`, `docs/milestone-4.md`, `docs/milestone-5.md`, `docs/milestone-6.md` and `docs/look.md` for results and findings, and `LICENSES.md`
 for licensing.
