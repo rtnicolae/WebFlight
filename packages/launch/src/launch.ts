@@ -200,3 +200,38 @@ export class Launch {
     return v;
   }
 }
+
+/**
+ * Hitch settings from an aircraft's FG property tree (-set.xml and its includes):
+ * /sim/hitches/{winch,aerotow}/force_name_jsbsim, winch typical-tow-speed-kph,
+ * typical-tow-force-N, automatic-release-angle-deg, tow/break-force.
+ */
+export function hitchesFromProperties(get: (path: string) => string | number | boolean | undefined): Hitches {
+  const num = (p: string) => {
+    const v = get(p);
+    const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const str = (p: string) => {
+    const v = get(p);
+    return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  };
+  const h: Hitches = {};
+  const w = str("/sim/hitches/winch/force_name_jsbsim"), a = str("/sim/hitches/aerotow/force_name_jsbsim");
+  if (w) h.winch = w;
+  if (a) h.aerotow = a;
+  const ws: Partial<WinchConfig> = {};
+  const set = <K extends keyof WinchConfig>(k: K, v: number | undefined) => {
+    if (v !== undefined) (ws as Record<string, number>)[k] = v;
+  };
+  set("typicalTowSpeedKph", num("/sim/hitches/winch/typical-tow-speed-kph"));
+  set("typicalTowForceN", num("/sim/hitches/winch/typical-tow-force-N"));
+  set("automaticReleaseAngleDeg", num("/sim/hitches/winch/automatic-release-angle-deg"));
+  set("breakForceN", num("/sim/hitches/winch/tow/break-force"));
+  const type = num("/sim/hitches/winch/type");
+  if (type === 0 || type === 1) ws.type = type;
+  h.winchSettings = ws;
+  const ab = num("/sim/hitches/aerotow/tow/break-force");
+  if (ab !== undefined) h.aerotowSettings = { breakForceN: ab };
+  return h;
+}

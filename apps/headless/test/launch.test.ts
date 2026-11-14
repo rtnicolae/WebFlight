@@ -20,13 +20,14 @@ describe("ASK21 launches from Grenchen (FG hitch.nas / dragrobot.nas ports)", ()
         sim.fly({ maxS: 120 });
         const r = sim.releasedAt!;
         expect(r).toBeDefined();
-        expect(r.by).toBe("pilot");
+        // The ASK21's hook back-releases when the rope is 70° below the fuselage axis.
         expect(r.aglM).toBeGreaterThan(300);
         expect(r.aglM).toBeLessThan(600);
         expect(r.t).toBeLessThan(45);
-        // Weak link holds (FG default 12345 N; force capped at the winch's 10 kN).
+        // The weak link (ASK21: 10 kN) holds; IAS stays near the 150 km/h winch limit.
         expect(sim.launch.winch!.broken).toBe(false);
-        expect(sim.maxForceN).toBeLessThanOrEqual(10_000 + 0.1 * 9.81 * 600);
+        expect(sim.maxForceN).toBeLessThan(10_000);
+        expect(sim.maxIasOnTowKmh).toBeLessThan(type === 1 ? 155 : 170);
         // Wings stay level on the way up.
         expect(Math.max(...sim.samples.filter((s) => s.connected && s.aglM > 5).map((s) => Math.abs(s.bankDeg)))).toBeLessThan(10);
       } finally {
@@ -46,7 +47,7 @@ describe("ASK21 launches from Grenchen (FG hitch.nas / dragrobot.nas ports)", ()
       expect(sim.fdm.get("position/geod-alt-ft") * 0.3048 - startAlt).toBeGreaterThan(750);
       expect(sim.launch.rope!.broken).toBe(false);
       expect(sim.maxForceN).toBeLessThan(sim.launch.rope!.cfg.breakForceN);
-      // Stayed on tow within the ASK21's aerotow limit (175 km/h).
+      // Weak link (ASK21: 6 kN) held; stayed within the ASK21's aerotow limit (175 km/h).
       expect(sim.maxIasOnTowKmh).toBeLessThan(175);
     } finally {
       sim.fdm.destroy();

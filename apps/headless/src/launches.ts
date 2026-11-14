@@ -6,12 +6,23 @@
  */
 import { advance, type TerrariumTerrain } from "@webflight/environment";
 import { controlsToJsbsim, FT_PER_M, M_PER_FT, type Fdm, type FgControls } from "@webflight/fdm-core";
-import { directionInNed, ecef, Launch, type LaunchOptions } from "@webflight/launch";
+import { directionInNed, ecef, hitchesFromProperties, Launch, type Hitches, type LaunchOptions } from "@webflight/launch";
 import { ASK21, createGlider, type GliderProfile } from "./gliders.ts";
 import { ASK21_AIRBRAKE } from "./soaring.ts";
 
-/** ASK21 hitches (ask21-jsb-set.xml sim/hitches). */
-export const ASK21_HITCHES = { winch: "winch_hitch", aerotow: "aerotow_hitch", winchSettings: { typicalTowSpeedKph: 100, typicalTowForceN: 6000 } } as const;
+/** ASK21 hitches: ask21-jsb-set.xml and ask21-main.xml sim/hitches (as the browser reads them from the bundle). */
+export const ASK21_HITCHES: Hitches = hitchesFromProperties(
+  (p) =>
+    ({
+      "/sim/hitches/winch/force_name_jsbsim": "winch_hitch",
+      "/sim/hitches/aerotow/force_name_jsbsim": "aerotow_hitch",
+      "/sim/hitches/winch/typical-tow-speed-kph": "100",
+      "/sim/hitches/winch/typical-tow-force-N": "6000",
+      "/sim/hitches/winch/automatic-release-angle-deg": "70.",
+      "/sim/hitches/winch/tow/break-force": "10000",
+      "/sim/hitches/aerotow/tow/break-force": "6000",
+    })[p],
+);
 
 export interface GroundStart {
   latDeg: number;

@@ -1,4 +1,4 @@
-export { Launch, applyHitchForce, hitchBodyM, readAttitude } from "./launch.ts";
+export { Launch, applyHitchForce, hitchBodyM, hitchesFromProperties, readAttitude } from "./launch.ts";
 export type { Hitches, LaunchAir, LaunchFdm, LaunchOptions, LaunchView } from "./launch.ts";
 export { Winch, FG_WINCH_DEFAULTS, typicalTowSettings } from "./winch.ts";
 export type { WinchConfig, WinchInput } from "./winch.ts";
