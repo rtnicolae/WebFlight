@@ -12,6 +12,7 @@
     "@webflight/converter": "workspace:*",
     "@webflight/fdm-core": "workspace:*",
     "@webflight/fg-host": "workspace:*",
-    "@webflight/environment": "workspace:*"
+    "@webflight/environment": "workspace:*",
+    "@webflight/launch": "workspace:*"
   }
 }
