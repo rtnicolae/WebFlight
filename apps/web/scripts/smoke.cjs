@@ -2,7 +2,8 @@
  * Browser smoke test against a running dev/preview server (needs Playwright + Chromium):
  *   node apps/web/scripts/smoke.cjs [url]
  * Checks: boots, cross-origin isolated, FDM ~120 Hz, glider flies, a hands-off low
- * approach touches down without bouncing or sinking through the ground.
+ * approach touches down without bouncing or sinking through the ground; a winch launch and
+ * an aerotow start (L), pull the glider into the air and show the rope and tow plane.
  */
 const { chromium } = require("playwright");
 const base = process.argv[2] ?? "http://localhost:5173/";
@@ -36,8 +37,27 @@ const base = process.argv[2] ?? "http://localhost:5173/";
     minAglAfterTouchdown: Math.min(...after.map((s) => s.agl)),
     errors,
   };
+  await page.close();
+  // Launches: start on the runway, press L, check the rope pulls the glider into the air.
+  for (const kind of ["winch", "aerotow"]) {
+    const p = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    p.on("pageerror", (e) => errors.push(`${kind}: ${e.message}`));
+    await p.goto(new URL(`?start=${kind}`, base).href);
+    await p.waitForSelector("#boot[hidden]", { state: "attached", timeout: 90000 });
+    await p.waitForTimeout(1500);
+    await p.keyboard.press("KeyL");
+    let maxF = 0, maxAgl = 0, rope = 0, tug = 0;
+    for (let i = 0; i < (kind === "winch" ? 30 : 60); i++) {
+      await p.waitForTimeout(500);
+      const s = await p.evaluate(() => { const w = window.webflight, g = (n) => w.reader.data[w.layout.at(n)]; return { F: g("/sim/hitches/rope/force-N"), agl: g("position/h-agl-ft") * 0.3048, rope: g("/sim/hitches/rope/exist"), tug: g("/ai/models/dragger/valid") }; });
+      maxF = Math.max(maxF, s.F); maxAgl = Math.max(maxAgl, s.agl); rope = Math.max(rope, s.rope); tug = Math.max(tug, s.tug);
+    }
+    result[kind] = { maxRopeForceN: Math.round(maxF), maxAglM: Math.round(maxAgl), rope, tug };
+    await p.close();
+  }
   console.log(JSON.stringify(result, null, 1));
   await browser.close();
-  const ok = result.isolated && hz > 110 && hz < 130 && result.touchedDown && result.wheelLeftGroundAfterTouchdown === 0 && result.minAglAfterTouchdown > 0.6 && errors.length === 0;
+  const launchesOk = result.winch.maxRopeForceN > 2000 && result.winch.maxAglM > 30 && result.aerotow.maxRopeForceN > 500 && result.aerotow.maxAglM > 5 && result.aerotow.tug === 1;
+  const ok = launchesOk && result.isolated && hz > 110 && hz < 130 && result.touchedDown && result.wheelLeftGroundAfterTouchdown === 0 && result.minAglAfterTouchdown > 0.6 && errors.length === 0;
   process.exit(ok ? 0 : 1);
 })();

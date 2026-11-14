@@ -13,7 +13,8 @@
     "@webflight/fdm-core": "workspace:*",
     "cesium": "1.147.0",
     "@webflight/fg-host": "workspace:*",
-    "@webflight/environment": "workspace:*"
+    "@webflight/environment": "workspace:*",
+    "@webflight/launch": "workspace:*"
   },
   "devDependencies": {
     "vite": "^8.3.8"

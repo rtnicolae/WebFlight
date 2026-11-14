@@ -7,6 +7,8 @@ export interface StartState {
   headingDeg: number;
   aglM: number;
   easKmh: number;
+  /** Start standing on the ground (aglM/easKmh ignored), optionally with a launch set up. */
+  ground?: { launch?: "winch" | "aerotow"; winchType?: 0 | 1; seed?: number };
 }
 
 /** The world the FDM flies in (the worker owns terrain and air motion for physics). */
@@ -46,6 +48,8 @@ export type ToWorker =
   | { type: "controls"; controls: FgControls }
   /** Raw JSBSim property writes, e.g. position/terrain-elevation-asl-ft. */
   | { type: "set"; props: Record<string, number> }
+  /** Launch: clutch the winch / start the tow plane; open the hook; winch faster/slower. */
+  | { type: "launch"; action: "start" | "release" | "faster" | "slower" }
   /** Change the wind (other environment settings stay). */
   | { type: "wind"; fromDeg: number; kt: number }
   | { type: "reset"; start: StartState }

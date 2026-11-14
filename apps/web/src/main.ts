@@ -9,6 +9,7 @@ import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, ThermalLayer, type Runway } from "./scene.ts";
 import { CockpitInteraction } from "./interaction.ts";
+import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
 const params = new URLSearchParams(location.search);
 const AIRCRAFT = params.get("aircraft") ?? "ASK21";
@@ -18,11 +19,14 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  * Where and how to fly (URL parameters):
  *   site=grenchen (default, real terrain) | flat (the old test field on the ellipsoid)
  *   start=final (straight-in final, runway 07) | ridge (Jura SE face) | thermal (high over the field)
+ *         | winch | aerotow (on runway 07: L starts the launch, O opens the hook)
+ *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
  *   wind=150@20 (from° @ kt) · thermals=0|1 · seed=N · columns=1 (draw lift columns)
  *   dist, agl, eas: start distance from the runway [m], height above ground [m], speed [km/h]
  */
 const SITE = params.get("site") === "flat" ? "flat" : "grenchen";
-const START_KIND = (params.get("start") ?? "final") as "final" | "ridge" | "thermal";
+const START_KIND = (params.get("start") ?? "final") as "final" | "ridge" | "thermal" | "winch" | "aerotow";
+const LAUNCH = START_KIND === "winch" || START_KIND === "aerotow" ? START_KIND : undefined;
 const RUNWAY: Runway =
   SITE === "flat"
     ? { latDeg: FLAT_TEST.latDeg, lonDeg: FLAT_TEST.lonDeg, headingDeg: 0, lengthM: 800, widthM: 40, paved: false }
@@ -68,6 +72,11 @@ async function startState(): Promise<StartState> {
     const [lat, lon] = advance(th.sliceLatDeg, th.sliceLonDeg, 270, r);
     return { latDeg: lat, lonDeg: lon, headingDeg: 0, aglM, easKmh: Number(params.get("eas") ?? 85) };
   }
+  if (LAUNCH) {
+    // On the runway, 50 m past the threshold of the low-numbered direction.
+    const [lat, lon] = advance(RUNWAY.latDeg, RUNWAY.lonDeg, RUNWAY.headingDeg + 180, RUNWAY.lengthM / 2 - 50);
+    return { latDeg: lat, lonDeg: lon, headingDeg: RUNWAY.headingDeg, aglM: 0, easKmh: 0, ground: { launch: LAUNCH, winchType: params.get("winchtype") === "0" ? 0 : 1, seed: SEED } };
+  }
   // Straight-in final: `dist` before the threshold of the low-numbered runway.
   const dist = Number(params.get("dist") ?? 2500) + RUNWAY.lengthM / 2;
   const [lat, lon] = advance(RUNWAY.latDeg, RUNWAY.lonDeg, RUNWAY.headingDeg + 180, dist);
@@ -98,6 +107,7 @@ async function main(): Promise<void> {
   const viewer = createViewer(document.getElementById("cesium")!, { osm: params.get("map") === "osm", ...(renderTerrain ? { terrain: renderTerrain } : {}) });
   addRunway(viewer, RUNWAY);
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1");
+  const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);
   const hud = new Hud(document.getElementById("hud")!);
@@ -117,6 +127,10 @@ async function main(): Promise<void> {
     toggleView: () => cam.toggle(),
     togglePause: () => send({ type: "pause", paused: (paused = !paused) }),
     toggleHelp: () => hud.toggleHelp(),
+    launch: () => send({ type: "launch", action: "start" }),
+    release: () => send({ type: "launch", action: "release" }),
+    winchFaster: () => send({ type: "launch", action: "faster" }),
+    winchSlower: () => send({ type: "launch", action: "slower" }),
   });
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -171,14 +185,14 @@ async function main(): Promise<void> {
     jsbsimWasmUrl: new URL("/jsbsim/jsbsim_wasm.wasm", location.href).href,
     rateHz: 120,
     // FG properties for the animations plus what the HUD shows.
-    extraProperties: [...aircraft.snapshotProperties, "fcs/speedbrake-pos-norm", "/controls/flight/elevator-trim", "/instrumentation/ilec-sc7/te-reading-mps"],
+    extraProperties: [...aircraft.snapshotProperties, "fcs/speedbrake-pos-norm", "/controls/flight/elevator-trim", "/instrumentation/ilec-sc7/te-reading-mps", ...(LAUNCH ? LAUNCH_PROPERTIES : [])],
     start: await startState(),
     world: WORLD,
     loadout: LOADOUT,
     allowShared: params.get("nosab") !== "1",
   });
   setStatus("Loading 3D model…");
-  await Promise.all([ready, aircraft.load(viewer.scene)]);
+  await Promise.all([ready, aircraft.load(viewer.scene), launchView?.load().catch((e: unknown) => console.warn("launch models:", e))]);
   status.hidden = true;
   const interaction = new CockpitInteraction(viewer, aircraft, send, cam);
   if (aircraft.texMissing.length) console.warn("texture animations without readers:", aircraft.texMissing);
@@ -200,6 +214,17 @@ async function main(): Promise<void> {
 
     const m = aircraft.update(d, layout, dt);
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
+    launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
+    let launchText: string | undefined;
+    if (LAUNCH) {
+      const connected = g(LAUNCH === "winch" ? "/sim/hitches/winch/open" : "/sim/hitches/aerotow/open") === 0;
+      const kn = (g("/sim/hitches/rope/force-N") / 1000).toFixed(1);
+      launchText = connected
+        ? LAUNCH === "winch"
+          ? `Winch: ${kn} kN · cable ${g("/sim/hitches/winch/tow/length").toFixed(0)} m · L clutch, O release, +/− faster/slower`
+          : `Tow: ${kn} kN · L start the tow plane, O release`
+        : `${LAUNCH === "winch" ? "Winch" : "Tow"}: released`;
+    }
 
     const sink = g("velocities/v-down-fps") * M_PER_FT;
     hud.update(
@@ -218,6 +243,7 @@ async function main(): Promise<void> {
         view: cam.mode,
         paused,
         ...(air ? { air } : {}),
+        ...(launchText ? { launch: launchText } : {}),
         site: SITE === "flat" ? "flat test field" : `${GRENCHEN.name} · ${START_KIND}`,
       },
       dt,

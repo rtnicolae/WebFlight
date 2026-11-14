@@ -22,6 +22,7 @@ import {
   type FgControls,
 } from "@webflight/fdm-core";
 import { applyEnvironment, Environment, TerrariumTerrain, type EnvironmentOutput } from "@webflight/environment";
+import { hitchesFromProperties, Launch, type LaunchView } from "@webflight/launch";
 import type { FromWorker, StartState, ThermalView, ToWorker, WorldConfig } from "./protocol.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -48,6 +49,10 @@ let env: Environment | undefined;
 let envOut: EnvironmentOutput | undefined;
 let envPostT = 0;
 let prefetchAt: { lat: number; lon: number } | undefined;
+let launch: Launch | undefined;
+/** Values published under FG-style paths when there is no fg-host tree (and alongside it). */
+const extras = new Map<string, number>();
+const pendingMessages: string[] = [];
 
 function setupWorld(w: WorldConfig): void {
   terrain = w.terrain === "terrarium" ? new TerrariumTerrain({ zoom: 13 }) : undefined;
@@ -75,6 +80,59 @@ function stepEnvironment(dt: number): void {
     t.set("/environment/wind-from-heading-deg", c.windFromDeg);
     t.set("/environment/wind-speed-kt", c.windKt);
   }
+}
+
+/**
+ * Launch state for the renderer, under FlightGear's property names where FG has them
+ * (/ai/models/dragger/*, /sim/hitches/*); the rope ends are WebFlight additions.
+ */
+function publishLaunch(): void {
+  const v: LaunchView | undefined = launch?.view();
+  const put = (k: string, x: number) => {
+    extras.set(k, x);
+    host?.tree.set(k, x);
+  };
+  put("/sim/hitches/rope/exist", v?.rope ? 1 : 0);
+  if (v?.rope) {
+    const r = v.rope;
+    put("/sim/hitches/rope/start-lat-deg", r.from.latDeg);
+    put("/sim/hitches/rope/start-lon-deg", r.from.lonDeg);
+    put("/sim/hitches/rope/start-alt-m", r.from.altM);
+    put("/sim/hitches/rope/end-lat-deg", r.to.latDeg);
+    put("/sim/hitches/rope/end-lon-deg", r.to.lonDeg);
+    put("/sim/hitches/rope/end-alt-m", r.to.altM);
+    put("/sim/hitches/rope/slack-m", r.slack);
+  }
+  put("/sim/hitches/rope/force-N", v?.forceN ?? 0);
+  put("/sim/hitches/winch/open", launch?.winch ? (launch.winch.open ? 1 : 0) : 1);
+  put("/sim/hitches/aerotow/open", launch?.rope ? (launch.rope.open ? 1 : 0) : 1);
+  put("/sim/hitches/winch/winch/exist", v?.winch ? 1 : 0);
+  if (v?.winch) {
+    put("/sim/hitches/winch/winch/latitude-deg", v.winch.latDeg);
+    put("/sim/hitches/winch/winch/longitude-deg", v.winch.lonDeg);
+    put("/sim/hitches/winch/winch/altitude-m", v.winch.altM);
+    put("/sim/hitches/winch/winch/heading-deg", launch!.winch!.ropeHeadingDeg + 180);
+    put("/sim/hitches/winch/winch/actual-spool-speed-m-s", launch!.winch!.spoolSpeedMs);
+    put("/sim/hitches/winch/winch/rel-speed", launch!.winch!.spoolSpeedMs / launch!.winch!.cfg.maxSpoolSpeedMs);
+    put("/sim/hitches/winch/tow/length", launch!.winch!.towLengthM);
+  }
+  put("/ai/models/dragger/valid", v?.tug && !v.tug.gone ? 1 : 0);
+  if (v?.tug) {
+    const t = launch!.tug!;
+    put("/ai/models/dragger/position/latitude-deg", t.latDeg);
+    put("/ai/models/dragger/position/longitude-deg", t.lonDeg);
+    put("/ai/models/dragger/position/altitude-ft", t.altM / M_PER_FT);
+    put("/ai/models/dragger/orientation/true-heading-deg", t.headingDeg);
+    put("/ai/models/dragger/orientation/roll-deg", t.rollDeg);
+    put("/ai/models/dragger/orientation/pitch-deg", 0);
+    put("/ai/models/dragger/velocities/true-airspeed-kt", t.speedMs / 0.514444);
+  }
+}
+
+function stepLaunch(dt: number): void {
+  if (!launch || !env) return;
+  const c = env.config;
+  launch.update(dt, { windFromDeg: c.windFromDeg, windKt: c.windKt, upMs: envOut ? (envOut.thermalLiftFps + envOut.ridgeLiftFps) * M_PER_FT : 0 });
 }
 
 function postEnvironment(): void {
@@ -115,13 +173,41 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
     "ic/psi-true-deg": s.headingDeg,
   };
   f.set(P.terrainElevationAslFt, groundM * FT_PER_M);
-  const t = trimSteadyGlide(f, { speed: { veKts: s.easKmh / KMH_PER_KT }, base });
+  launch = undefined;
+  let t: { control: number; alphaDeg: number; converged: boolean };
+  if (s.ground) {
+    // Standing on the runway, wings held by the wing runner (FG: /controls/gear/assist-1).
+    f.set("systems/groundhandling/wingholder", 1);
+    f.setInitialConditions({ ...base, "ic/h-agl-ft": 2.4, "ic/vc-kts": 0, "ic/theta-deg": 0, "ic/phi-deg": 0 });
+    f.runIc();
+    // Settle onto the wheels first: FG's ground handling (groundhandling.nas) drops the wing
+    // runner as soon as the main wheel is off the ground.
+    f.step(Math.round(rateHz));
+    t = { control: 0, alphaDeg: 0, converged: true };
+  } else t = trimSteadyGlide(f, { speed: { veKts: s.easKmh / KMH_PER_KT }, base });
   controls = { aileron: 0, elevator: 0, rudder: 0, elevatorTrim: t.control, airbrake: 0 };
   applied = { ...controls };
   if (host) {
     for (const [p, v] of Object.entries(controlsToFgProperties(controls, airbrake))) host.tree.set(p, v);
     host.reinit();
+    if (s.ground) host.tree.set("/controls/gear/assist-1", true);
   }
+  if (s.ground?.launch) {
+    const g = groundM;
+    launch = new Launch(f, {
+      kind: s.ground.launch,
+      hitches: hitchesFromProperties((p) => {
+        const v = host?.tree.get(p);
+        return typeof v === "boolean" ? String(v) : v;
+      }),
+      groundAtM: (lat, lon) => terrain?.heightAt(lat, lon) ?? g,
+      headingDeg: s.headingDeg,
+      seed: s.ground.seed ?? 1,
+      ...(s.ground.winchType !== undefined ? { winch: { type: s.ground.winchType } } : {}),
+      say: (channel, text) => pendingMessages.push(channel === "system" || channel === "pilot" ? text : `${channel}: ${text.trim()}`),
+    });
+  }
+  publishLaunch();
   stepEnvironment(0);
   t0 = performance.now();
   stepsSinceT0 = 0;
@@ -145,7 +231,7 @@ function applyControls(): void {
 function publish(): void {
   const f = fdm!;
   const t = host?.tree;
-  writer!.write((n) => (n.startsWith("/") ? (t ? t.num(n) : NaN) : f.get(n)));
+  writer!.write((n) => (n.startsWith("/") ? (extras.get(n) ?? (t ? t.num(n) : NaN)) : f.get(n)));
   if (!shared) {
     const copy = (writer!.buffer as ArrayBuffer).slice(0);
     post({ type: "snapshot", buffer: copy }, [copy]);
@@ -166,11 +252,13 @@ function tick(): void {
       applyControls();
       try {
         stepEnvironment(due / rateHz);
+        stepLaunch(due / rateHz);
         host?.preStep();
         fdm.step(due);
+        publishLaunch();
         host?.update(due / rateHz);
-        const msgs = host?.drainMessages();
-        if (msgs?.length) post({ type: "messages", lines: msgs });
+        const msgs = [...(host?.drainMessages() ?? []), ...pendingMessages.splice(0)];
+        if (msgs.length) post({ type: "messages", lines: msgs });
       } catch (e) {
         paused = true;
         post({ type: "error", message: String(e instanceof Error ? e.message : e) });
@@ -242,6 +330,14 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           paused = wasPaused;
           publish();
           post({ type: "ready", names: [...layout!.names], shared: shared ? (writer!.buffer as SharedArrayBuffer) : null, trim });
+        }
+        break;
+      case "launch":
+        if (launch && env) {
+          if (msg.action === "start") launch.start({ windFromDeg: env.config.windFromDeg, windKt: env.config.windKt });
+          else if (msg.action === "release") launch.release();
+          else if (msg.action === "faster") launch.winch?.faster();
+          else launch.winch?.slower();
         }
         break;
       case "wind":

@@ -50,6 +50,9 @@ importers:
       '@webflight/fg-host':
         specifier: workspace:*
         version: link:../../packages/fg-host
+      '@webflight/launch':
+        specifier: workspace:*
+        version: link:../../packages/launch
       cesium:
         specifier: 1.147.0
         version: 1.147.0

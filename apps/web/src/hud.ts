@@ -19,6 +19,8 @@ export interface HudData {
   /** Air at the aircraft (from the worker, ~1 Hz). */
   air?: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number };
   site?: string;
+  /** Launch status line. */
+  launch?: string;
 }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, parent: HTMLElement) => {
@@ -45,6 +47,7 @@ export class Hud {
   private readonly toasts: HTMLElement;
   private readonly te: HTMLElement;
   private readonly air: HTMLElement;
+  private readonly launch: HTMLElement;
 
   constructor(root: HTMLElement) {
     const panel = el("div", "hud-panel", root);
@@ -77,12 +80,14 @@ export class Hud {
     this.toasts = el("div", "hud-toasts", root);
     this.te = el("span", "", sub);
     this.air = el("div", "hud-sub hud-air", root);
+    this.launch = el("div", "hud-sub hud-launch", root);
     this.help = el("div", "hud-help", root);
     this.help.innerHTML = `
       <b>Gamepad</b>: left stick = aileron/elevator · LT/RT or right stick = rudder · LB/RB = airbrake ·
-      d-pad ↑/↓ = trim · Start = reset · Back/Y = view · mouse drag = orbit, wheel = zoom<br>
+      d-pad ↑/↓ = trim · A = launch · B = release hook · Start = reset · Back/Y = view · mouse drag = orbit, wheel = zoom<br>
       <b>Cockpit</b> (V): click switches and canopy, mouse wheel on knobs and the airbrake lever, drag to look around<br>
-      <b>Keyboard</b>: arrows = stick · Z/X = rudder · J/K = airbrake · [ / ] = trim · R reset · V view · P pause · H hide help`;
+      <b>Keyboard</b>: arrows = stick · Z/X = rudder · J/K = airbrake · [ / ] = trim · R reset · V view · P pause · H hide help<br>
+      <b>Launch</b> (?start=winch or aerotow): L start · O open the hook · + / − winch faster/slower`;
   }
 
   /** A pilot message (FG screen.log / popupTip), shown for a few seconds. */
@@ -115,6 +120,7 @@ export class Hud {
       const sgn = (x: number) => (x >= 0 ? "+" : "") + x.toFixed(1);
       this.air.textContent = `Wind ${a.windKt > 0 ? `${a.windFromDeg.toFixed(0).padStart(3, "0")}° / ${a.windKt.toFixed(0)} kt` : "calm"} · thermal ${sgn(a.thermalLiftMs)} · ridge ${sgn(a.ridgeLiftMs)} m/s`;
     }
+    this.launch.textContent = d.launch ?? "";
     const c = d.controls;
     this.stickDot.style.left = `${50 + c.aileron * 45}%`;
     this.stickDot.style.top = `${50 + c.elevator * 45}%`;

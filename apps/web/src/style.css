@@ -34,6 +34,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1216; }
 }
 .hud-air { top: 138px; }
 .hud-air:empty { display: none; }
+.hud-launch { top: 172px; }
+.hud-launch:empty { display: none; }
 .hud-controls {
   position: absolute; bottom: 16px; left: 16px; display: flex; gap: 10px; align-items: end;
   background: var(--hud-bg); border-radius: 10px; padding: 10px; font-size: 12px;

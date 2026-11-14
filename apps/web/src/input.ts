@@ -7,10 +7,12 @@
  *   bumpers LB/RB       airbrake lever close / open (moves while held)
  *   d-pad up/down       elevator trim nose down / up
  *   Start               reset to start      Back/Y   toggle view
+ *   A                   start the launch    B        open the tow hook
  * Keyboard fallback (self-centring, rate-limited):
  *   arrows              elevator / aileron   Z / X    rudder
  *   J / K               airbrake close/open  [ / ]    trim (up/down)
  *   R reset   V view   P pause   H help
+ *   L launch  O open the tow hook  + / − winch faster/slower
  */
 import type { FgControls } from "@webflight/fdm-core";
 
@@ -19,6 +21,11 @@ export interface InputEvents {
   toggleView(): void;
   togglePause(): void;
   toggleHelp(): void;
+  /** Launch: clutch the winch / start the tow plane; open the hook; winch faster/slower. */
+  launch?(): void;
+  release?(): void;
+  winchFaster?(): void;
+  winchSlower?(): void;
 }
 
 const DEADZONE = 0.06;
@@ -54,6 +61,10 @@ export class PilotInput {
         case "KeyV": events.toggleView(); break;
         case "KeyP": events.togglePause(); break;
         case "KeyH": events.toggleHelp(); break;
+        case "KeyL": events.launch?.(); break;
+        case "KeyO": events.release?.(); break;
+        case "Equal": case "NumpadAdd": events.winchFaster?.(); break;
+        case "Minus": case "NumpadSubtract": events.winchSlower?.(); break;
       }
       if (/^Arrow/.test(e.code)) e.preventDefault();
     });
@@ -96,6 +107,8 @@ export class PilotInput {
       airbrakeRate += (pad.buttons[5]?.pressed ? 1 : 0) - (pad.buttons[4]?.pressed ? 1 : 0);
       trimRate += (pad.buttons[12]?.pressed ? 1 : 0) - (pad.buttons[13]?.pressed ? 1 : 0);
       if (pressed(9)) this.events.reset();
+      if (pressed(0)) this.events.launch?.();
+      if (pressed(1)) this.events.release?.();
       if (pressed(8) || pressed(3)) this.events.toggleView();
       pad.buttons.forEach((b, i) => this.prevButtons.set(i, b.pressed));
     }
