@@ -9,3 +9,5 @@ export { convertFgModel } from "./fgmodel.ts";
 export { defaultFgdataDir, fetchFgdataFiles, FGDATA_REF } from "./fgdata.ts";
 export { FgResolver } from "./resolve.ts";
 export type { HostConfigJson, BuildOptions } from "./bundle.ts";
+export { buildSharedModel } from "./shared-model.ts";
+export type { SharedModelManifest } from "./shared-model.ts";

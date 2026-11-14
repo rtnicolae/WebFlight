@@ -15,6 +15,7 @@ import { type GlbImage, type GlbMaterial, type GlbNode, type GlbPrimitive } from
 import { PropNode, getProp, readPropertyList, toPNode, type PNodeJson } from "./proplist.ts";
 import { FgResolver } from "./resolve.ts";
 import { pngTransparency } from "./png-alpha.ts";
+import { decodeSgi, encodePng } from "./sgi.ts";
 
 // ---------------------------------------------------------------------------------------
 // Manifest types (consumed by the web renderer)
@@ -268,14 +269,23 @@ function textureIndex(ctx: Ctx, file: string | undefined, acDir: string): number
     return undefined;
   }
   const ext = path.extname(resolved).toLowerCase();
-  const mime = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : undefined;
+  const sgi = [".rgb", ".rgba", ".sgi", ".bw", ".int", ".inta"].includes(ext);
+  const mime = ext === ".png" || sgi ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : undefined;
   if (!mime) {
     ctx.warnings.push(`texture format not supported yet (${ext}): ${file}`);
     return undefined;
   }
   let i = ctx.imageKeys.get(resolved);
   if (i === undefined) {
-    const data = new Uint8Array(fs.readFileSync(resolved));
+    let data = new Uint8Array(fs.readFileSync(resolved));
+    if (sgi) {
+      try {
+        data = encodePng(decodeSgi(data)) as Uint8Array<ArrayBuffer>;
+      } catch (e) {
+        ctx.warnings.push(`SGI texture unreadable (${String(e)}): ${file}`);
+        return undefined;
+      }
+    }
     ctx.images.push({ mimeType: mime, data });
     i = ctx.images.length - 1;
     if (mime === "image/png") {
