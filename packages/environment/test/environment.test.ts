@@ -116,3 +116,18 @@ describe("TerrariumTerrain.heightmap", () => {
     expect(Math.max(...zooms)).toBeLessThan(13);
   });
 });
+
+describe("TerrariumTerrain.heightGrid", () => {
+  it("returns a tile's own pixels (with neighbour borders) and upsamples deeper zooms", async () => {
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: async (_z, x) => terrariumPng((px, py) => (x - 499) * 1000 + px + py / 1000) });
+    const g = await t.heightGrid(10, 500, 300);
+    const pad = 258;
+    expect(g[1 * pad + 1]).toBeCloseTo(1000, 3); // pixel (0, 0)
+    expect(g[1 * pad + 256]).toBeCloseTo(1255, 3);
+    expect(g[1 * pad + 257]).toBeCloseTo(2000, 3); // east neighbour's first column
+    expect(g[1 * pad + 0]).toBeCloseTo(255, 3);
+    // Zoom 11 child (1000, 600) = north-west quarter: its pixel (1,0)'s centre lies between parent pixels 0 and 1.
+    const c = await t.heightGrid(11, 1000, 600);
+    expect(c[1 * pad + 2]).toBeCloseTo(1000.25 + 0.255 * 0.25, 3); // and a quarter pixel into the tile to the north;
+  });
+});

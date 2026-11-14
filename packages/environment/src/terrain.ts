@@ -152,15 +152,83 @@ export class TerrariumTerrain {
     const [x0, y0] = lonLatToTile(west, north, zoom);
     const [x1, y1] = lonLatToTile(east, south, zoom);
     const n = 2 ** zoom;
+    // Keep our own references: concurrent requests may evict tiles from the shared cache
+    // between loading and sampling.
+    const local = new Map<string, Float32Array | undefined>();
     const jobs: Promise<unknown>[] = [];
-    for (let x = Math.floor(x0 - 0.01); x <= Math.floor(x1 + 0.01); x++) {
-      for (let y = Math.max(0, Math.floor(y0 - 0.01)); y <= Math.min(n - 1, Math.floor(y1 + 0.01)); y++) jobs.push(this.loadTile(zoom, ((x % n) + n) % n, y));
+    for (let x = Math.floor(x0) - 1; x <= Math.floor(x1) + 1; x++) {
+      for (let y = Math.max(0, Math.floor(y0) - 1); y <= Math.min(n - 1, Math.floor(y1) + 1); y++) {
+        const tx = ((x % n) + n) % n;
+        jobs.push(this.loadTile(zoom, tx, y).then((t) => local.set(tileKey(zoom, tx, y), t)));
+      }
     }
     await Promise.all(jobs);
+    const pixel = (gx: number, gy: number): number => {
+      const tx = ((Math.floor(gx / 256) % n) + n) % n, ty = Math.min(n - 1, Math.max(0, Math.floor(gy / 256)));
+      const t = local.get(tileKey(zoom, tx, ty));
+      if (!t) return NaN;
+      return t[Math.min(255, Math.max(0, gy - ty * 256)) * 256 + (((gx % 256) + 256) % 256)]!;
+    };
     const out = new Float32Array(width * height);
+    let last = 0;
     for (let r = 0; r < height; r++) {
       const lat = north - ((north - south) * r) / (height - 1);
-      for (let c = 0; c < width; c++) out[r * width + c] = this.heightAt(lat, west + ((east - west) * c) / (width - 1), zoom) ?? 0;
+      for (let c = 0; c < width; c++) {
+        const [tx, ty] = lonLatToTile(west + ((east - west) * c) / (width - 1), lat, zoom);
+        const gx = tx * 256 - 0.5, gy = ty * 256 - 0.5;
+        const ix = Math.floor(gx), iy = Math.floor(gy), fx = gx - ix, fy = gy - iy;
+        const h = (pixel(ix, iy) * (1 - fx) + pixel(ix + 1, iy) * fx) * (1 - fy) + (pixel(ix, iy + 1) * (1 - fx) + pixel(ix + 1, iy + 1) * fx) * fy;
+        // A missing (failed) tile: repeat the last good value rather than drop to sea level.
+        out[r * width + c] = Number.isFinite(h) ? (last = h) : last;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Heights at the pixel centres of Web Mercator tile (z, x, y), with a 1-pixel border:
+   * (size + 2)² values, row 0 = north. Up to this terrain's zoom the grid is the Terrarium
+   * tile itself (plus neighbours' edges); deeper, it is upsampled bilinearly from it.
+   * Missing tiles read as 0.
+   */
+  async heightGrid(z: number, x: number, y: number, size = 256): Promise<Float32Array> {
+    const zs = Math.min(z, this.zoom);
+    const scale = 2 ** (z - zs);
+    const n = 2 ** zs;
+    // Source tile containing this tile's centre, and its 8 neighbours.
+    const sx = Math.floor(((x + 0.5) * 256) / scale / 256), sy = Math.floor(((y + 0.5) * 256) / scale / 256);
+    const tiles: (Float32Array | undefined)[] = [];
+    await Promise.all(
+      [-1, 0, 1].flatMap((dy) =>
+        [-1, 0, 1].map(async (dx) => {
+          const ty = sy + dy;
+          tiles[(dy + 1) * 3 + dx + 1] = ty < 0 || ty >= n ? undefined : await this.loadTile(zs, (((sx + dx) % n) + n) % n, ty);
+        }),
+      ),
+    );
+    const px = (gx: number, gy: number): number => {
+      const tx = Math.floor(gx / 256) - sx, ty = Math.floor(gy / 256) - sy;
+      const t = tiles[(Math.max(-1, Math.min(1, ty)) + 1) * 3 + Math.max(-1, Math.min(1, tx)) + 1];
+      if (!t) return 0;
+      const ix = Math.max(0, Math.min(255, gx - (sx + Math.max(-1, Math.min(1, tx))) * 256));
+      const iy = Math.max(0, Math.min(255, gy - (sy + Math.max(-1, Math.min(1, ty))) * 256));
+      return t[iy * 256 + ix]!;
+    };
+    const pad = size + 2;
+    const out = new Float32Array(pad * pad);
+    for (let j = 0; j < pad; j++) {
+      // Pixel centre of row j-1 of this tile, in source-zoom global pixel coordinates.
+      const gy = ((y * size + (j - 1) + 0.5) / size) * (256 / scale) - 0.5;
+      const y0 = Math.floor(gy), fy = gy - y0;
+      for (let i = 0; i < pad; i++) {
+        const gx = ((x * size + (i - 1) + 0.5) / size) * (256 / scale) - 0.5;
+        const x0 = Math.floor(gx), fx = gx - x0;
+        if (fx === 0 && fy === 0) out[j * pad + i] = px(x0, y0);
+        else {
+          const a = px(x0, y0), b = px(x0 + 1, y0), c = px(x0, y0 + 1), d = px(x0 + 1, y0 + 1);
+          out[j * pad + i] = (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+        }
+      }
     }
     return out;
   }
