@@ -35,6 +35,9 @@ importers:
       '@webflight/fg-host':
         specifier: workspace:*
         version: link:../../packages/fg-host
+      '@webflight/launch':
+        specifier: workspace:*
+        version: link:../../packages/launch
 
   apps/web:
     dependencies:
@@ -74,6 +77,15 @@ importers:
 
   packages/fg-host:
     dependencies:
+      '@webflight/fdm-core':
+        specifier: workspace:*
+        version: link:../fdm-core
+
+  packages/launch:
+    dependencies:
+      '@webflight/environment':
+        specifier: workspace:*
+        version: link:../environment
       '@webflight/fdm-core':
         specifier: workspace:*
         version: link:../fdm-core
