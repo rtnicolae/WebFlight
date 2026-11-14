@@ -58,6 +58,11 @@ export class TerrariumTerrain {
   private readonly tiles = new Map<string, Float32Array>();
   private readonly pending = new Map<string, Promise<Float32Array | undefined>>();
   private readonly failed = new Set<string>();
+  /**
+   * When frozen, heightAt() uses only tiles already loaded and never starts loads: results
+   * then can't depend on when a download finishes (deterministic training episodes).
+   */
+  frozen = false;
 
   constructor(opts: TerrainOptions = {}) {
     this.zoom = opts.zoom ?? 13;
@@ -97,7 +102,7 @@ export class TerrariumTerrain {
     const tx = ((Math.floor(gx / 256) % n) + n) % n, ty = Math.min(n - 1, Math.max(0, Math.floor(gy / 256)));
     const t = this.tiles.get(tileKey(z, tx, ty));
     if (!t) {
-      if (load) void this.loadTile(z, tx, ty);
+      if (load && !this.frozen) void this.loadTile(z, tx, ty);
       return undefined;
     }
     const px = ((gx % 256) + 256) % 256, py = Math.min(255, Math.max(0, gy - ty * 256));
@@ -121,6 +126,11 @@ export class TerrariumTerrain {
   }
 
   /** Load the tiles covering a square of ±radiusM around a position. */
+  /** Number of decoded tiles in memory. */
+  get tileCount(): number {
+    return this.tiles.size;
+  }
+
   async load(latDeg: number, lonDeg: number, radiusM = 3000, zoom = this.zoom): Promise<void> {
     const dLat = radiusM / 111_132, dLon = radiusM / (111_320 * Math.cos((latDeg * Math.PI) / 180));
     const [x0, y0] = lonLatToTile(lonDeg - dLon, latDeg + dLat, zoom);
