@@ -8,7 +8,7 @@ import { Hud } from "./hud.ts";
 import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, ThermalLayer, type Runway } from "./scene.ts";
-import { addImagery, type ImageryMode } from "./imagery.ts";
+import { addImagery, highResPhotoAt, type ImageryMode } from "./imagery.ts";
 import { sunPosition } from "./sun.ts";
 import { showMenu } from "./menu.ts";
 import { Scenery } from "./scenery.ts";
@@ -133,9 +133,10 @@ async function main(): Promise<void> {
   if (WORLD.terrain === "terrarium") renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
   const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, ...(renderTerrain ? { terrain: renderTerrain } : {}) });
   const sun = sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg);
-  // Photos show the real runway; otherwise draw ours.
+  // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
+  // 30 m strip is a smudge) draw ours.
   const imageryReady = addImagery(viewer, SITE === "flat" && IMAGERY === "photo" ? "grid" : IMAGERY, sun).then((mode) => {
-    if (mode !== "photo" || params.get("runway") === "1") addRunway(viewer, RUNWAY);
+    if (mode !== "photo" || !highResPhotoAt(RUNWAY.latDeg, RUNWAY.lonDeg) || params.get("runway") === "1") addRunway(viewer, RUNWAY);
     return mode;
   });
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg));

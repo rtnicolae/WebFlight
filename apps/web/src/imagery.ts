@@ -6,7 +6,7 @@
  *    fallback when the photo servers can't be reached.
  *  - "grid" / "osm": the old debug looks.
  */
-import { Credit, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
+import { Cartographic, Credit, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
 import { sunFrom, type Sun } from "./paint/landcover.ts";
 import type { PaintRequest } from "./paint/paint-worker.ts";
 
@@ -24,6 +24,12 @@ const AUSTRIA_RECT = Rectangle.fromDegrees(9.4, 46.3, 17.3, 49.1);
 const SWISS_RECT = Rectangle.fromDegrees(5.8, 45.75, 10.6, 47.9);
 
 /** SWISSIMAGE aerial photos (Switzerland). */
+/** Whether the photo layers have sub-metre orthophotos here (else Sentinel-2's 10 m pixels). */
+export function highResPhotoAt(latDeg: number, lonDeg: number): boolean {
+  const c = Cartographic.fromDegrees(lonDeg, latDeg);
+  return [SWISS_RECT, FRANCE_RECT, AUSTRIA_RECT].some((r) => Rectangle.contains(r, c));
+}
+
 export function swissImageProvider(): UrlTemplateImageryProvider {
   return new UrlTemplateImageryProvider({ url: SWISSIMAGE, rectangle: SWISS_RECT, minimumLevel: 8, maximumLevel: 20, credit: new Credit('© <a href="https://www.swisstopo.admin.ch">swisstopo</a> SWISSIMAGE') });
 }
