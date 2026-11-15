@@ -159,12 +159,20 @@ export class Scenery {
 
   private started = false;
 
-  private loadWater(z: number, x: number, y: number, kinds: (k: string) => boolean): void {
+  private loadWater(z: number, x: number, y: number, kinds: (k: string) => boolean, minAreaM2: number): void {
     const key = `${z}/${x}/${y}`;
     if (this.waterTiles.has(key)) return;
     this.waterTiles.set(key, null);
     void fetchWater(z, x, y, kinds, this.water!.url)
-      .then((polys) => {
+      .then((all) => {
+        // Ground-clamped polygons are expensive: a Dutch tile holds thousands of ditches.
+        // Keep the bodies big enough to see, largest first, at most 120 per tile.
+        const polys = all
+          .map((p) => ({ p, a: areaM2(p.rings[0]!) }))
+          .filter((e) => e.a >= minAreaM2)
+          .sort((a, b) => b.a - a.a)
+          .slice(0, 120)
+          .map((e) => e.p);
         if (!polys.length || !this.waterTiles.has(key)) return;
         const prim = this.viewer.scene.primitives.add(
           new GroundPrimitive({
@@ -188,13 +196,13 @@ export class Scenery {
     this.osm?.update(latDeg, lonDeg);
     if (!this.o.water || !this.started || !this.water) return;
     if (!this.water.global && !inSwitzerland(latDeg, lonDeg)) return;
-    const ring = (z: number, r: number, keep: number, kinds: (k: string) => boolean) => {
+    const ring = (z: number, r: number, keep: number, kinds: (k: string) => boolean, minAreaM2: number) => {
       const [fx, fy] = lonLatToTile(lonDeg, latDeg, z);
       const cx = Math.floor(fx), cy = Math.floor(fy);
       const key = `${cx}/${cy}`;
       if (this.centres[z] === key) return;
       this.centres[z] = key;
-      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) this.loadWater(z, cx + dx, cy + dy, kinds);
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) this.loadWater(z, cx + dx, cy + dy, kinds, minAreaM2);
       for (const [k, prim] of this.waterTiles) {
         const [tz, x, y] = k.split("/").map(Number) as [number, number, number];
         if (tz === z && (Math.abs(x - cx) > keep || Math.abs(y - cy) > keep)) {
@@ -204,9 +212,17 @@ export class Scenery {
       }
     };
     const big = (k: string) => k === "lake" || k === "river" || k === "ocean";
-    ring(11, 2, 3, big);
-    ring(14, 1, 3, (k) => !big(k));
+    ring(11, 2, 3, big, 20_000);
+    ring(14, 1, 3, (k) => !big(k), 1500);
   }
+}
+
+/** Area of a closed [lon, lat] ring [m²] (local equirectangular). */
+function areaM2(r: [number, number][]): number {
+  const k = 111_320 * Math.cos(((r[0]?.[1] ?? 0) * Math.PI) / 180);
+  let a = 0;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j]![0] - r[i]![0]) * k * (r[j]![1] + r[i]![1]) * 111_132;
+  return Math.abs(a / 2);
 }
 
 function hierarchy(p: WaterPolygon): PolygonHierarchy {
