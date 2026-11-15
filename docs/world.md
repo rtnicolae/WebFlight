@@ -68,11 +68,12 @@ Where no free orthophotos exist, the only photo layer is Sentinel-2 (10 m pixels
 from a glider at circuit height. A detail imagery layer (zoom 15–18, `detail/`) composes each
 tile in workers:
 
-1. the Sentinel-2 colours, upsampled and levelled;
-2. detail synthesized from them (`synth.ts`), anchored to world coordinates so tiles join and
-   every visit looks the same: strip fields with crop tones, furrows and grassy margins
-   (the Eastern European pattern), forest canopy with sun shadows, grass grain, paved yards
-   around buildings;
+1. the Sentinel-2 image, upsampled edge-aware (each pixel snapped toward the nearer of the
+   two dominant colours of its 10 m neighbourhood, so real field edges, forest margins and
+   roads become crisp where the data puts them) and levelled;
+2. fine texture a 10 m pixel can't carry (`synth.ts`, world-anchored): crop grain, forest
+   canopy with sun shadows, grass, paved yards around buildings. Nothing is invented at the
+   scale of fields (an earlier version drew made-up strip fields; they fought the real layout);
 3. OpenStreetMap drawn crisp on top: water and waterways, roads (asphalt or dirt from the
    surface tag), railways, rooftops with shadows, runways (surface from OSM, else the
    matching OurAirports runway, else the satellite colour).
@@ -81,10 +82,6 @@ It is purely visual; the simulation never reads it. `?detail=0` turns it off;
 `detail-preview.html?lat=…&lon=…&z=16` renders tiles for tuning. In Romania, ANCPI's
 orthophotos are layered on top when the geoportal answers (it is discovered at runtime; it
 did not answer from outside Romania).
-
-Sentinel-2 alone (left) and with synthesized detail (right), near Ghimbav, zoom 16:
-
-![Before and after](img/detail-before-after.jpg)
 
 From the glider at 220 m:
 

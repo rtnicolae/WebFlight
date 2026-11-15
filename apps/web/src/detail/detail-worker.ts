@@ -254,7 +254,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       }
       const width = cls === "runway" ? 30 : 12;
       if (grass) {
-        ctx.strokeStyle = "rgba(160, 186, 108, 0.4)";
+        ctx.strokeStyle = "rgba(128, 148, 96, 0.22)"; // mown: a shade lighter, not a painted band
         ctx.lineWidth = w(width);
         ctx.stroke();
       } else {
