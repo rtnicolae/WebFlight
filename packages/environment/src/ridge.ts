@@ -67,3 +67,40 @@ export class RidgeLift {
     return this.strengthFps;
   }
 }
+
+/**
+ * The best windward face near a point for a ridge-soaring start: on a grid around it, the
+ * crest whose ground rises most steeply out of the wind (250 m and 750 m upwind) and stands
+ * highest above the terrain 2 km upwind. Returns a spot on the face 150 m upwind of the
+ * crest and the heading along the ridge (wind 90° to the right), or undefined on flat land.
+ */
+export function findRidgeStart(
+  groundAt: (latDeg: number, lonDeg: number) => number | undefined,
+  latDeg: number,
+  lonDeg: number,
+  windFromDeg: number,
+  radiusM = 15_000,
+  stepM = 500,
+): { latDeg: number; lonDeg: number; headingDeg: number; crestM: number; score: number } | undefined {
+  let best: { lat: number; lon: number; score: number; crest: number } | undefined;
+  const n = Math.floor(radiusM / stepM);
+  for (let i = -n; i <= n; i++)
+    for (let j = -n; j <= n; j++) {
+      if (i * i + j * j > n * n) continue;
+      const [la, lo] = advance(...advance(latDeg, lonDeg, 0, i * stepM), 90, j * stepM);
+      const h = groundAt(la, lo);
+      const h250 = groundAt(...advance(la, lo, windFromDeg, 250));
+      const h750 = groundAt(...advance(la, lo, windFromDeg, 750));
+      const h2000 = groundAt(...advance(la, lo, windFromDeg, 2000));
+      const lee = groundAt(...advance(la, lo, windFromDeg + 180, 300));
+      if (h === undefined || h250 === undefined || h750 === undefined || h2000 === undefined || lee === undefined) continue;
+      const slope = Math.min((h - h250) / 250, (h - h750) / 750);
+      const rise = h - h2000;
+      if (slope < 0.12 || rise < 100 || lee > h + 30) continue; // not a face, or not the crest
+      const score = slope * Math.min(rise, 800);
+      if (!best || score > best.score) best = { lat: la, lon: lo, score, crest: h };
+    }
+  if (!best) return undefined;
+  const [sl, so] = advance(best.lat, best.lon, windFromDeg, 150);
+  return { latDeg: sl, lonDeg: so, headingDeg: (windFromDeg + 90) % 360, crestM: best.crest, score: best.score };
+}

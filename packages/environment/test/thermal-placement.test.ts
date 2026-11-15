@@ -67,3 +67,16 @@ describe("thermal placement from terrain and sun", () => {
     expect(again.thermals.map((t) => [t.id, t.spec.latDeg])).toEqual(ids);
   });
 });
+
+import { findRidgeStart } from "../src/index.ts";
+describe("ridge start", () => {
+  it("finds the windward face of a ridge and flies along it", () => {
+    // Wind from the south onto the east–west ridge at 45.70°N.
+    const r = findRidgeStart((lat) => ridge(lat), 45.65, 25.5, 180)!;
+    expect(r).toBeDefined();
+    expect(r.latDeg).toBeLessThan(45.7);
+    expect(r.latDeg).toBeGreaterThan(45.7 - 1500 / M_LAT);
+    expect(r.headingDeg).toBe(270);
+    expect(findRidgeStart(() => 500, 45.65, 25.5, 180)).toBeUndefined();
+  });
+});

@@ -211,16 +211,62 @@ export function estimateWeather(latDeg: number, lonDeg: number, when: Date, elev
   };
 }
 
-/** Live weather, or the estimate if Open-Meteo can't be reached within `timeoutMs`. */
-export async function fetchWeather(latDeg: number, lonDeg: number, when: Date, timeoutMs = 8000): Promise<Weather> {
+/** Live weather nearest a time, or the estimate if Open-Meteo can't be reached. */
+export async function fetchWeather(latDeg: number, lonDeg: number, when: Date): Promise<Weather> {
+  return (await weatherFor(latDeg, lonDeg, { kind: "now" }, 0, when)).weather;
+}
+
+/**
+ * When to fly: now (live), a local time today (live forecast), or a typical summer day
+ * (the deterministic estimate on 15 July at that local time).
+ */
+export type WhenSpec = { kind: "now" } | { kind: "today"; hm: string } | { kind: "summer"; hm: string };
+
+export function parseWhen(s: string | null | undefined): WhenSpec {
+  const presets: Record<string, string> = { morning: "10:00", noon: "13:00", afternoon: "15:30", evening: "19:00" };
+  if (!s || s === "now") return { kind: "now" };
+  const [kind, v = "afternoon"] = s.includes(":") && !/^\d/.test(s) ? [s.slice(0, s.indexOf(":")), s.slice(s.indexOf(":") + 1)] : ["today", s];
+  const hm = presets[v] ?? (/^\d{1,2}:\d{2}$/.test(v) ? v : "15:30");
+  return kind === "summer" ? { kind: "summer", hm } : { kind: "today", hm };
+}
+
+const atLocal = (y: number, mo: number, d: number, hm: string, offsetH: number) => {
+  const [h, m] = hm.split(":").map(Number) as [number, number];
+  return new Date(Date.UTC(y, mo, d, h, m) - offsetH * 3600_000);
+};
+
+/** The weather and the sim time for a place and a WhenSpec. */
+export async function weatherFor(latDeg: number, lonDeg: number, when: WhenSpec, elevationM = 0, now = new Date()): Promise<{ weather: Weather; time: Date }> {
+  if (when.kind === "summer") {
+    const time = atLocal(now.getUTCFullYear(), 6, 15, when.hm, Math.round(lonDeg / 15) + 1);
+    return { weather: estimateWeather(latDeg, lonDeg, time, elevationM), time };
+  }
+  let json: OpenMeteoResponse | undefined;
   try {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    const timer = setTimeout(() => ctl.abort(), 8000);
     const r = await fetch(openMeteoUrl(latDeg, lonDeg), { signal: ctl.signal });
     clearTimeout(timer);
-    if (!r.ok) throw new Error(`open-meteo ${r.status}`);
-    return parseOpenMeteo((await r.json()) as OpenMeteoResponse, latDeg, lonDeg, when);
-  } catch {
-    return estimateWeather(latDeg, lonDeg, when);
+    if (r.ok) json = (await r.json()) as OpenMeteoResponse;
+  } catch {}
+  const offsetH = json?.utc_offset_seconds !== undefined ? json.utc_offset_seconds / 3600 : Math.round(lonDeg / 15);
+  let time = now;
+  if (when.kind === "today") {
+    const local = new Date(now.getTime() + offsetH * 3600_000);
+    time = atLocal(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), when.hm, offsetH);
   }
+  if (json) {
+    try {
+      return { weather: parseOpenMeteo(json, latDeg, lonDeg, time), time };
+    } catch {}
+  }
+  return { weather: { ...estimateWeather(latDeg, lonDeg, time, elevationM), utcOffsetH: offsetH }, time };
+}
+
+/** One line for the HUD / menu: source, wind, cloud base or blue, thermal strength. */
+export function describeWeather(w: Weather): string {
+  const s = soaringFrom(w);
+  const wind = w.windKt < 1 ? "calm" : `${String(Math.round(w.windFromDeg / 10) * 10).padStart(3, "0")}° ${Math.round(w.windKt)} kt`;
+  const sky = s.wStarMs < 0.5 ? "no thermals" : `${s.cumulus ? `Cu base ${Math.round((w.elevationM + s.cloudBaseAglM) / 50) * 50} m` : `blue to ${Math.round((w.elevationM + s.thermalTopAglM) / 50) * 50} m`} · w* ${s.wStarMs.toFixed(1)} m/s`;
+  return `${w.source === "live" ? "Live" : "Estimated"}: ${wind} · ${Math.round(w.tempC)}°C · ${sky}`;
 }
