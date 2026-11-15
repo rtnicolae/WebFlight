@@ -6,7 +6,7 @@
  */
 import { RidgeLift } from "./ridge.ts";
 import type { TerrariumTerrain } from "./terrain.ts";
-import { ThermalField, type ThermalFieldOptions, type WindProfile } from "./thermals.ts";
+import { ThermalField, ThermalSky, type ThermalFieldOptions, type ThermalSkyOptions, type WindProfile } from "./thermals.ts";
 
 const KT_TO_FPS = 1.6878099;
 const FT_TO_M = 0.3048;
@@ -20,6 +20,8 @@ export interface EnvironmentConfig {
   aloftKt?: number;
   ridgeLift?: boolean;
   thermals?: Omit<ThermalFieldOptions, "groundAt"> | false;
+  /** Thermals everywhere, streamed around the aircraft (cross-country); replaces `thermals`. */
+  thermalSky?: Omit<ThermalSkyOptions, "groundAt"> | false;
 }
 
 export interface AircraftState {
@@ -42,7 +44,7 @@ export interface EnvironmentOutput {
 
 export class Environment {
   readonly ridge: RidgeLift | undefined;
-  readonly thermals: ThermalField | undefined;
+  readonly thermals: ThermalField | ThermalSky | undefined;
   private lastGroundFt = 0;
 
   constructor(
@@ -51,7 +53,8 @@ export class Environment {
   ) {
     const height = (lat: number, lon: number) => terrain?.heightAt(lat, lon) ?? (terrain ? undefined : 0);
     if (config.ridgeLift ?? true) this.ridge = new RidgeLift(height);
-    if (config.thermals) this.thermals = new ThermalField({ ...config.thermals, groundAt: height });
+    if (config.thermalSky) this.thermals = new ThermalSky({ ...config.thermalSky, groundAt: height });
+    else if (config.thermals) this.thermals = new ThermalField({ ...config.thermals, groundAt: height });
   }
 
   get wind(): WindProfile {

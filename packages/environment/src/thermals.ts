@@ -59,6 +59,8 @@ export class Thermal {
   sliceLonDeg: number;
   private readonly rUpFrac = 0.9;
   private groundTimer = Infinity;
+  /** Stable identifier (e.g. for the cloud drawn over it). */
+  id = "";
 
   constructor(
     readonly spec: ThermalSpec,
@@ -216,6 +218,110 @@ export class ThermalField {
         strength = t.strength;
       }
     }
+    this.strengthFps = strength;
+    return strength;
+  }
+}
+
+export interface ThermalSkyOptions {
+  seed: number;
+  /** Cell size [m]: thermals are generated per cell, on demand. */
+  cellM?: number;
+  /** Thermals per cell: 1 + floor(rand · spread). */
+  perCellSpread?: number;
+  /** Cells within this many cells of the aircraft are alive (others are dropped). */
+  radiusCells?: number;
+  cloudBaseM?: number;
+  strengthMs?: [number, number];
+  diameterM?: [number, number];
+  groundAt?: (latDeg: number, lonDeg: number) => number | undefined;
+}
+
+const SKY_M_LAT = 111_132;
+const SKY_M_LON = 111_320 * Math.cos((47 * Math.PI) / 180);
+
+/**
+ * Thermals everywhere, for cross-country flight: the sky is cut into cells (degrees scaled to
+ * metres at a fixed 47° reference), each holding a few FG thermals seeded from (seed, cell),
+ * created when the aircraft comes within `radiusCells` and dropped well behind it. The same
+ * seed always puts the same thermals in the same places; their life cycles start when their
+ * cell first comes alive. As in FGAIManager, the nearest thermal decides the lift.
+ */
+export class ThermalSky {
+  private readonly cells = new Map<string, Thermal[]>();
+  /** FGAIManager: lift of the nearest thermal [ft/s]. */
+  strengthFps = 0;
+  private readonly o: Required<Omit<ThermalSkyOptions, "groundAt">> & Pick<ThermalSkyOptions, "groundAt">;
+
+  constructor(o: ThermalSkyOptions) {
+    this.o = { cellM: 6000, perCellSpread: 3, radiusCells: 3, cloudBaseM: 1800, strengthMs: [1.0, 3.0], diameterM: [300, 700], ...o };
+  }
+
+  /** The thermals of one cell, generated deterministically (fresh life cycles). */
+  cellThermals(cx: number, cy: number): Thermal[] {
+    const o = this.o;
+    const h = (Math.imul(cx | 0, 0x27d4eb2d) ^ Math.imul(cy | 0, 0x165667b1) ^ Math.imul(o.seed | 0, 0x9e3779b9)) >>> 0;
+    const rand = mulberry32(h);
+    const n = 1 + Math.floor(rand() * o.perCellSpread);
+    const [smin, smax] = o.strengthMs, [dmin, dmax] = o.diameterM;
+    const out: Thermal[] = [];
+    for (let k = 0; k < n; k++) {
+      const lat = ((cy + rand()) * o.cellM) / SKY_M_LAT;
+      const lon = ((cx + rand()) * o.cellM) / SKY_M_LON;
+      const ground = o.groundAt?.(lat, lon) ?? 0;
+      const t = new Thermal(
+        {
+          latDeg: lat,
+          lonDeg: lon,
+          heightMslFt: Math.max(o.cloudBaseM, ground + 600) / FT_TO_M,
+          strengthFps: (smin + rand() * (smax - smin)) / FT_TO_M,
+          diameterFt: (dmin + rand() * (dmax - dmin)) / FT_TO_M,
+          groundElevFt: ground / FT_TO_M,
+        },
+        rand,
+        o.groundAt ? { at: o.groundAt, cloudBaseM: o.cloudBaseM } : undefined,
+      );
+      t.id = `${cx}:${cy}:${k}`;
+      out.push(t);
+    }
+    return out;
+  }
+
+  /** Fresh thermals of all cells within `radiusM` of a point (e.g. to choose a start). */
+  thermalsAround(latDeg: number, lonDeg: number, radiusM: number): Thermal[] {
+    const c = this.o.cellM, r = Math.ceil(radiusM / c);
+    const cx = Math.floor((lonDeg * SKY_M_LON) / c), cy = Math.floor((latDeg * SKY_M_LAT) / c);
+    const out: Thermal[] = [];
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) out.push(...this.cellThermals(cx + dx, cy + dy));
+    return out.filter((t) => distanceM(t.spec.latDeg, t.spec.lonDeg, latDeg, lonDeg) <= radiusM);
+  }
+
+  /** Thermals currently alive (around the aircraft). */
+  get thermals(): Thermal[] {
+    return [...this.cells.values()].flat();
+  }
+
+  update(dt: number, user: UserState, wind: WindProfile): number {
+    const o = this.o, c = o.cellM, r = o.radiusCells;
+    const cx = Math.floor((user.lonDeg * SKY_M_LON) / c), cy = Math.floor((user.latDeg * SKY_M_LAT) / c);
+    for (let dy = -r; dy <= r; dy++)
+      for (let dx = -r; dx <= r; dx++) {
+        const key = `${cx + dx}:${cy + dy}`;
+        if (!this.cells.has(key)) this.cells.set(key, this.cellThermals(cx + dx, cy + dy));
+      }
+    for (const key of this.cells.keys()) {
+      const [x, y] = key.split(":").map(Number) as [number, number];
+      if (Math.abs(x - cx) > r + 2 || Math.abs(y - cy) > r + 2) this.cells.delete(key);
+    }
+    let nearest = Infinity, strength = 0;
+    for (const ts of this.cells.values())
+      for (const t of ts) {
+        t.run(dt, user, wind);
+        if (t.range < nearest) {
+          nearest = t.range;
+          strength = t.strength;
+        }
+      }
     this.strengthFps = strength;
     return strength;
   }

@@ -1,6 +1,6 @@
 import zlib from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { advance, Environment, RidgeLift, strengthFactor, TerrariumTerrain, Thermal, ThermalField, tileToLonLat } from "../src/index.ts";
+import { advance, Environment, RidgeLift, strengthFactor, TerrariumTerrain, Thermal, ThermalField, ThermalSky, tileToLonLat } from "../src/index.ts";
 
 /** Terrarium PNG (RGB) for a height function of pixel coordinates. */
 function terrariumPng(h: (px: number, py: number) => number): Uint8Array {
@@ -142,5 +142,35 @@ describe("TerrariumTerrain.mercatorHeightmap", () => {
       const [lon, lat] = tileToLonLat(1000 + c / (n - 1), 600 + r / (n - 1), 11);
       expect(g[r * n + c]).toBeCloseTo(t.heightAt(lat, lon, 10)!, 1);
     }
+  });
+});
+
+describe("ThermalSky (cross-country)", () => {
+  const wind = { groundFromDeg: 0, groundKt: 0, aloftFromDeg: 0, aloftKt: 0 };
+  it("generates the same thermals per cell from a seed, around wherever the aircraft is", () => {
+    const a = new ThermalSky({ seed: 5 }), b = new ThermalSky({ seed: 5 }), c = new ThermalSky({ seed: 6 });
+    const pos = (s: ThermalSky) => s.thermalsAround(47.2, 7.4, 10_000).map((t) => [t.id, t.spec.latDeg, t.spec.lonDeg]);
+    expect(pos(a)).toEqual(pos(b));
+    expect(pos(a)).not.toEqual(pos(c));
+    expect(pos(a).length).toBeGreaterThan(5);
+  });
+
+  it("streams cells along a flight and drops the ones left behind", () => {
+    const sky = new ThermalSky({ seed: 1, radiusCells: 2 });
+    sky.update(1, { latDeg: 47.2, lonDeg: 7.4, altFt: 5000 }, wind);
+    const first = new Set(sky.thermals.map((t) => t.id));
+    expect(first.size).toBeGreaterThan(10);
+    // Fly 100 km east: new cells, old ones gone, lift still computed.
+    for (let k = 1; k <= 100; k++) sky.update(1, { latDeg: 47.2, lonDeg: 7.4 + (k * 1000) / 75_900, altFt: 5000 }, wind);
+    const now = sky.thermals.map((t) => t.id);
+    expect(now.some((id) => first.has(id))).toBe(false);
+    expect(now.length).toBeGreaterThan(10);
+    expect(Number.isFinite(sky.strengthFps)).toBe(true);
+    // A cell's thermals are the same when generated again.
+    const id = now[0]!;
+    const [cx, cy, k] = id.split(":").map(Number) as [number, number, number];
+    const again = sky.cellThermals(cx, cy)[k]!;
+    const live = sky.thermals.find((t) => t.id === id)!;
+    expect([again.spec.latDeg, again.spec.lonDeg]).toEqual([live.spec.latDeg, live.spec.lonDeg]);
   });
 });
