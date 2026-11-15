@@ -131,3 +131,16 @@ describe("TerrariumTerrain.heightGrid", () => {
     expect(c[1 * pad + 2]).toBeCloseTo(1000.25 + 0.255 * 0.25, 3); // and a quarter pixel into the tile to the north;
   });
 });
+
+describe("TerrariumTerrain.mercatorHeightmap", () => {
+  it("samples tile edges evenly in Mercator and agrees with heightAt", async () => {
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: async (_z, x, y) => terrariumPng((px, py) => (x - 499) * 300 + (y - 299) * 50 + px + py * 0.5) });
+    const n = 65;
+    const g = await t.mercatorHeightmap(11, 1000, 600, n);
+    await t.load(...(() => { const [lon, lat] = tileToLonLat(500.25, 300.25, 10); return [lat, lon, 20000] as [number, number, number]; })());
+    for (const [r, c] of [[0, 0], [32, 32], [64, 64], [10, 50]] as const) {
+      const [lon, lat] = tileToLonLat(1000 + c / (n - 1), 600 + r / (n - 1), 11);
+      expect(g[r * n + c]).toBeCloseTo(t.heightAt(lat, lon, 10)!, 1);
+    }
+  });
+});

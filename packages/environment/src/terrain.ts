@@ -233,6 +233,47 @@ export class TerrariumTerrain {
     return out;
   }
 
+  /**
+   * An n×n heightmap over Web Mercator tile (z, x, y), samples on the tile's edges and
+   * evenly spaced in Mercator (row 0 north): Cesium's heightmap layout for a Web Mercator
+   * tiling scheme, so neighbouring tiles share their edge samples. Bilinear between the
+   * Terrarium pixel centres at min(z, this.zoom).
+   */
+  async mercatorHeightmap(z: number, x: number, y: number, n: number): Promise<Float32Array> {
+    const zs = Math.min(z, this.zoom);
+    const scale = 2 ** (z - zs);
+    const nt = 2 ** zs;
+    const sx = Math.floor(x / scale), sy = Math.floor(y / scale);
+    const tiles: (Float32Array | undefined)[] = [];
+    await Promise.all(
+      [-1, 0, 1].flatMap((dy) =>
+        [-1, 0, 1].map(async (dx) => {
+          const ty = sy + dy;
+          tiles[(dy + 1) * 3 + dx + 1] = ty < 0 || ty >= nt ? undefined : await this.loadTile(zs, (((sx + dx) % nt) + nt) % nt, ty);
+        }),
+      ),
+    );
+    const centre = tiles[4];
+    const px = (gx: number, gy: number): number => {
+      const dx = Math.max(-1, Math.min(1, Math.floor(gx / 256) - sx)), dy = Math.max(-1, Math.min(1, Math.floor(gy / 256) - sy));
+      const t = tiles[(dy + 1) * 3 + dx + 1] ?? centre;
+      if (!t) return 0;
+      const ix = Math.max(0, Math.min(255, gx - (sx + dx) * 256)), iy = Math.max(0, Math.min(255, gy - (sy + dy) * 256));
+      return t[iy * 256 + ix]!;
+    };
+    const out = new Float32Array(n * n);
+    for (let r = 0; r < n; r++) {
+      const gy = ((y + r / (n - 1)) * 256) / scale - 0.5;
+      const y0 = Math.floor(gy), fy = gy - y0;
+      for (let c = 0; c < n; c++) {
+        const gx = ((x + c / (n - 1)) * 256) / scale - 0.5;
+        const x0 = Math.floor(gx), fx = gx - x0;
+        out[r * n + c] = (px(x0, y0) * (1 - fx) + px(x0 + 1, y0) * fx) * (1 - fy) + (px(x0, y0 + 1) * (1 - fx) + px(x0 + 1, y0 + 1) * fx) * fy;
+      }
+    }
+    return out;
+  }
+
   /** Height after loading what it needs. */
   async heightAtAsync(latDeg: number, lonDeg: number, zoom = this.zoom): Promise<number> {
     await this.load(latDeg, lonDeg, 50, zoom);

@@ -7,7 +7,7 @@ import {
   type CumulusCloud,
   CustomHeightmapTerrainProvider,
   EllipsoidTerrainProvider,
-  GeographicTilingScheme,
+  WebMercatorTilingScheme,
   JulianDate,
   ShadowMode,
   Viewer,
@@ -128,21 +128,19 @@ export function addRunway(viewer: Viewer, r: Runway): void {
 }
 
 /**
- * Cesium terrain from the same Terrarium tiles and decoder the FDM worker uses (geographic
- * tiling, 65×65 samples per tile; at level 14+ the samples come from zoom 13, as physics).
+ * Cesium terrain from the same Terrarium tiles and decoder the FDM uses, in the Web Mercator
+ * tiling of the tiles themselves (and of all our imagery, so nothing is reprojected): tile
+ * (z, x, y) samples Terrarium zoom min(z, 13) on a 65×65 edge-aligned grid. From level 15
+ * the grid is finer than the 13 m Terrarium pixels, so near the glider the drawn ground is
+ * the physics ground.
  */
 export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProvider {
-  const tiling = new GeographicTilingScheme();
-  const deg = 180 / Math.PI;
   return new CustomHeightmapTerrainProvider({
     width: 65,
     height: 65,
-    tilingScheme: tiling,
+    tilingScheme: new WebMercatorTilingScheme(),
     credit: "Terrain Tiles © Mapzen and others (SRTM, GMTED2010, ETOPO1, …)",
-    callback: (x, y, level) => {
-      const r = tiling.tileXYToRectangle(x, y, level);
-      return terrain.heightmap(r.west * deg, r.south * deg, r.east * deg, r.north * deg, 65, 65);
-    },
+    callback: (x, y, level) => terrain.mercatorHeightmap(level, x, y, 65),
   });
 }
 

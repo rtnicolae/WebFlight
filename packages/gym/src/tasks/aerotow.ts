@@ -45,7 +45,7 @@ export class AerotowTask implements Task {
   readonly action: BoxSpec = { names: [...BASE_ACTION.names, "release"], low: [...BASE_ACTION.low, 0], high: [...BASE_ACTION.high, 1] };
   readonly maxSeconds = 600;
   readonly terrainRadiusM = 15000;
-  readonly runway = new RunwayFrame(GRENCHEN, GRENCHEN.headingDeg, 1000, 30);
+  readonly runway = new RunwayFrame(GRENCHEN, GRENCHEN.headingDeg, 1000, 23);
   readonly site = GRENCHEN;
 
   private st(ep: Episode): TowState {

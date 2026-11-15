@@ -108,6 +108,8 @@ importers:
         specifier: workspace:*
         version: link:../fdm-core
 
+  packages/scenery: {}
+
 packages:
 
   '@0x62/jsbsim-wasm@1.2.4-beta.4':

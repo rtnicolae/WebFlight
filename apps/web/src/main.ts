@@ -36,7 +36,7 @@ const LAUNCH = START_KIND === "winch" || START_KIND === "aerotow" ? START_KIND :
 const RUNWAY: Runway =
   SITE === "flat"
     ? { latDeg: FLAT_TEST.latDeg, lonDeg: FLAT_TEST.lonDeg, headingDeg: 0, lengthM: 800, widthM: 40, paved: false }
-    : { latDeg: GRENCHEN.latDeg, lonDeg: GRENCHEN.lonDeg, headingDeg: GRENCHEN.headingDeg, lengthM: 1000, widthM: 30, paved: true };
+    : { latDeg: GRENCHEN.latDeg, lonDeg: GRENCHEN.lonDeg, headingDeg: GRENCHEN.headingDeg, lengthM: 1000, widthM: 23, paved: true };
 
 function parseWind(): { fromDeg: number; kt: number } {
   const m = /^(\d+(?:\.\d+)?)@(\d+(?:\.\d+)?)$/.exec(params.get("wind") ?? "");
@@ -121,12 +121,12 @@ async function main(): Promise<void> {
   const manifest = (await res.json()) as BundleManifestCore;
 
   // The renderer draws the same Terrarium heights the worker flies on.
-  if (WORLD.terrain === "terrarium") renderTerrain = new TerrariumTerrain({ zoom: 13 });
+  if (WORLD.terrain === "terrarium") renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
   const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, ...(renderTerrain ? { terrain: renderTerrain } : {}) });
   const sun = sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg);
   // Photos show the real runway; otherwise draw ours.
   void addImagery(viewer, SITE === "flat" && IMAGERY === "photo" ? "grid" : IMAGERY, sun).then((mode) => {
-    if (mode !== "photo") addRunway(viewer, RUNWAY);
+    if (mode !== "photo" || params.get("runway") === "1") addRunway(viewer, RUNWAY);
   });
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1");
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
@@ -200,6 +200,12 @@ async function main(): Promise<void> {
     worker.onerror = (e) => reject(new Error(e.message));
   });
 
+  // Warm the renderer's terrain around the start at the zooms Cesium will ask for first, in
+  // parallel, so its level-by-level refinement doesn't wait on one download per level.
+  const start = await startState();
+  const warm = renderTerrain
+    ? Promise.all([[13, 5000], [12, 9000], [11, 16000], [10, 30000], [9, 60000], [8, 120000]].map(([z, r]) => renderTerrain!.load(start.latDeg, start.lonDeg, r!, z!))).catch(() => {})
+    : Promise.resolve();
   setStatus("Starting flight model…");
   send({
     type: "init",
@@ -209,13 +215,13 @@ async function main(): Promise<void> {
     rateHz: 120,
     // FG properties for the animations plus what the HUD shows.
     extraProperties: [...aircraft.snapshotProperties, "fcs/speedbrake-pos-norm", "/controls/flight/elevator-trim", "/instrumentation/ilec-sc7/te-reading-mps", ...(LAUNCH ? LAUNCH_PROPERTIES : [])],
-    start: await startState(),
+    start,
     world: WORLD,
     loadout: LOADOUT,
     allowShared: params.get("nosab") !== "1",
   });
   setStatus("Loading 3D model…");
-  await Promise.all([ready, aircraft.load(viewer.scene), launchView?.load().catch((e: unknown) => console.warn("launch models:", e))]);
+  await Promise.all([ready, warm, aircraft.load(viewer.scene), launchView?.load().catch((e: unknown) => console.warn("launch models:", e))]);
   status.hidden = true;
   const interaction = new CockpitInteraction(viewer, aircraft, send, cam);
   if (aircraft.texMissing.length) console.warn("texture animations without readers:", aircraft.texMissing);

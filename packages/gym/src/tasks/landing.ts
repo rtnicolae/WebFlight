@@ -45,7 +45,7 @@ export class LandingTask implements Task {
   readonly action = BASE_ACTION;
   readonly maxSeconds = 300;
   readonly terrainRadiusM = 7000;
-  readonly runway = new RunwayFrame(GRENCHEN, GRENCHEN.headingDeg, 1000, 30);
+  readonly runway = new RunwayFrame(GRENCHEN, GRENCHEN.headingDeg, 1000, 23);
   readonly site = GRENCHEN;
 
   private st(ep: Episode): LandingState {
