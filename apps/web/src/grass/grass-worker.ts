@@ -110,7 +110,13 @@ async function build(q: GrassRequest): Promise<GrassResult> {
     return [(X / n) * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - (2 * Y) / n))) * 180) / Math.PI];
   };
   const half = q.cellM / 2 + 30;
-  const near = (pts: [number, number][]) => pts.some(([x, y]) => Math.abs(x) < half && Math.abs(y) < half);
+  // Whether a feature can touch the cell: its bounding box overlaps the cell's (not its
+  // vertices: a runway or a long road has its vertices far away at the ends).
+  const near = (pts: [number, number][]) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    return x0 < half && x1 > -half && y0 < half && y1 > -half;
+  };
   // Exclusions in local metres: lines with a half-width, polygons.
   const lines: { pts: [number, number][]; hw: number }[] = [];
   const polys: [number, number][][][] = [];
