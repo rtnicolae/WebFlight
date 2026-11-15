@@ -93,35 +93,87 @@ function noise(x: number, y: number, s: number, salt: number): number {
   return (h(x0, y0) * (1 - sx) + h(x0 + 1, y0) * sx) * (1 - sy) + (h(x0, y0 + 1) * (1 - sx) + h(x0 + 1, y0 + 1) * sx) * sy;
 }
 
-const ta = new Float32Array(3), tb = new Float32Array(3);
-/**
- * One scale, without visible repetition: two samples of the photo, rotated and offset
- * differently, mixed by smooth noise (the mix has no period for the eye to lock onto).
- */
-function bombed(t: DetailTexture, wx: number, wy: number, mPerPx: number, meters: number, salt: number, out: Float32Array): void {
-  const r = (a: number, x: number, y: number): [number, number] => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
-  const [x1, y1] = r(0.31 + salt, wx, wy);
-  const [x2, y2] = r(1.97 + salt, wx + 0.37 * meters, wy - 0.61 * meters);
-  sampleRatio(t, x1, y1, mPerPx, ta, meters);
-  sampleRatio(t, x2, y2, mPerPx, tb, meters);
-  const w = noise(wx, wy, meters * 1.7, 11 + salt * 7);
-  // Equal-variance mix (a plain lerp would halve the contrast in between).
-  const k = 1 / Math.sqrt(w * w + (1 - w) * (1 - w));
-  for (let c = 0; c < 3; c++) out[c] = 1 + ((ta[c]! - 1) * (1 - w) + (tb[c]! - 1) * w) * k;
+/** Bilinear lookup of a level at texture coordinates (u, v) in repeats. */
+function lookup(lv: Float32Array, s: number, u: number, v: number, out: Float32Array): void {
+  const x = (u - Math.floor(u)) * s - 0.5, y = (v - Math.floor(v)) * s - 0.5;
+  const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const X0 = (x0 + s) % s, X1 = (X0 + 1) % s, Y0 = (y0 + s) % s, Y1 = (Y0 + 1) % s;
+  const i00 = (Y0 * s + X0) * 3, i10 = (Y0 * s + X1) * 3, i01 = (Y1 * s + X0) * 3, i11 = (Y1 * s + X1) * 3;
+  for (let c = 0; c < 3; c++) out[c] = (lv[i00 + c]! * (1 - fx) + lv[i10 + c]! * fx) * (1 - fy) + (lv[i01 + c]! * (1 - fx) + lv[i11 + c]! * fx) * fy;
 }
 
-const tmp = new Float32Array(3);
+const R = [0.31, 1.97, 1.31, 2.97].map((a) => [Math.cos(a), Math.sin(a)] as const);
+
 /**
- * Two scales of the same photo, multiplied (each averages 1): the macro layer stretches it so
- * its clumps read as meadow patches and crop texture from a glider's height; the micro layer,
- * at about true scale, shows on low passes and on the ground.
+ * Samples detail textures for one tile (one pixel size): the mip levels are chosen once per
+ * texture, and per pixel `at()` computes the shared coordinates and blend weights once; then
+ * `sample()` reads any texture there. Two scales (true and ×7, multiplied, each averaging 1:
+ * the macro layer makes the clumps read as meadow and crop texture from a glider's height),
+ * each from two rotated, offset samples mixed by smooth noise so no repeat shows.
  */
-export function sampleTwoScale(t: DetailTexture, wx: number, wy: number, mPerPx: number, out: Float32Array): void {
-  bombed(t, wx, wy, mPerPx, t.meters, 0, out);
-  bombed(t, wx, wy, mPerPx, t.meters * MACRO, 1, tmp);
-  const lm = (out[0]! + out[1]! + out[2]!) / 3, lM = (tmp[0]! + tmp[1]! + tmp[2]!) / 3;
-  const L = (1 + (lm - 1) * MICRO_GAIN) * (1 + (lM - 1) * MACRO_GAIN);
-  for (let c = 0; c < 3; c++) out[c] = Math.max(0.3, L * (1 + (out[c]! - lm) * CHROMA));
+export class TileSampler {
+  private readonly lv = new Map<DetailTexture, { micro?: [Float32Array, number]; macro?: [Float32Array, number] }>();
+  // Per pixel: world coordinates of the four samples, and the two mix weights / normalizers.
+  private m1x = 0; private m1y = 0; private m2x = 0; private m2y = 0;
+  private M1x = 0; private M1y = 0; private M2x = 0; private M2y = 0;
+  private wm = 0; private km = 1; private wM = 0; private kM = 1;
+  private readonly a = new Float32Array(3);
+  private readonly b = new Float32Array(3);
+  private readonly mic = new Float32Array(3);
+  private readonly mac = new Float32Array(3);
+
+  constructor(private readonly mPerPx: number) {}
+
+  private levels(t: DetailTexture) {
+    let e = this.lv.get(t);
+    if (!e) {
+      const pick = (meters: number): [Float32Array, number] | undefined => {
+        const level = Math.max(0, Math.ceil(Math.log2(this.mPerPx / (meters / t.size))));
+        return level < t.levels.length ? [t.levels[level]!, t.size >> level] : undefined;
+      };
+      e = {};
+      const mi = pick(t.meters), ma = pick(t.meters * MACRO);
+      if (mi) e.micro = mi;
+      if (ma) e.macro = ma;
+      this.lv.set(t, e);
+    }
+    return e;
+  }
+
+  at(wx: number, wy: number): void {
+    const [c0, s0] = R[0]!, [c1, s1] = R[1]!, [c2, s2] = R[2]!, [c3, s3] = R[3]!;
+    this.m1x = wx * c0 - wy * s0; this.m1y = wx * s0 + wy * c0;
+    const ox = wx + 2.3, oy = wy - 3.9;
+    this.m2x = ox * c1 - oy * s1; this.m2y = ox * s1 + oy * c1;
+    const Ox = wx + 13.7, Oy = wy - 29.3;
+    this.M1x = Ox * c2 - Oy * s2; this.M1y = Ox * s2 + Oy * c2;
+    const Px = Ox + 17.1, Py = Oy - 23.9;
+    this.M2x = Px * c3 - Py * s3; this.M2y = Px * s3 + Py * c3;
+    this.wm = noise(wx, wy, 11, 11);
+    this.km = 1 / Math.sqrt(this.wm * this.wm + (1 - this.wm) * (1 - this.wm));
+    this.wM = noise(wx, wy, 75, 18);
+    this.kM = 1 / Math.sqrt(this.wM * this.wM + (1 - this.wM) * (1 - this.wM));
+  }
+
+  /** The detail ratio of texture t at the current point, into out. */
+  sample(t: DetailTexture, out: Float32Array): void {
+    const e = this.levels(t);
+    const one = (lev: [Float32Array, number] | undefined, meters: number, x1: number, y1: number, x2: number, y2: number, w: number, k: number, dst: Float32Array) => {
+      if (!lev) {
+        dst[0] = dst[1] = dst[2] = 1;
+        return;
+      }
+      // Texture v grows southwards (image rows), world y northwards.
+      lookup(lev[0], lev[1], x1 / meters, -y1 / meters, this.a);
+      lookup(lev[0], lev[1], x2 / meters, -y2 / meters, this.b);
+      for (let c = 0; c < 3; c++) dst[c] = 1 + ((this.a[c]! - 1) * (1 - w) + (this.b[c]! - 1) * w) * k;
+    };
+    one(e.micro, t.meters, this.m1x, this.m1y, this.m2x, this.m2y, this.wm, this.km, this.mic);
+    one(e.macro, t.meters * MACRO, this.M1x, this.M1y, this.M2x, this.M2y, this.wM, this.kM, this.mac);
+    const lm = (this.mic[0]! + this.mic[1]! + this.mic[2]!) / 3, lM = (this.mac[0]! + this.mac[1]! + this.mac[2]!) / 3;
+    const L = (1 + (lm - 1) * MICRO_GAIN) * (1 + (lM - 1) * MACRO_GAIN);
+    for (let c = 0; c < 3; c++) out[c] = Math.max(0.3, L * (1 + (this.mic[c]! - lm) * CHROMA));
+  }
 }
 
 /** Detail textures by role, with the ground size each repeat covers. */

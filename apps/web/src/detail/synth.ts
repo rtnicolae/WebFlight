@@ -59,7 +59,7 @@ export function edgeAwareUpsample(src: Uint8ClampedArray, n: number, sx0: number
   }
 }
 
-import { sampleTwoScale, type DetailTexture } from "./textures.ts";
+import { TileSampler, type DetailTexture } from "./textures.ts";
 
 export type Cover = "crop" | "forest" | "grass" | "water" | "urban";
 
@@ -154,8 +154,19 @@ export interface GroundTextures {
   drySoil: DetailTexture;
 }
 
+/** Lush/dry blend of two textures at the sampler's current point into out. */
+function mixInto(ts: TileSampler, lush: DetailTexture, dryT: DetailTexture, dry: number, a: Float32Array, b: Float32Array, out: Float32Array): void {
+  if (dry < 0.08) return ts.sample(lush, out);
+  if (dry > 0.92) return ts.sample(dryT, out);
+  ts.sample(lush, a);
+  ts.sample(dryT, b);
+  for (let c = 0; c < 3; c++) out[c] = a[c]! + (b[c]! - a[c]!) * dry;
+}
+
 export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8Array, tex?: GroundTextures): void {
   const ra = new Float32Array(3), rb = new Float32Array(3);
+  const ts = new TileSampler(o.mPerPx);
+  const gr = new Float32Array(3), so = new Float32Array(3);
   const { size, mPerPx } = o;
   for (let j = 0; j < size; j++) {
     const wy = o.y0 - (j + 0.5) * mPerPx;
@@ -173,12 +184,13 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
         const green = g - (r + b) / 2;
         const t = Math.min(1, Math.max(0, (green - 1) / 12));
         const dry = valueNoise(wx, wy, 240, 71);
-        sampleTwoScale(tex.grass, wx, wy, mPerPx, ra);
-        sampleTwoScale(tex.dryGrass, wx, wy, mPerPx, rb);
-        const gr = [ra[0]! + (rb[0]! - ra[0]!) * dry, ra[1]! + (rb[1]! - ra[1]!) * dry, ra[2]! + (rb[2]! - ra[2]!) * dry];
-        sampleTwoScale(tex.soil, wx, wy, mPerPx, ra);
-        sampleTwoScale(tex.drySoil, wx, wy, mPerPx, rb);
-        const so = [ra[0]! + (rb[0]! - ra[0]!) * dry, ra[1]! + (rb[1]! - ra[1]!) * dry, ra[2]! + (rb[2]! - ra[2]!) * dry];
+        ts.at(wx, wy);
+        // Sample only what this pixel uses (most are all grass or all soil, lush or dry);
+        // no allocation per pixel.
+        if (t > 0.02) mixInto(ts, tex.grass, tex.dryGrass, dry, ra, rb, gr);
+        else gr[0] = gr[1] = gr[2] = 1;
+        if (t < 0.98) mixInto(ts, tex.soil, tex.drySoil, dry, ra, rb, so);
+        else so[0] = so[1] = so[2] = 1;
         tr = so[0]! + (gr[0]! - so[0]!) * t;
         tg = so[1]! + (gr[1]! - so[1]!) * t;
         tb = so[2]! + (gr[2]! - so[2]!) * t;
@@ -188,7 +200,7 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
       } else if (c === "forest") {
         // Canopy (crowns, sun-side highlights, shadows), divided by its own average so the
         // forest keeps its Sentinel-2 tone.
-        f = mPerPx < 2.5 ? crownShade(wx, wy, o) / canopyMean(o) : 1 + (valueNoise(wx, wy, 6, 22) - 0.5) * 0.1;
+        f = mPerPx < 1 ? crownShade(wx, wy, o) / canopyMean(o) : 1 + (valueNoise(wx, wy, 6, 22) - 0.5) * 0.1;
       } else if (c === "grass") {
         // Grass: blades (sub-metre), tufts (metres), patches (tens of metres); mean 1.
         f = 1 + (valueNoise(wx, wy, 0.7, 31) - 0.5) * (mPerPx < 0.8 ? 0.16 : 0.05) + (valueNoise(wx, wy, 4, 33) - 0.5) * 0.1 + (valueNoise(wx, wy, 35, 32) - 0.5) * 0.08;

@@ -113,7 +113,13 @@ export function addRunway(viewer: Viewer, r: Runway): void {
   const quad = (a0: number, a1: number, c0: number, c1: number, color: Color, zIndex: number) =>
     viewer.entities.add({ polygon: { hierarchy: [at(a0, c0), at(a1, c0), at(a1, c1), at(a0, c1)], material: color, zIndex } });
   const L = r.lengthM / 2, W = r.widthM / 2;
-  quad(-L, L, -W, W, Color.fromCssColorString(r.paved ? "#55585c" : "#7da552"), 0);
+  if (!r.paved) {
+    // Grass strip: a mown band a shade lighter than the field, no paint (real grass strips
+    // have none; the opaque lime band with white bars looked like a paved runway).
+    quad(-L, L, -W, W, Color.fromCssColorString("#9db07a").withAlpha(0.22), 0);
+    return;
+  }
+  quad(-L, L, -W, W, Color.fromCssColorString("#55585c"), 0);
   const mark = Color.WHITE.withAlpha(0.85);
   for (const end of [-1, 1]) {
     // Threshold bars.
