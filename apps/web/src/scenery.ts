@@ -26,7 +26,7 @@ import {
   type Viewer,
 } from "cesium";
 import { lonLatToTile } from "@webflight/environment";
-import { fetchWater, type WaterPolygon } from "@webflight/scenery";
+import { BASE_VT, fetchWater, type WaterPolygon } from "@webflight/scenery";
 import { swissImageProvider } from "./imagery.ts";
 
 const TLM3D = "https://vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.swisstlm3d.3d/20190313/tileset.json";
@@ -68,9 +68,22 @@ function waterMaterial(overPhoto: boolean): Material {
   });
 }
 
+/** OpenFreeMap (OpenStreetMap, OpenMapTiles schema; free, no key): water everywhere. */
+const OPENFREEMAP = "https://tiles.openfreemap.org/planet";
+
+async function waterSource(): Promise<{ url: string; global: boolean }> {
+  try {
+    const r = await fetch(OPENFREEMAP);
+    const tj = (await r.json()) as { tiles?: string[] };
+    if (tj.tiles?.[0]) return { url: tj.tiles[0], global: true };
+  } catch {}
+  return { url: BASE_VT, global: false }; // swisstopo: Switzerland only
+}
+
 export class Scenery {
   private readonly waterTiles = new Map<string, GroundPrimitive | null>();
-  private nearCentre: [number, number] | undefined;
+  private centres: Record<number, string> = {};
+  private water: { url: string; global: boolean } | undefined;
 
   private constructor(
     private readonly viewer: Viewer,
@@ -84,7 +97,6 @@ export class Scenery {
    */
   static create(viewer: Viewer, site: { latDeg: number; lonDeg: number }, o: SceneryOptions, maxWaitMs = 20000): Scenery {
     const s = new Scenery(viewer, o);
-    if (!inSwitzerland(site.latDeg, site.lonDeg)) return s;
     const t0 = performance.now();
     const off = viewer.scene.postRender.addEventListener(() => {
       if (!viewer.scene.globe.tilesLoaded && performance.now() - t0 < maxWaitMs) return;
@@ -98,6 +110,7 @@ export class Scenery {
     const { viewer, o } = this;
     const s = this;
     const shadows = o.shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED;
+    // swisstopo's 3D Tiles cover Switzerland; they stream by view wherever we fly there.
     if (o.buildings) {
       void Cesium3DTileset.fromUrl(TLM3D, { maximumScreenSpaceError: 12, shadows, dynamicScreenSpaceError: true, skipLevelOfDetail: true })
         .then((ts) => {
@@ -117,13 +130,12 @@ export class Scenery {
         })
         .catch((e: unknown) => console.warn("trees:", e));
     }
-    if (o.water) {
-      // Lakes and large rivers over the region (generalised zoom 11, ~±30 km).
-      const [fx, fy] = lonLatToTile(site.lonDeg, site.latDeg, 11);
-      for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) s.loadWater(11, Math.floor(fx) + dx, Math.floor(fy) + dy, (k) => k === "lake" || k === "river");
-      this.started = true;
-      s.update(site.latDeg, site.lonDeg);
-    }
+    if (o.water)
+      void waterSource().then((w) => {
+        this.water = w;
+        this.started = true;
+        s.update(site.latDeg, site.lonDeg);
+      });
   }
 
   private started = false;
@@ -132,7 +144,7 @@ export class Scenery {
     const key = `${z}/${x}/${y}`;
     if (this.waterTiles.has(key)) return;
     this.waterTiles.set(key, null);
-    void fetchWater(z, x, y, kinds)
+    void fetchWater(z, x, y, kinds, this.water!.url)
       .then((polys) => {
         if (!polys.length || !this.waterTiles.has(key)) return;
         const prim = this.viewer.scene.primitives.add(
@@ -148,22 +160,32 @@ export class Scenery {
       .catch(() => {});
   }
 
-  /** Stream small water bodies (ponds, pools, streams) around the aircraft. */
+  /**
+   * Stream water around the aircraft: lakes, rivers and sea from generalised zoom-11 tiles
+   * (±2 tiles, ~±30 km) and ponds, pools and streams from zoom-14 tiles (±1). Tiles left
+   * behind are dropped, so a cross-country flight keeps a constant amount of scenery.
+   */
   update(latDeg: number, lonDeg: number): void {
-    if (!this.o.water || !this.started || !inSwitzerland(latDeg, lonDeg)) return;
-    const [fx, fy] = lonLatToTile(lonDeg, latDeg, 14);
-    const c: [number, number] = [Math.floor(fx), Math.floor(fy)];
-    if (this.nearCentre && this.nearCentre[0] === c[0] && this.nearCentre[1] === c[1]) return;
-    this.nearCentre = c;
-    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) this.loadWater(14, c[0] + dx, c[1] + dy, (k) => k !== "lake" && k !== "river");
-    // Drop near tiles that are far behind.
-    for (const [key, prim] of this.waterTiles) {
-      const [z, x, y] = key.split("/").map(Number) as [number, number, number];
-      if (z === 14 && (Math.abs(x - c[0]) > 3 || Math.abs(y - c[1]) > 3)) {
-        if (prim) this.viewer.scene.primitives.remove(prim);
-        this.waterTiles.delete(key);
+    if (!this.o.water || !this.started || !this.water) return;
+    if (!this.water.global && !inSwitzerland(latDeg, lonDeg)) return;
+    const ring = (z: number, r: number, keep: number, kinds: (k: string) => boolean) => {
+      const [fx, fy] = lonLatToTile(lonDeg, latDeg, z);
+      const cx = Math.floor(fx), cy = Math.floor(fy);
+      const key = `${cx}/${cy}`;
+      if (this.centres[z] === key) return;
+      this.centres[z] = key;
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) this.loadWater(z, cx + dx, cy + dy, kinds);
+      for (const [k, prim] of this.waterTiles) {
+        const [tz, x, y] = k.split("/").map(Number) as [number, number, number];
+        if (tz === z && (Math.abs(x - cx) > keep || Math.abs(y - cy) > keep)) {
+          if (prim) this.viewer.scene.primitives.remove(prim);
+          this.waterTiles.delete(k);
+        }
       }
-    }
+    };
+    const big = (k: string) => k === "lake" || k === "river" || k === "ocean";
+    ring(11, 2, 3, big);
+    ring(14, 1, 3, (k) => !big(k));
   }
 }
 

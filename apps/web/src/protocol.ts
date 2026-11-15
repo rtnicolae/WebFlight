@@ -20,6 +20,8 @@ export interface WorldConfig {
 
 /** One thermal as drawn by the renderer. */
 export interface ThermalView {
+  /** Stable id (the same thermal keeps it while it exists). */
+  id: string;
   latDeg: number;
   lonDeg: number;
   /** Cloud base / thermal top [m]. */

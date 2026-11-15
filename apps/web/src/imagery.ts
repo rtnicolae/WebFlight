@@ -14,6 +14,12 @@ export type ImageryMode = "photo" | "painted" | "grid" | "osm";
 
 const SWISSIMAGE = "https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg";
 const S2CLOUDLESS = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg";
+/** IGN Géoplateforme orthophotos (France, ~20 cm; Licence Ouverte 2.0, no key). */
+const IGN_ORTHO = "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}";
+const FRANCE_RECT = Rectangle.fromDegrees(-5.3, 41.2, 9.7, 51.2);
+/** basemap.at orthophotos (Austria, 30 cm; CC BY 4.0, no key). */
+const BASEMAP_AT = "https://mapsneu.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg";
+const AUSTRIA_RECT = Rectangle.fromDegrees(9.4, 46.3, 17.3, 49.1);
 /** SWISSIMAGE coverage (a little larger than Switzerland). */
 const SWISS_RECT = Rectangle.fromDegrees(5.8, 45.75, 10.6, 47.9);
 
@@ -113,6 +119,10 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
         }),
       ),
     );
+    // National orthophotos where they are free, Switzerland on top (sharpest, and where the
+    // 3D scenery is). Elsewhere Sentinel-2 (10 m) shows through.
+    layers.add(new ImageryLayer(new UrlTemplateImageryProvider({ url: IGN_ORTHO, rectangle: FRANCE_RECT, minimumLevel: 6, maximumLevel: 19, credit: new Credit("© IGN – Géoplateforme (orthophotos)") })));
+    layers.add(new ImageryLayer(new UrlTemplateImageryProvider({ url: BASEMAP_AT, rectangle: AUSTRIA_RECT, minimumLevel: 6, maximumLevel: 19, credit: new Credit('<a href="https://basemap.at">basemap.at</a> orthofoto, CC BY 4.0') })));
     layers.add(new ImageryLayer(swissImageProvider()));
   } else if (mode === "painted") {
     layers.add(new ImageryLayer(new PaintedImageryProvider(sunFrom(sun.azimuthDeg, Math.max(5, sun.elevationDeg))) as unknown as ImageryProvider));

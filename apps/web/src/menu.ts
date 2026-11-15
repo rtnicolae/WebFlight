@@ -4,7 +4,7 @@
  * (the sim reads everything from the URL, so any flight can be bookmarked or shared).
  */
 import { HeadingPitchRange, Cartesian3, Math as CMath } from "cesium";
-import { GRENCHEN, TerrariumTerrain, ThermalField } from "@webflight/environment";
+import { GRENCHEN, TerrariumTerrain, ThermalSky } from "@webflight/environment";
 import { addImagery, type ImageryMode } from "./imagery.ts";
 import { createViewer, ThermalLayer } from "./scene.ts";
 import { Scenery } from "./scenery.ts";
@@ -134,10 +134,11 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   const viewer = createViewer(document.getElementById("cesium")!, { time: date, shadows: false, terrain, quality: pick.quality === "ultra" ? "ultra" : "high" });
   (window as unknown as { webflightViewer: unknown }).webflightViewer = viewer;
   void addImagery(viewer, pick.imagery, sunPosition(date, GRENCHEN.latDeg, GRENCHEN.lonDeg));
-  const field = new ThermalField({ seed: 1, centerLatDeg: GRENCHEN.latDeg, centerLonDeg: GRENCHEN.lonDeg, radiusM: 12_000, count: 30, cloudBaseM: 1900 });
-  const thermals: ThermalView[] = field.thermals.map((t) => {
+  const sky = new ThermalSky({ seed: 1, cloudBaseM: 1900 }).thermalsAround(GRENCHEN.latDeg, GRENCHEN.lonDeg, 25_000);
+  const thermals: ThermalView[] = sky.map((t) => {
     const time = t.cycleTimer / (25 * 60);
     return {
+      id: t.id,
       latDeg: t.spec.latDeg,
       lonDeg: t.spec.lonDeg,
       topM: t.spec.heightMslFt * 0.3048,

@@ -149,7 +149,7 @@ export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProv
  */
 export class ThermalLayer {
   private readonly clouds: CloudLayer;
-  private readonly columns = new Map<number, Entity>();
+  private readonly columns = new Map<string, Entity>();
 
   constructor(
     private readonly viewer: Viewer,
@@ -163,6 +163,7 @@ export class ThermalLayer {
   update(list: ThermalView[]): void {
     this.clouds.set(
       list.map((t) => ({
+        id: t.id,
         latDeg: t.latDeg,
         lonDeg: t.lonDeg,
         baseM: t.topM,
@@ -173,15 +174,15 @@ export class ThermalLayer {
       })),
     );
     if (!this.showColumns) return;
-    list.forEach((t, i) => {
-      let col = this.columns.get(i);
+    list.forEach((t) => {
+      let col = this.columns.get(t.id);
       if (!col) {
         const len = t.topM - t.groundM;
         col = this.viewer.entities.add({
           position: Cartesian3.fromDegrees(t.lonDeg, t.latDeg, t.groundM + len / 2),
           cylinder: { length: len, topRadius: t.radiusM, bottomRadius: t.radiusM, material: Color.ORANGE.withAlpha(0.12), outline: false },
         });
-        this.columns.set(i, col);
+        this.columns.set(t.id, col);
       }
       col.show = t.phase === "formed" || t.phase === "forming";
     });

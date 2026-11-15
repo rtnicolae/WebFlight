@@ -137,7 +137,8 @@ function stepLaunch(dt: number): void {
 
 function postEnvironment(): void {
   if (!env || !envOut) return;
-  const thermals: ThermalView[] = (env.thermals?.thermals ?? []).map((th) => ({
+  const thermals: ThermalView[] = (env.thermals?.thermals ?? []).map((th, i) => ({
+    id: th.id || String(i),
     latDeg: th.spec.latDeg,
     lonDeg: th.spec.lonDeg,
     topM: th.spec.heightMslFt * M_PER_FT,

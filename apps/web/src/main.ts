@@ -1,7 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
-import { advance, FLAT_TEST, GRENCHEN, JURA_CREST, TerrariumTerrain, ThermalField, type EnvironmentConfig } from "@webflight/environment";
+import { advance, FLAT_TEST, GRENCHEN, JURA_CREST, TerrariumTerrain, ThermalSky, type EnvironmentConfig } from "@webflight/environment";
 import { AircraftView } from "./aircraft.ts";
 import { ChaseCamera } from "./camera.ts";
 import { Hud } from "./hud.ts";
@@ -30,6 +30,7 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   wind=150@20 (from° @ kt) · thermals=0|1 · seed=N · columns=1 (draw lift columns)
  *   dist, agl, eas: start distance from the runway [m], height above ground [m], speed [km/h]
+ *   lat, lon, hdg: start anywhere (in the air, agl default 600 m)
  */
 const SITE = params.get("site") === "flat" ? "flat" : "grenchen";
 const START_KIND = (params.get("start") ?? "final") as "final" | "ridge" | "thermal" | "winch" | "aerotow";
@@ -66,23 +67,25 @@ let renderTerrain: TerrariumTerrain | undefined;
 
 async function startState(): Promise<StartState> {
   const eas = Number(params.get("eas") ?? 90);
+  // Anywhere: ?lat=…&lon=…&hdg=…&agl=… (cross-country, bookmarks).
+  if (params.has("lat") && params.has("lon"))
+    return { latDeg: Number(params.get("lat")), lonDeg: Number(params.get("lon")), headingDeg: Number(params.get("hdg") ?? 0), aglM: Number(params.get("agl") ?? 600), easKmh: eas };
   if (START_KIND === "ridge" && SITE !== "flat") {
     // Down the windward face from the Weissenstein crest, flying along the ridge.
     const [lat, lon] = advance(JURA_CREST.latDeg, JURA_CREST.lonDeg, 150, 700);
     return { latDeg: lat, lonDeg: lon, headingDeg: JURA_CREST.headingDeg, aglM: Number(params.get("agl") ?? 250), easKmh: eas };
   }
-  if (START_KIND === "thermal" && ENVIRONMENT.thermals) {
-    // The thermal field is seeded, so the worker builds the same one: start in a thermal
-    // that has just formed (well clear of its dying phase), half a radius off its centre
-    // at our height (the column leans downwind).
-    const field = new ThermalField({ ...ENVIRONMENT.thermals });
-    const near = (t: (typeof field.thermals)[number]) => Math.hypot((t.spec.latDeg - RUNWAY.latDeg) * 111, (t.spec.lonDeg - RUNWAY.lonDeg) * 76) < 8;
-    const fresh = field.thermals.filter((t) => near(t) && t.cycleTimer >= 5 * 60 && t.cycleTimer <= 10 * 60);
-    const pool = fresh.length ? fresh : field.thermals;
+  if (START_KIND === "thermal" && ENVIRONMENT.thermalSky) {
+    // The sky is seeded per cell, so the worker builds the same thermals: start in one that
+    // has just formed (well clear of its dying phase), off its centre at our height (the
+    // column leans downwind).
+    const all = new ThermalSky({ ...ENVIRONMENT.thermalSky }).thermalsAround(RUNWAY.latDeg, RUNWAY.lonDeg, 8000);
+    const fresh = all.filter((t) => t.cycleTimer >= 5 * 60 && t.cycleTimer <= 10 * 60);
+    const pool = fresh.length ? fresh : all;
     const th = pool.reduce((a, b) => (a.spec.strengthFps >= b.spec.strengthFps ? a : b));
     const groundM = renderTerrain ? await renderTerrain.heightAtAsync(th.spec.latDeg, th.spec.lonDeg) : 0;
     th.spec.groundElevFt = groundM / 0.3048;
-    th.spec.heightMslFt = Math.max(ENVIRONMENT.thermals.cloudBaseM ?? 1800, groundM + 600) / 0.3048;
+    th.spec.heightMslFt = Math.max(ENVIRONMENT.thermalSky.cloudBaseM ?? 1800, groundM + 600) / 0.3048;
     // Default: 60 % of the way up the thermal (FG's profile gives ~0.8 of full strength there).
     const aglM = Number(params.get("agl") ?? 0.6 * (th.spec.heightMslFt * 0.3048 - groundM));
     const altFt = (groundM + aglM) / 0.3048;
@@ -106,7 +109,8 @@ const ENVIRONMENT: EnvironmentConfig = {
   windFromDeg: WIND.fromDeg,
   windKt: WIND.kt,
   ridgeLift: true,
-  thermals: THERMALS ? { seed: SEED, centerLatDeg: RUNWAY.latDeg, centerLonDeg: RUNWAY.lonDeg, radiusM: 12_000, count: 30, cloudBaseM: 1900 } : false,
+  // Thermals everywhere along the way (cells of 6 km, seeded): fly cross-country.
+  thermalSky: THERMALS ? { seed: SEED, cloudBaseM: 1900 } : false,
 };
 const WORLD: WorldConfig = { terrain: SITE === "flat" ? "flat" : "terrarium", environment: ENVIRONMENT };
 /** ASK21 solo (pointmass 1 = copilot). */
