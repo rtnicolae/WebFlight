@@ -148,12 +148,16 @@ export class PaintedImageryProvider {
  * Synthesized detail (zoom 15–18) wherever the photos are only Sentinel-2: see
  * detail/detail-worker.ts. Tiles inside a national orthophoto's coverage come back empty.
  */
+const DETAIL_MIN_LEVEL = 15;
 export class DetailImageryProvider {
   readonly tilingScheme = new WebMercatorTilingScheme();
   readonly rectangle = this.tilingScheme.rectangle;
   readonly tileWidth = 256;
   readonly tileHeight = 256;
-  readonly minimumLevel = 15;
+  // minimumLevel must stay low: Cesium would otherwise build zoom-15 imagery for every
+  // coarse terrain tile (millions). Below DETAIL_MIN_LEVEL tiles come back empty, and the
+  // layer only applies on detailed terrain (minimumTerrainLevel).
+  readonly minimumLevel = 0;
   readonly maximumLevel = 18;
   readonly tileDiscardPolicy = undefined;
   readonly errorEvent = new Event();
@@ -197,7 +201,7 @@ export class DetailImageryProvider {
   requestImage(x: number, y: number, level: number): Promise<ImageBitmap> | undefined {
     const r = this.tilingScheme.tileXYToRectangle(x, y, level);
     const c = Rectangle.center(r);
-    if (highResPhotoAt((c.latitude * 180) / Math.PI, (c.longitude * 180) / Math.PI)) return this.empty ? Promise.resolve(this.empty) : undefined;
+    if (level < DETAIL_MIN_LEVEL || highResPhotoAt((c.latitude * 180) / Math.PI, (c.longitude * 180) / Math.PI)) return this.empty ? Promise.resolve(this.empty) : undefined;
     // Back-pressure: Cesium retries a tile later when this returns undefined.
     if (this.pending.size >= 6 * this.workers.length) return undefined;
     const id = this.nextId++;
@@ -276,7 +280,7 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     // 3D scenery is). Elsewhere Sentinel-2 (10 m) shows through.
     // Where photos are only 10 m: detail synthesized from them and OpenStreetMap (visual only).
     const osmUrl = await openFreeMapTiles();
-    if (osmUrl) layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun) as unknown as ImageryProvider));
+    if (osmUrl && new URLSearchParams(location.search).get("detail") !== "0") layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun) as unknown as ImageryProvider, { minimumTerrainLevel: 12 }));
     for (const o of ORTHOS) layers.add(orthoLayer(o));
     void addAncpi(viewer);
     layers.add(new ImageryLayer(swissImageProvider()));
