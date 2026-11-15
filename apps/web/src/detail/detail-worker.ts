@@ -7,7 +7,7 @@
  */
 import { airfieldsAround, bearingDeg, designatorDeg } from "@webflight/environment";
 import { decodeMvt, type MvtLayer } from "@webflight/scenery";
-import { synthesize, hash2, COVERS, type Cover } from "./synth.ts";
+import { edgeAwareUpsample, synthesize, hash2, COVERS, type Cover } from "./synth.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -130,7 +130,11 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   const src = 256 / sub;
-  ctx.drawImage(base, ox * src, oy * src, src, src, 0, 0, SIZE, SIZE);
+  // The whole zoom-14 satellite tile: source for the upsampling, and to judge features as a
+  // whole (the same answer in every tile).
+  const bc = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
+  bc.drawImage(base, 0, 0);
+  const sat = bc.getImageData(0, 0, 256, 256).data;
 
   // MVT (zoom 14, extent e) → this tile's pixels.
   const toPx = (e: number) => (px: number, py: number): [number, number] => [((px / e) * sub - ox) * SIZE, ((py / e) * sub - oy) * SIZE];
@@ -176,7 +180,8 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   const cover = new Uint8Array(SIZE * SIZE);
   for (let i = 0; i < cover.length; i++) if (covPx[i * 4 + 3]! > 127) cover[i] = Math.max(0, Math.min(COVERS.length, Math.round(covPx[i * 4]! / 40)));
 
-  const img = ctx.getImageData(0, 0, SIZE, SIZE);
+  const img = new ImageData(SIZE, SIZE);
+  edgeAwareUpsample(sat, 256, ox * src, oy * src, src, img.data, SIZE);
   const az = (q.sun.azimuthDeg * Math.PI) / 180;
   const sunLow = Math.min(1.5, 1 / Math.tan((Math.max(8, q.sun.elevationDeg) * Math.PI) / 180));
   const n = 2 ** z;
@@ -211,10 +216,6 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       }
     }
   }
-  // The whole zoom-14 satellite tile, to judge features as a whole (same answer in every tile).
-  const bc = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
-  bc.drawImage(base, 0, 0);
-  const sat = bc.getImageData(0, 0, 256, 256).data;
   const looksGreen = (geom: [number, number][][], e: number): boolean => {
     let g = 0, n = 0;
     for (const line of geom)

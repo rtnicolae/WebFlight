@@ -1,16 +1,63 @@
 /**
- * Ground detail synthesized from 10 m satellite colours: what a sharp aerial photo would
- * show at that place, inferred from the blurry one. Purely visual (the simulation never
+ * Ground detail from 10 m satellite colours: the real image sharpened (edge-aware
+ * upsampling keeps every boundary where the data puts it), plus fine texture a 10 m pixel
+ * can't carry. Nothing is invented at the scale of fields. Purely visual (the simulation never
  * reads it). Everything is anchored to world coordinates (metres in Web Mercator at the
  * tile), so neighbouring tiles join without seams and every visit looks the same.
  *
  * Per pixel, from the upsampled Sentinel-2 colour (and the OSM land cover when known):
- *  - cropland: parcels of narrow strip fields (the Romanian/Eastern-European pattern), each
- *    strip tinted around the real colour, with furrows along it
+ *  - cropland: the real fields as the edge-aware upsampling sharpens them, with fine grain
  *  - forest: a canopy of crowns with shadows away from the sun
  *  - grass: fine grain
  *  - water / built-up: left close to the photo (OSM vectors are drawn on top separately)
  */
+
+/**
+ * Edge-aware upsampling of a satellite tile: bilinear, then each pixel is snapped toward the
+ * nearer of the two dominant colours in its 4×4 source neighbourhood (a two-means split by
+ * luminance). Real boundaries (field edges, roads, forest margins) become crisp lines where
+ * the data puts them, at sub-pixel precision; uniform areas stay as they are.
+ * `src` is the source RGBA (n×n), the window starts at (sx0, sy0) and spans `span` source
+ * pixels, written into `out` (size×size RGBA).
+ */
+export function edgeAwareUpsample(src: Uint8ClampedArray, n: number, sx0: number, sy0: number, span: number, out: Uint8ClampedArray, size: number, strength = 0.8): void {
+  const at = (x: number, y: number, c: number) => src[(Math.min(n - 1, Math.max(0, y)) * n + Math.min(n - 1, Math.max(0, x))) * 4 + c]!;
+  const lumAt = (x: number, y: number) => 0.3 * at(x, y, 0) + 0.59 * at(x, y, 1) + 0.11 * at(x, y, 2);
+  for (let j = 0; j < size; j++) {
+    const sy = sy0 + ((j + 0.5) * span) / size - 0.5;
+    const y0 = Math.floor(sy), fy = sy - y0;
+    for (let i = 0; i < size; i++) {
+      const sx = sx0 + ((i + 0.5) * span) / size - 0.5;
+      const x0 = Math.floor(sx), fx = sx - x0;
+      const k = (j * size + i) * 4;
+      const v = [0, 0, 0];
+      for (let c = 0; c < 3; c++) v[c] = (at(x0, y0, c) * (1 - fx) + at(x0 + 1, y0, c) * fx) * (1 - fy) + (at(x0, y0 + 1, c) * (1 - fx) + at(x0 + 1, y0 + 1, c) * fx) * fy;
+      // Two-means over the 4×4 neighbourhood, split at its mean luminance.
+      let mean = 0;
+      for (let b = -1; b <= 2; b++) for (let a = -1; a <= 2; a++) mean += lumAt(x0 + a, y0 + b);
+      mean /= 16;
+      const lo = [0, 0, 0], hi = [0, 0, 0];
+      let nl = 0, nh = 0, ll = 0, lh = 0;
+      for (let b = -1; b <= 2; b++)
+        for (let a = -1; a <= 2; a++) {
+          const L = lumAt(x0 + a, y0 + b);
+          const t = L < mean ? lo : hi;
+          for (let c = 0; c < 3; c++) t[c]! += at(x0 + a, y0 + b, c);
+          if (L < mean) { nl++; ll += L; } else { nh++; lh += L; }
+        }
+      const vl = 0.3 * v[0]! + 0.59 * v[1]! + 0.11 * v[2]!;
+      if (nl && nh && lh / nh - ll / nl > 6) {
+        const t = Math.abs(vl - ll / nl) < Math.abs(vl - lh / nh) ? lo : hi;
+        const m = t === lo ? nl : nh;
+        for (let c = 0; c < 3; c++) v[c] = v[c]! + (t[c]! / m - v[c]!) * strength;
+      }
+      out[k] = v[0]!;
+      out[k + 1] = v[1]!;
+      out[k + 2] = v[2]!;
+      out[k + 3] = 255;
+    }
+  }
+}
 
 export type Cover = "crop" | "forest" | "grass" | "water" | "urban";
 
@@ -44,45 +91,6 @@ export function classify(r: number, g: number, b: number): Cover {
   if (sat < 22 && lum > 105) return "urban";
   if (green > 14 && lum > 80) return "grass";
   return "crop";
-}
-
-const PARCEL_M = 420;
-/** Crop tones (summer): green crops, maize, wheat/stubble, ploughed soil, sunflower. */
-const CROPS: [number, number, number][] = [
-  [104, 128, 62],
-  [86, 116, 54],
-  [178, 160, 102],
-  [196, 176, 118],
-  [128, 108, 82],
-  [112, 96, 74],
-  [140, 140, 70],
-  [96, 120, 70],
-];
-
-/**
- * The strip field at a world point: parcel (jittered grid, nearest seed), its orientation,
- * the strip index across it, and the position along/across the strip [m].
- */
-export function stripAt(x: number, y: number): { parcel: number; strip: number; across: number; along: number; widthM: number } {
-  const cx = Math.floor(x / PARCEL_M), cy = Math.floor(y / PARCEL_M);
-  let best = Infinity, px = 0, py = 0, pid = 0;
-  for (let j = -1; j <= 1; j++)
-    for (let i = -1; i <= 1; i++) {
-      const h = hash2(cx + i, cy + j, 11);
-      const sx = (cx + i + 0.15 + 0.7 * u01(h)) * PARCEL_M, sy = (cy + j + 0.15 + 0.7 * u01(hash2(h, 7))) * PARCEL_M;
-      const d = (x - sx) ** 2 + (y - sy) ** 2;
-      if (d < best) { best = d; px = sx; py = sy; pid = h; }
-    }
-  // Orientation: mostly near one regional direction (fields follow roads and valleys), with
-  // the parcel's own twist.
-  const region = valueNoise(px, py, 6000, 3) * Math.PI; // per parcel: straight strips
-  const ang = region + (u01(hash2(pid, 1)) - 0.5) * 1.2 + (u01(hash2(pid, 2)) < 0.35 ? Math.PI / 2 : 0);
-  const ux = Math.cos(ang), uy = Math.sin(ang);
-  const along = (x - px) * ux + (y - py) * uy;
-  const acrossRaw = -(x - px) * uy + (y - py) * ux;
-  const widthM = 14 + 46 * u01(hash2(pid, 3)) ** 1.5;
-  const strip = Math.floor(acrossRaw / widthM);
-  return { parcel: pid, strip, across: acrossRaw - strip * widthM, along, widthM };
 }
 
 export interface SynthOptions {
@@ -119,21 +127,9 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
       const c = cover && cover[j * size + i] ? COVERS[cover[j * size + i]! - 1]! : classify(r, g, b);
       let f = 1, tr = 1, tg = 1, tb = 1;
       if (c === "crop") {
-        const s = stripAt(wx, wy);
-        const h = hash2(s.parcel, s.strip, 5);
-        // Each strip a crop of its own, pulled from the real colour toward that crop's tone.
-        const crop = CROPS[h % CROPS.length]!;
-        const mix = 0.32 + 0.18 * u01(hash2(h, 4));
-        r = r * (1 - mix) + crop[0] * mix;
-        g = g * (1 - mix) + crop[1] * mix;
-        b = b * (1 - mix) + crop[2] * mix;
-        const pitch = 1.1 + 1.4 * u01(hash2(h, 6));
-        // Furrows only where a pixel resolves them (else they alias into hatching).
-        const fur = mPerPx * 2.5 < pitch ? 0.95 + 0.05 * Math.cos((s.across / pitch) * 2 * Math.PI) : 1;
-        // A narrow grassy margin between strips.
-        const edge = Math.min(s.across, s.widthM - s.across);
-        const border = edge < Math.max(0.5, mPerPx * 0.5) ? 0.9 : 1;
-        f = fur * border * (0.94 + 0.12 * valueNoise(wx, wy, 22, 8)) * (0.96 + 0.08 * valueNoise(wx, wy, 3, 9));
+        // Fields: keep the real colours and boundaries (edge-aware upsampling); add only the
+        // fine grain of crops and soil a 10 m pixel can't carry.
+        f = (0.95 + 0.1 * valueNoise(wx, wy, 1.2, 8) * (mPerPx < 1 ? 1 : 0.4)) * (0.97 + 0.06 * valueNoise(wx, wy, 7, 9));
       } else if (c === "forest") {
         // Crowns on a ~4 m jittered grid: lit side brighter, shadow away from the sun.
         const cs = 4.2;
