@@ -188,6 +188,11 @@ export class DetailImageryProvider {
       this.workers.push(w);
     }
     void createImageBitmap(new ImageData(1, 1)).then((b) => (this.empty = b));
+    // Tiles that still fail (sources rate-limited after the worker's backoff): let Cesium
+    // try again a few times rather than keep a hole.
+    this.errorEvent.addEventListener((e: { retry: boolean; timesRetried: number }) => {
+      e.retry = e.timesRetried < 5;
+    });
   }
 
   getTileCredits(): undefined {

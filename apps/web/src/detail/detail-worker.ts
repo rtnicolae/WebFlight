@@ -46,9 +46,18 @@ const s2Cache = lru<ImageBitmap>(48);
 const osmCache = lru<MvtLayer[]>(24);
 const fill = (u: string, z: number, x: number, y: number) => u.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
 
+/** fetch with backoff on rate limits and server errors (1 s, 2 s, 4 s). */
+async function get(url: string): Promise<Response> {
+  for (let i = 0; ; i++) {
+    const r = await fetch(url);
+    if (r.ok || (r.status !== 429 && r.status < 500) || i === 3) return r;
+    await new Promise((res) => setTimeout(res, 1000 * 2 ** i));
+  }
+}
+
 async function s2(url: string, z: number, x: number, y: number): Promise<ImageBitmap> {
   return s2Cache(`${z}/${x}/${y}`, async () => {
-    const r = await fetch(fill(url, z, x, y));
+    const r = await get(fill(url, z, x, y));
     if (!r.ok) throw new Error(`s2 ${r.status}`);
     return createImageBitmap(await r.blob());
   });
@@ -64,8 +73,10 @@ function mosaic(url: string, x: number, y: number): Promise<Uint8ClampedArray> {
         [-1, 0, 1].map(async (dx) => {
           const ty = y + dy;
           if (ty < 0 || ty >= n) return;
-          const b = await s2(url, 14, (((x + dx) % n) + n) % n, ty).catch(() => undefined);
-          if (b) c.drawImage(b, (dx + 1) * 256, (dy + 1) * 256);
+          // Any missing piece fails the mosaic (and the tile, retried later): a partial
+          // mosaic would mis-sharpen along its edges.
+          const b = await s2(url, 14, (((x + dx) % n) + n) % n, ty);
+          c.drawImage(b, (dx + 1) * 256, (dy + 1) * 256);
         }),
       ),
     );
@@ -75,8 +86,10 @@ function mosaic(url: string, x: number, y: number): Promise<Uint8ClampedArray> {
 
 async function osm(url: string, x: number, y: number): Promise<MvtLayer[]> {
   return osmCache(`${x}/${y}`, async () => {
-    const r = await fetch(fill(url, 14, x, y));
-    if (!r.ok) return [];
+    const r = await get(fill(url, 14, x, y));
+    // A failed download (e.g. 429) must fail the tile so Cesium retries it later, not draw
+    // the tile without its roads (cached failures made roads stop at tile edges).
+    if (!r.ok) throw new Error(`osm ${r.status}`);
     return decodeMvt(new Uint8Array(await r.arrayBuffer()));
   });
 }
