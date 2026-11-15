@@ -1,3 +1,4 @@
+/// <reference path="./earcut.d.ts" />
 /**
  * Buildings and forests anywhere from OpenStreetMap vector tiles in the OpenMapTiles schema
  * (as served by OpenFreeMap): layer "building" (footprints, `render_height`,
