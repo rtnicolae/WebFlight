@@ -7,7 +7,8 @@
  *  - trees: zoom-16 cells (~430 m) within ±`treeRings` cells, nearest first
  */
 import {
-  Appearance,
+  Material,
+  MaterialAppearance,
   BoundingSphere,
   Cartesian3,
   ComponentDatatype,
@@ -46,34 +47,89 @@ in vec3 position3DHigh;
 in vec3 position3DLow;
 in vec3 normal;
 in vec4 color;
+in vec3 uvm;
 in float batchId;
 out vec3 v_positionEC;
 out vec3 v_normalEC;
 out vec4 v_color;
+out vec3 v_uvm;
 void main() {
   vec4 p = czm_computePosition();
   v_positionEC = (czm_modelViewRelativeToEye * p).xyz;
   v_normalEC = czm_normal * normal;
   v_color = color;
+  v_uvm = uvm;
   gl_Position = czm_modelViewProjectionRelativeToEye * p;
 }`;
 
+// Walls: plaster photo, and windows drawn from the wall coordinates (2.8 m apart, 2.7 m
+// floors; glass with a sky tint and a sun glint, light frames). Roofs: clay tiles or bitumen.
+// The photos are detail maps (mean = mid-grey), so each building keeps its own colour.
 const FS = `
 in vec3 v_positionEC;
 in vec3 v_normalEC;
 in vec4 v_color;
+in vec3 v_uvm;
 void main() {
   vec3 n = normalize(v_normalEC);
   if (!gl_FrontFacing) n = -n;
+  float d = length(v_positionEC);
+  czm_materialInput mi;
+  mi.str = v_uvm;
+  mi.positionToEyeEC = -v_positionEC;
+  vec3 detail = czm_getMaterial(mi).diffuse;
+  vec3 base = v_color.rgb * detail;
+  float spec = 0.0;
+  if (v_uvm.z < 0.5 && v_uvm.y > 0.0) {
+    vec2 w = vec2(fract(v_uvm.x / 2.8), fract(v_uvm.y / 2.7));
+    vec2 lo = vec2(0.32, 0.33), hi = vec2(0.68, 0.74);
+    if (all(greaterThan(w, lo)) && all(lessThan(w, hi))) {
+      vec2 e = min(w - lo, hi - w) * vec2(2.8, 2.7);
+      float far = smoothstep(500.0, 1500.0, d);
+      // Glass: dark interior under a reflection of the sky.
+      vec3 glass = vec3(0.20, 0.25, 0.31) + 0.10 * vec3(0.6, 0.75, 0.95) * fract(sin(dot(floor(v_uvm.xy / vec2(2.8, 2.7)), vec2(12.9898, 78.233))) * 43758.5453);
+      vec3 win = min(e.x, e.y) < 0.07 ? vec3(0.86, 0.85, 0.82) : glass;
+      // A mullion down the middle.
+      if (abs(w.x - 0.5) < 0.012) win = vec3(0.86, 0.85, 0.82);
+      base = mix(win, base, far);
+      vec3 r = reflect(normalize(v_positionEC), n);
+      spec = (1.0 - far) * (min(e.x, e.y) < 0.07 ? 0.0 : pow(max(dot(r, czm_lightDirectionEC), 0.0), 60.0));
+    }
+  }
   float sun = max(dot(n, czm_lightDirectionEC), 0.0);
   // Sky light from above, a little bounce from below.
-  float sky = 0.42 + 0.18 * dot(n, normalize(czm_normal * vec3(0.0, 0.0, 1.0)));
-  vec3 c = v_color.rgb * (sky + 0.85 * sun * czm_lightColor);
+  float sky = 0.56 + 0.14 * dot(n, normalize(czm_normal * vec3(0.0, 0.0, 1.0)));
+  vec3 c = base * (sky + 0.75 * sun * czm_lightColor) + spec * czm_lightColor;
   // Aerial perspective: fade to the haze with distance.
-  float d = length(v_positionEC);
   c = mix(c, vec3(0.70, 0.78, 0.86), clamp((d - 1500.0) / 9000.0, 0.0, 0.45));
   out_FragColor = vec4(c, 1.0);
 }`;
+
+let buildingMaterial: Material | undefined;
+function material(): Material {
+  const base = new URL(`${import.meta.env.BASE_URL}buildings/`, location.href).href;
+  buildingMaterial ??= new Material({
+    fabric: {
+      type: "BuildingDetail",
+      uniforms: { wall: `${base}wall.jpg`, tiles: `${base}tiles.jpg`, flat: `${base}flat.jpg` },
+      // str = (u, v [m], material). Detail = photo / mid-grey, fading to 1 with distance
+      // (the photos have no mipmaps: far away they would shimmer).
+      source: `czm_material czm_getMaterial(czm_materialInput mi) {
+        czm_material m = czm_getDefaultMaterial(mi);
+        float k = mi.str.z;
+        vec3 t = k < 1.5 ? texture(wall, fract(mi.str.xy / 2.0)).rgb : k < 2.5 ? texture(tiles, fract(mi.str.xy / 4.0)).rgb : texture(flat, fract(mi.str.xy / 12.0)).rgb;
+        float far = smoothstep(60.0, 260.0, length(mi.positionToEyeEC));
+        // Walls: gentle plaster grain; roofs: the full tile pattern.
+        vec3 dtl = t * (255.0 / 128.0);
+        if (k < 1.5) dtl = mix(vec3(1.0), dtl, 0.6);
+        m.diffuse = mix(dtl, vec3(1.0), far);
+        return m;
+      }`,
+    },
+    translucent: false,
+  });
+  return buildingMaterial;
+}
 
 function primitive(r: OsmResult, shadows: boolean): Primitive | undefined {
   const m: Mesh | undefined = r.mesh;
@@ -84,6 +140,7 @@ function primitive(r: OsmResult, shadows: boolean): Primitive | undefined {
       position: new GeometryAttribute({ componentDatatype: ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
       normal: new GeometryAttribute({ componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: m.normals }),
       color: new GeometryAttribute({ componentDatatype: ComponentDatatype.UNSIGNED_BYTE, componentsPerAttribute: 4, normalize: true, values: m.colors }),
+      uvm: new GeometryAttribute({ componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: m.uvm }),
     }),
     indices: m.indices,
     primitiveType: PrimitiveType.TRIANGLES,
@@ -92,7 +149,7 @@ function primitive(r: OsmResult, shadows: boolean): Primitive | undefined {
   const [lon, lat, h] = r.origin;
   return new Primitive({
     geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(lon, lat, h)) }),
-    appearance: new Appearance({ vertexShaderSource: VS, fragmentShaderSource: FS, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+    appearance: new MaterialAppearance({ material: material(), vertexShaderSource: VS, fragmentShaderSource: FS, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
     asynchronous: false,
     compressVertices: false,
     allowPicking: false,

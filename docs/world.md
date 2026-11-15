@@ -105,3 +105,7 @@ From the glider at 220 m:
   offline from the side and from above into one atlas; each tree is a side card turning to the
   camera plus a top card, cross-faded by view angle, lit by the sim's sun, swaying. Placed in
   OSM forests (conifers commoner with height), denser near the camera and sparser outwards.
+- **Buildings**: the OSM meshes carry texture coordinates and a material per vertex; the
+  shader multiplies each building's own colour by a photo detail map (plaster, clay tiles,
+  bitumen; fading out by 260 m, as they have no mipmaps) and draws windows from the wall
+  coordinates (2.8 m apart, 2.7 m floors, frames, mullion, sky-tinted glass with a sun glint).

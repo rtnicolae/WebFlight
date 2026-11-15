@@ -117,6 +117,11 @@ export interface Mesh {
   normals: Float32Array;
   colors: Uint8Array;
   indices: Uint32Array;
+  /**
+   * Per vertex: texture u, v [m] and a material: 0 wall with windows, 1 plain wall,
+   * 2 tiled roof, 3 flat roof (buildings; zero elsewhere).
+   */
+  uvm: Float32Array;
 }
 
 class MeshBuilder {
@@ -124,6 +129,11 @@ class MeshBuilder {
   nrm: number[] = [];
   c: number[] = [];
   i: number[] = [];
+  t: number[] = [];
+  /** Texture coordinates and material of the next vertices. */
+  u = 0;
+  v = 0;
+  mat = 0;
   get count() {
     return this.p.length / 3;
   }
@@ -131,26 +141,33 @@ class MeshBuilder {
     this.p.push(x, y, z);
     this.nrm.push(nx, ny, nz);
     this.c.push(col[0]!, col[1]!, col[2]!, 255);
+    this.t.push(this.u, this.v, this.mat);
     return this.count - 1;
   }
   tri(a: number, b: number, c: number) {
     this.i.push(a, b, c);
   }
   /** A flat-shaded triangle (own vertices, face normal pointing away from `inside`). */
-  face(a: number[], b: number[], c: number[], col: readonly number[]) {
+  face(a: number[], b: number[], c: number[], col: readonly number[], mat = 2) {
     const ux = b[0]! - a[0]!, uy = b[1]! - a[1]!, uz = b[2]! - a[2]!;
     const vx = c[0]! - a[0]!, vy = c[1]! - a[1]!, vz = c[2]! - a[2]!;
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const l = Math.hypot(nx, ny, nz) || 1;
     nx /= l; ny /= l; nz /= l;
     if (nz < 0) { nx = -nx; ny = -ny; nz = -nz; } // roofs face up
-    const i0 = this.vertex(a[0]!, a[1]!, a[2]!, nx, ny, nz, col);
-    const i1 = this.vertex(b[0]!, b[1]!, b[2]!, nx, ny, nz, col);
-    const i2 = this.vertex(c[0]!, c[1]!, c[2]!, nx, ny, nz, col);
+    // Texture: u along the face's horizontal direction, v up the slope (tile rows level).
+    const hl = Math.hypot(nx, ny) || 1, hx = -ny / hl, hy = nx / hl, slope = Math.max(0.2, Math.sqrt(1 - nz * nz));
+    this.mat = mat;
+    const put = (q: number[]) => {
+      this.u = q[0]! * hx + q[1]! * hy;
+      this.v = q[2]! / slope;
+      return this.vertex(q[0]!, q[1]!, q[2]!, nx, ny, nz, col);
+    };
+    const i0 = put(a), i1 = put(b), i2 = put(c);
     this.tri(i0, i1, i2);
   }
   build(): Mesh {
-    return { positions: new Float32Array(this.p), normals: new Float32Array(this.nrm), colors: new Uint8Array(this.c), indices: new Uint32Array(this.i) };
+    return { positions: new Float32Array(this.p), normals: new Float32Array(this.nrm), colors: new Uint8Array(this.c), indices: new Uint32Array(this.i), uvm: new Float32Array(this.t) };
   }
 }
 
@@ -170,6 +187,8 @@ const hash = (a: number, b: number) => (Math.imul(Math.round(a * 1e6), 73856093)
 
 // --- buildings -------------------------------------------------------------------------
 
+/** Window spacing along walls [m] (the renderer draws them from the wall's u, v). */
+export const WINDOW_PITCH_M = 2.8;
 /** Plaster, render and brick wall colours of central-European towns. */
 const WALLS = [[236, 230, 216], [228, 218, 196], [240, 236, 228], [222, 204, 176], [232, 214, 200], [214, 210, 202], [226, 222, 206], [196, 150, 120]];
 /** Pitched roofs: clay tiles, weathered tiles, slate/metal. */
@@ -236,10 +255,15 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
         // Outward normal: right of travel on a counter-clockwise exterior (and on its holes).
         let nx = dy / l, ny = -dx / l;
         if (!ccw) { nx = -nx; ny = -ny; }
-        const a0 = m.vertex(ax, ay, frame.up(ax, ay, h0), nx, ny, 0, wall);
-        const b0 = m.vertex(bx, by, frame.up(bx, by, h0), nx, ny, 0, wall);
-        const b1 = m.vertex(bx, by, frame.up(bx, by, h1), nx, ny, 0, wall);
-        const a1 = m.vertex(ax, ay, frame.up(ax, ay, h1), nx, ny, 0, wall);
+        // Windows on walls long and high enough, their grid centred on the wall.
+        m.mat = l >= 3.2 && h1 - base >= 2.6 ? 0 : 1;
+        const u0 = (WINDOW_PITCH_M - (l % WINDOW_PITCH_M)) / 2;
+        const vert = (x: number, y: number, h: number, u: number) => {
+          m.u = u;
+          m.v = h - base;
+          return m.vertex(x, y, frame.up(x, y, h), nx, ny, 0, wall);
+        };
+        const a0 = vert(ax, ay, h0, u0), b0 = vert(bx, by, h0, u0 + l), b1 = vert(bx, by, h1, u0 + l), a1 = vert(ax, ay, h1, u0);
         m.tri(a0, b0, b1);
         m.tri(a0, b1, a1);
       }
@@ -260,7 +284,8 @@ function flatRoof(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][]
   }
   const idx = earcut(flat, holes);
   const first = m.count;
-  for (let v = 0; v < flat.length / 2; v++) m.vertex(flat[2 * v]!, flat[2 * v + 1]!, frame.up(flat[2 * v]!, flat[2 * v + 1]!, h), 0, 0, 1, col);
+  m.mat = 3;
+  for (let v = 0; v < flat.length / 2; v++) ((m.u = flat[2 * v]!), (m.v = flat[2 * v + 1]!)), m.vertex(flat[2 * v]!, flat[2 * v + 1]!, frame.up(flat[2 * v]!, flat[2 * v + 1]!, h), 0, 0, 1, col);
   for (let t = 0; t < idx.length; t += 3) m.tri(first + idx[t]!, first + idx[t + 1]!, first + idx[t + 2]!);
 }
 
@@ -294,7 +319,7 @@ function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof 
   if (gable) {
     // Gable ends are wall.
     const wall = WALLS[Math.floor(r() * 3)]!;
-    m.face(e3, e0, t0, wall); m.face(e1, e2, t1, wall);
+    m.face(e3, e0, t0, wall, 1); m.face(e1, e2, t1, wall, 1);
   } else {
     m.face(e3, e0, t0, col); m.face(e1, e2, t1, col);
   }

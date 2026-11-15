@@ -54,7 +54,7 @@ async function build(req: OsmRequest): Promise<void> {
   if (req.kind === "buildings") {
     const mesh = buildingMesh(osm.buildings, frame, ground);
     const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], mesh };
-    (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer]);
+    (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer, mesh.uvm.buffer]);
   } else {
     const [e0, n1] = frame.en(lon0, lat0), [e1, n0] = frame.en(lon1, lat1);
     const trees = treeInstances(osm.forests, frame, ground, { spacingM: req.spacingM, bounds: { e0, n0, e1, n1 }, max: 6000 });
