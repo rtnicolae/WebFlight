@@ -27,7 +27,12 @@ for (let j = 0; j < n; j++)
   }
 w.onmessage = (ev: MessageEvent<{ id: number; bitmap?: ImageBitmap; error?: string }>) => {
   const c = canvases[ev.data.id]!;
-  if (ev.data.bitmap) c.getContext("2d")!.drawImage(ev.data.bitmap, 0, 0);
+  if (ev.data.bitmap) {
+    // Tiles come pre-flipped for Cesium: flip back for the canvas.
+    const g = c.getContext("2d")!;
+    g.setTransform(1, 0, 0, -1, 0, 256);
+    g.drawImage(ev.data.bitmap, 0, 0);
+  }
   else console.error(ev.data.error);
   if (++done === n * n) document.title = "done";
 };

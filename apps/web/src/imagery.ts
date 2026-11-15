@@ -145,10 +145,10 @@ export class PaintedImageryProvider {
 }
 
 /**
- * Synthesized detail (zoom 14–18) wherever the photos are only Sentinel-2: see
+ * Synthesized detail (zoom 12–18) wherever the photos are only Sentinel-2: see
  * detail/detail-worker.ts. Tiles inside a national orthophoto's coverage come back empty.
  */
-const DETAIL_MIN_LEVEL = 14;
+const DETAIL_MIN_LEVEL = 12;
 export class DetailImageryProvider {
   readonly tilingScheme = new WebMercatorTilingScheme();
   readonly rectangle = this.tilingScheme.rectangle;
@@ -213,7 +213,8 @@ export class DetailImageryProvider {
     const w = this.workers[this.rr++ % this.workers.length]!;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, sun: this.sun } satisfies DetailRequest);
+      const dbg = new URLSearchParams(location.search);
+      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, sun: this.sun, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
     });
   }
 }
@@ -285,7 +286,7 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     // 3D scenery is). Elsewhere Sentinel-2 (10 m) shows through.
     // Where photos are only 10 m: detail synthesized from them and OpenStreetMap (visual only).
     const osmUrl = await openFreeMapTiles();
-    if (osmUrl && new URLSearchParams(location.search).get("detail") !== "0") layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun) as unknown as ImageryProvider, { minimumTerrainLevel: 12 }));
+    if (osmUrl && new URLSearchParams(location.search).get("detail") !== "0") layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun) as unknown as ImageryProvider, { minimumTerrainLevel: 10 }));
     for (const o of ORTHOS) layers.add(orthoLayer(o));
     void addAncpi(viewer);
     layers.add(new ImageryLayer(swissImageProvider()));

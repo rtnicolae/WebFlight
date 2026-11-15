@@ -19,6 +19,9 @@ export interface DetailRequest {
   s2Url: string;
   osmUrl: string;
   sun: { azimuthDeg: number; elevationDeg: number };
+  /** Debug switches (?synth=0, ?snap=0): skip the texture, skip the edge-aware snapping. */
+  synth?: boolean;
+  snap?: boolean;
 }
 
 const C = 40075016.686;
@@ -45,6 +48,15 @@ function lru<V>(max: number) {
 const s2Cache = lru<ImageBitmap>(48);
 const osmCache = lru<MvtLayer[]>(24);
 const fill = (u: string, z: number, x: number, y: number) => u.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
+
+/**
+ * Cesium expects imagery ImageBitmaps pre-flipped (it loads its own with imageOrientation
+ * "flipY"; WebGL's UNPACK_FLIP_Y doesn't apply to ImageBitmaps). Unflipped, every tile was
+ * drawn upside down: features broke and tones jumped at each tile row.
+ */
+function flipped(cv: OffscreenCanvas): Promise<ImageBitmap> {
+  return createImageBitmap(cv, { imageOrientation: "flipY" });
+}
 
 /** fetch with backoff on rate limits and server errors (1 s, 2 s, 4 s). */
 async function get(url: string): Promise<Response> {
@@ -124,6 +136,61 @@ self.onmessage = async (ev: MessageEvent<DetailRequest>) => {
   }
 };
 
+
+type Ctx = OffscreenCanvasRenderingContext2D;
+type ToPx = (a: number, b: number) => [number, number];
+function trace(c: Ctx, rings: [number, number][][], f: ToPx): void {
+  c.beginPath();
+  for (const r of rings) r.forEach(([a, b], i) => (i ? c.lineTo(...f(a, b)) : c.moveTo(...f(a, b))));
+}
+
+function drawWaterways(ctx: Ctx, l: MvtLayer, f: ToPx, w: (m: number) => number): void {
+  ctx.strokeStyle = "rgba(48, 70, 72, 0.85)";
+  for (const feat of l.features) {
+    if (feat.type !== 2) continue;
+    const cls = String(feat.properties["class"] ?? "");
+    ctx.lineWidth = w(cls === "river" ? 14 : cls === "canal" ? 8 : cls === "stream" ? 3 : 1.6);
+    trace(ctx, feat.geometry, f);
+    ctx.stroke();
+  }
+}
+
+/** Roads (paved / dirt, with verges), railways; narrow first so junctions read right. */
+function drawRoads(ctx: Ctx, roads: MvtLayer, f: ToPx, w: (m: number) => number, mPerPx: number): void {
+  const path = (_c: Ctx, rings: [number, number][][], g: ToPx) => trace(ctx, rings, g);
+    // Verges/edges first, then surfaces, wider roads last so junctions read right.
+    const list = roads.features.filter((ft) => ft.type === 2).map((ft) => {
+      const cls = String(ft.properties["class"] ?? "");
+      const paved = ft.properties["surface"] === "paved" || (ft.properties["surface"] !== "unpaved" && !["track", "path"].includes(cls));
+      return { ft, cls, paved, width: cls === "rail" || cls === "transit" ? 3.2 : ROAD[cls] ?? 0 };
+    }).filter((r) => r.width > 0 && Number(r.ft.properties["brunnel"] === "tunnel") === 0).sort((a, b) => a.width - b.width);
+    for (const r of list) {
+      path(ctx, r.ft.geometry, f);
+      if (r.cls === "rail" || r.cls === "transit") {
+        ctx.strokeStyle = "rgba(92, 86, 80, 0.9)";
+        ctx.lineWidth = w(3.2);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(48, 46, 44, 0.9)";
+        ctx.lineWidth = w(1.2);
+        ctx.stroke();
+        continue;
+      }
+      ctx.strokeStyle = r.paved ? "rgba(70, 70, 68, 0.55)" : "rgba(120, 104, 82, 0.4)";
+      ctx.lineWidth = w(r.width + 1.6);
+      ctx.stroke();
+      ctx.strokeStyle = r.paved ? "rgb(108, 107, 104)" : "rgb(166, 148, 120)";
+      ctx.lineWidth = w(r.width);
+      ctx.stroke();
+      if (r.paved && r.width >= 9 && mPerPx < 0.8) {
+        ctx.setLineDash([w(3), w(6)]);
+        ctx.strokeStyle = "rgba(230, 230, 222, 0.8)";
+        ctx.lineWidth = w(0.15);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
 /** The OurAirports surface of the runway an OSM line belongs to, if one matches. */
 async function airfieldSurface(geom: [number, number][][], e: number, ax: number, ay: number): Promise<"paved" | "grass" | "other" | undefined> {
   const line = geom[0];
@@ -152,8 +219,41 @@ async function airfieldSurface(geom: [number, number][][], e: number, ax: number
   return best?.surface;
 }
 
+/**
+ * Zoom 12–13: the satellite tile itself (unchanged, so tones match the plain layer beyond)
+ * with roads, railways and waterways from the zoom-14 OSM tiles under it, faded by their
+ * sub-pixel width. The handover to plain Sentinel-2 then happens where they are invisible.
+ */
+async function composeLow(q: DetailRequest): Promise<ImageBitmap> {
+  const { x, y, z } = q;
+  const k = 2 ** (14 - z);
+  const jobs: Promise<[number, number, MvtLayer[]]>[] = [];
+  for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) jobs.push(osm(q.osmUrl, x * k + i, y * k + j).then((l) => [x * k + i, y * k + j, l]));
+  const [base, tiles] = await Promise.all([s2(q.s2Url, z, x, y), Promise.all(jobs)]);
+  const cv = new OffscreenCanvas(SIZE, SIZE);
+  const ctx = cv.getContext("2d")!;
+  ctx.drawImage(base, 0, 0, SIZE, SIZE);
+  const latC = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / 2 ** z))) * 180) / Math.PI;
+  const mPerPx = (C * Math.cos((latC * Math.PI) / 180)) / 2 ** z / SIZE;
+  const w = (m: number) => {
+    const px = m / mPerPx;
+    ctx.globalAlpha = Math.min(1, Math.max(0.15, px));
+    return Math.max(1, px);
+  };
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const [X, Y, layers] of tiles)
+    for (const l of layers) {
+      const f: ToPx = (a, b) => [((X + a / l.extent) / k - x) * SIZE, ((Y + b / l.extent) / k - y) * SIZE];
+      if (l.name === "waterway") drawWaterways(ctx, l, f, w);
+      else if (l.name === "transportation") drawRoads(ctx, l, f, w, mPerPx);
+    }
+  return flipped(cv);
+}
+
 async function compose(q: DetailRequest): Promise<ImageBitmap> {
   const { x, y, z } = q;
+  if (z < 14) return composeLow(q);
   const d = z - 14;
   const sub = 2 ** d;
   const ax = x >> d, ay = y >> d, ox = x - ax * sub, oy = y - ay * sub;
@@ -211,11 +311,11 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   for (let i = 0; i < cover.length; i++) if (covPx[i * 4 + 3]! > 127) cover[i] = Math.max(0, Math.min(COVERS.length, Math.round(covPx[i * 4]! / 40)));
 
   const img = new ImageData(SIZE, SIZE);
-  edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, img.data, SIZE);
+  edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, img.data, SIZE, q.snap === false ? 0 : 0.8);
   const az = (q.sun.azimuthDeg * Math.PI) / 180;
   const sunLow = Math.min(1.5, 1 / Math.tan((Math.max(8, q.sun.elevationDeg) * Math.PI) / 180));
   const n = 2 ** z;
-  synthesize(img.data, {
+  if (q.synth !== false) synthesize(img.data, {
     x0: ((x / n) * C - C / 2) * K,
     y0: (C / 2 - (y / n) * C) * K,
     mPerPx: (C / n / SIZE) * K,
@@ -242,16 +342,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       ctx.globalAlpha = 1;
       ctx.fillStyle = "rgba(46, 66, 68, 0.78)";
       for (const feat of l.features) if (feat.type === 3) { path(ctx, feat.geometry, f); ctx.fill("evenodd"); }
-    } else if (l.name === "waterway") {
-      ctx.strokeStyle = "rgba(48, 70, 72, 0.85)";
-      for (const feat of l.features) {
-        if (feat.type !== 2) continue;
-        const cls = String(feat.properties["class"] ?? "");
-        ctx.lineWidth = w(cls === "river" ? 14 : cls === "canal" ? 8 : cls === "stream" ? 3 : 1.6);
-        path(ctx, feat.geometry, f);
-        ctx.stroke();
-      }
-    }
+    } else if (l.name === "waterway") drawWaterways(ctx, l, f, w);
   }
   const looksGreen = (geom: [number, number][][], e: number): boolean => {
     let g = 0, n = 0;
@@ -286,7 +377,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       path(ctx, ft.geometry, f);
       if (ft.type === 3) {
         ctx.globalAlpha = 1;
-        ctx.fillStyle = grass ? "rgba(150, 175, 100, 0.35)" : "rgb(92, 92, 90)";
+        ctx.fillStyle = grass ? "rgba(128, 148, 96, 0.22)" : "rgb(92, 92, 90)";
         ctx.fill("evenodd");
         continue;
       }
@@ -310,40 +401,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     }
   }
   const roads = layers.find((l) => l.name === "transportation");
-  if (roads) {
-    const f = toPx(roads.extent);
-    // Verges/edges first, then surfaces, wider roads last so junctions read right.
-    const list = roads.features.filter((ft) => ft.type === 2).map((ft) => {
-      const cls = String(ft.properties["class"] ?? "");
-      const paved = ft.properties["surface"] === "paved" || (ft.properties["surface"] !== "unpaved" && !["track", "path"].includes(cls));
-      return { ft, cls, paved, width: cls === "rail" || cls === "transit" ? 3.2 : ROAD[cls] ?? 0 };
-    }).filter((r) => r.width > 0 && Number(r.ft.properties["brunnel"] === "tunnel") === 0).sort((a, b) => a.width - b.width);
-    for (const r of list) {
-      path(ctx, r.ft.geometry, f);
-      if (r.cls === "rail" || r.cls === "transit") {
-        ctx.strokeStyle = "rgba(92, 86, 80, 0.9)";
-        ctx.lineWidth = w(3.2);
-        ctx.stroke();
-        ctx.strokeStyle = "rgba(48, 46, 44, 0.9)";
-        ctx.lineWidth = w(1.2);
-        ctx.stroke();
-        continue;
-      }
-      ctx.strokeStyle = r.paved ? "rgba(70, 70, 68, 0.55)" : "rgba(120, 104, 82, 0.4)";
-      ctx.lineWidth = w(r.width + 1.6);
-      ctx.stroke();
-      ctx.strokeStyle = r.paved ? "rgb(108, 107, 104)" : "rgb(166, 148, 120)";
-      ctx.lineWidth = w(r.width);
-      ctx.stroke();
-      if (r.paved && r.width >= 9 && mPerPx < 0.8) {
-        ctx.setLineDash([w(3), w(6)]);
-        ctx.strokeStyle = "rgba(230, 230, 222, 0.8)";
-        ctx.lineWidth = w(0.15);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-    }
-  }
+  if (roads) drawRoads(ctx, roads, toPx(roads.extent), w, mPerPx);
   const bld = layers.find((l) => l.name === "building");
   if (bld) {
     const f = toPx(bld.extent);
@@ -373,5 +431,5 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       }
     }
   }
-  return cv.transferToImageBitmap();
+  return flipped(cv);
 }

@@ -22,7 +22,8 @@ self.onmessage = async (ev: MessageEvent<PaintRequest>) => {
     const px = paintTile(x, y, z, size, heights, sun);
     const canvas = new OffscreenCanvas(size, size);
     canvas.getContext("2d")!.putImageData(new ImageData(px as Uint8ClampedArray<ArrayBuffer>, size, size), 0, 0);
-    const bitmap = canvas.transferToImageBitmap();
+    // Pre-flipped, as Cesium expects imagery ImageBitmaps (see detail-worker.ts).
+    const bitmap = await createImageBitmap(canvas, { imageOrientation: "flipY" });
     self.postMessage({ id, bitmap }, [bitmap]);
   } catch (e) {
     self.postMessage({ id, error: String(e) });
