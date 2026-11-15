@@ -61,3 +61,31 @@ cells within ±2 (±3 on ultra) around the aircraft; everything is set on the sa
 the renderer draws. Brașov from 250 m:
 
 ![Brașov: OSM buildings and forest](img/osm-brasov.jpg)
+
+## Synthesized ground detail (Romania and wherever photos are 10 m)
+
+Where no free orthophotos exist, the only photo layer is Sentinel-2 (10 m pixels), a blur
+from a glider at circuit height. A detail imagery layer (zoom 15–18, `detail/`) composes each
+tile in workers:
+
+1. the Sentinel-2 colours, upsampled and levelled;
+2. detail synthesized from them (`synth.ts`), anchored to world coordinates so tiles join and
+   every visit looks the same: strip fields with crop tones, furrows and grassy margins
+   (the Eastern European pattern), forest canopy with sun shadows, grass grain, paved yards
+   around buildings;
+3. OpenStreetMap drawn crisp on top: water and waterways, roads (asphalt or dirt from the
+   surface tag), railways, rooftops with shadows, runways (surface from OSM, else the
+   matching OurAirports runway, else the satellite colour).
+
+It is purely visual; the simulation never reads it. `?detail=0` turns it off;
+`detail-preview.html?lat=…&lon=…&z=16` renders tiles for tuning. In Romania, ANCPI's
+orthophotos are layered on top when the geoportal answers (it is discovered at runtime; it
+did not answer from outside Romania).
+
+Sentinel-2 alone (left) and with synthesized detail (right), near Ghimbav, zoom 16:
+
+![Before and after](img/detail-before-after.jpg)
+
+From the glider at 220 m:
+
+![Ghimbav with detail](img/romania-detail.jpg)

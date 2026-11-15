@@ -79,7 +79,7 @@ const COVER_OF: Record<string, Cover> = {
 const ROAD: Record<string, number> = { motorway: 22, trunk: 16, primary: 12, secondary: 9, tertiary: 7.5, minor: 5.5, service: 3.5, track: 3, path: 1.3, raceway: 10, busway: 7 };
 /** Houses: clay tiles and some slate/metal; large roofs: grey membranes and metal. */
 const ROOFS = ["#9c5a45", "#8f5644", "#7e5244", "#a2705a", "#6a6664", "#5c5e64", "#8c8a86"];
-const BIG_ROOFS = ["#8e8f8f", "#a3a4a2", "#7b7e82", "#b4b3ae", "#6f7377"];
+const BIG_ROOFS = ["#76787a", "#86878a", "#696c70", "#8e8d88", "#5f6367"];
 
 self.onmessage = async (ev: MessageEvent<DetailRequest>) => {
   const q = ev.data;
