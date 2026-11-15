@@ -29,14 +29,33 @@ These screenshots were taken in a cloud container whose network blocks the photo
 - **Terrain cliffs at tile edges.** `TerrariumTerrain.heightmap()` sampled through the shared tile cache after awaiting its loads. Concurrent requests evicted those tiles in between, so some heights read 0 m, which showed up as walls along tile edges. It now samples from the tile arrays it loaded. Coarse levels went from up to −645 m mean error to about 1 m.
 - **Coarse terrain flattened the ridges.** Terrain tiles are now 65×65 samples instead of 33×33.
 
-## Next: scenery (planned)
+## Scenery
 
-| Feature | Source (open data, no key) | Approach |
+| Final at Grenchen (photos) | Buildings, trees, river |
+|---|---|
+| ![](img/scenery-photo-final.jpg) | ![](img/scenery-final.jpg) |
+| **Runway from above (swisstopo photo)** | **The Aare from the title screen** |
+| ![](img/scenery-runway-top.jpg) | ![](img/scenery-menu-water.jpg) |
+
+These were taken in the cloud container, which renders in software at about 15 fps. Tiles there need 1–3 minutes to sharpen, so several shots are still blurry. A GPU loads them quickly.
+
+| Layer | Source (open data, no key) | Notes |
 |---|---|---|
-| Buildings | swisstopo swissBUILDINGS3D (3D Tiles) in Switzerland; OpenStreetMap footprints + heights elsewhere | Cesium 3D Tiles. swisstopo heights include the geoid (~+49 m here), but our terrain treats Terrarium heights as ellipsoidal, so the tileset is shifted down by the local geoid separation. Elsewhere, extrude OSM footprints. |
-| Trees and forest | swisstopo swissTLM3D forest areas / single trees; OSM `landuse=forest` / `natural=wood` | Instanced tree models (a few species, LOD to billboards at range), scattered deterministically inside forest polygons. Trees cast shadows. |
-| Water | swissTLM3D lakes and rivers; OSM `natural=water`, `waterway=*` | Cesium water material (animated normals, sky reflection) on clamped polygons; lake surfaces flattened to their level in the terrain. |
-| High-resolution ground | SWISSIMAGE 10 cm (already used for photos); swissALTI3D 0.5–2 m terrain | Deeper imagery levels near the glider. Optionally swissALTI3D for rendering only, while physics keeps Terrarium so the ground stays consistent. Detail textures (grass, crops, asphalt) blended in close to the ground. |
-| Runway | swissTLM3D / OSM aerodrome geometry | Real runway outline and markings, and the physics and gym runway frames taken from the same data. |
+| Aerial photos | swisstopo SWISSIMAGE to zoom 20 (≈ 10 cm), Sentinel-2 cloudless outside | Real fields, roads, villages, the airfield. |
+| Buildings | swisstopo swissTLM3D as 3D Tiles (`vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.swisstlm3d.3d`) | Real footprints and roof shapes. Tinted pale walls and red roofs. Cast shadows. |
+| Trees | swisstopo vegetation 3D Tiles (`ch.swisstopo.vegetation.3d`) | Every surveyed tree as an instance of five tree models. Detail 24 (12 on `ultra`): the full set at fine detail stalled a software renderer. |
+| Water | swisstopo base vector tiles (`ch.swisstopo.base.vt`, layer `water`) | Lakes and rivers from zoom-11 tiles (±30 km), ponds and pools from zoom-14 tiles around the glider. Animated water material on the terrain. Decoded by our own MVT decoder (`packages/scenery`, no dependency). |
+| Runway | swisstopo base vector tiles, layer `aeroway` | Grenchen's site constant comes from the runway polygon. Before this it was 9 m and 1.4° off, visible against the photos. |
 
-The data hosts (e.g. `vectortiles.geo.admin.ch`, `data.geo.admin.ch`, an Overpass mirror) must be reachable from the browser; this cloud container's network currently blocks them, so verifying the result needs them allowed here.
+**Heights.** swisstopo's 3D Tiles use the same sea-level heights we use for terrain, so no geoid shift is needed. Checked on the Grenchen tiles: building bases sit 1.9 m below our ground (median), and tree bases 1.0 m above it.
+
+**Loading order.** The 3D scenery starts once the globe's terrain and imagery have loaded (or after 20 s), because the tilesets otherwise starve the ground of requests and CPU. The terrain itself now uses the Web Mercator tiling of Terrarium and of all imagery, so imagery drapes without GPU reprojection. The renderer's terrain is preloaded around the start at zooms 8–13 in parallel.
+
+**Turning layers off.** `buildings=0`, `trees=0` and `water=0` turn layers off. `quality=low` drops buildings, trees and shadows.
+
+### Still to do
+
+- The painted fallback could use the same vector data (forest, water, roads, buildings) instead of noise.
+- Scenery outside Switzerland: OSM buildings, trees and water (Overpass wasn't reachable from the container).
+- swissALTI3D (0.5–2 m) terrain for rendering only, close to the ground.
+- Close-up detail textures (grass, asphalt), and a runway with markings in photo mode.

@@ -32,6 +32,7 @@ Fetched at runtime by the browser, never stored in the repository:
 |---|---|---|
 | swisstopo SWISSIMAGE (`wmts.geo.admin.ch`) | aerial photos over Switzerland | Free geodata (OGD) of the Swiss Confederation; attribution "© swisstopo" (shown in the credits) |
 | EOX Sentinel-2 cloudless 2016 (`tiles.maps.eox.at`, layer `s2cloudless_3857`) | imagery elsewhere | CC BY 4.0: "Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)". Later years are CC BY-NC-SA, so the 2016 layer is used deliberately |
+| swisstopo swissTLM3D 3D Tiles, vegetation 3D Tiles, base vector tiles (`vectortiles*.geo.admin.ch`) | buildings, trees, water, the Grenchen runway geometry | Free geodata (OGD) of the Swiss Confederation; attribution "© swisstopo" |
 | Painted terrain | fallback when the photo servers can't be reached | generated in the browser from Terrarium heights (no third-party imagery) |
 
 ## Code ported from FlightGear (GPL-2.0-or-later)

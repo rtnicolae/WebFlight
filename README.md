@@ -13,6 +13,7 @@ WebAssembly. The same flight model core runs headless in Node for training.
 | `packages/environment` | Terrarium terrain heights, FlightGear ridge lift and thermals (ported), seeded thermal field, sites. No browser or Node APIs. |
 | `packages/launch` | Winch launch, aerotow rope and tow plane, ported from FlightGear (`hitch.nas`, ASK21 `dragrobot.nas`), forces into JSBSim `external_reactions`. No browser or Node APIs. |
 | `packages/gym` | Gymnasium-style environments (`landing`, `aerotow`): seeded, bit-deterministic, ~300–380× real time per core; observation-only baseline policies. No browser or Node APIs. |
+| `packages/scenery` | Mapbox Vector Tile decoder and swisstopo water polygons for the renderer. No browser or Node APIs. |
 | `apps/headless` | Node experiments: glide run, speed polar, PNG plot, soaring over real terrain (`SoaringSim`), ground launches (`GroundLaunchSim`), the gym over stdio (`gym-server`) and its benchmark. |
 | `apps/web` | Browser app: FDM worker (120 Hz), Cesium scene on real terrain, thermal clouds, animated model, chase/cockpit camera, gamepad, HUD. |
 
