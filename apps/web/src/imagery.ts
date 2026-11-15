@@ -1,12 +1,13 @@
 /**
  * Ground imagery:
- *  - "photo": swisstopo SWISSIMAGE (aerial photos, ~10 cm, over Switzerland) on top of EOX
- *    Sentinel-2 cloudless 2016 (10 m, worldwide). Both free, no key, attribution required.
+ *  - "photo": free national orthophotos (Spain, France, Poland, Czechia, the Netherlands,
+ *    Flanders, Austria, Switzerland on top) over EOX Sentinel-2 cloudless 2016 (10 m,
+ *    everywhere). All free, no key, attribution shown in the credits.
  *  - "painted": land cover and hillshade generated from the terrain heights (workers), the
  *    fallback when the photo servers can't be reached.
  *  - "grid" / "osm": the old debug looks.
  */
-import { Cartographic, Credit, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
+import { Cartesian2, Cartographic, Credit, DiscardMissingTileImagePolicy, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
 import { sunFrom, type Sun } from "./paint/landcover.ts";
 import type { PaintRequest } from "./paint/paint-worker.ts";
 
@@ -14,12 +15,65 @@ export type ImageryMode = "photo" | "painted" | "grid" | "osm";
 
 const SWISSIMAGE = "https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg";
 const S2CLOUDLESS = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg";
-/** IGN Géoplateforme orthophotos (France, ~20 cm; Licence Ouverte 2.0, no key). */
-const IGN_ORTHO = "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}";
-const FRANCE_RECT = Rectangle.fromDegrees(-5.3, 41.2, 9.7, 51.2);
-/** basemap.at orthophotos (Austria, 30 cm; CC BY 4.0, no key). */
-const BASEMAP_AT = "https://mapsneu.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg";
-const AUSTRIA_RECT = Rectangle.fromDegrees(9.4, 46.3, 17.3, 49.1);
+/**
+ * Free national orthophotos (no key), all Web Mercator tiles with CORS; each checked for a
+ * real photo inside and for what it returns outside its country (errors, or white tiles:
+ * `outsideTile` for the discard policy). Layered in this order, so later ones win where the
+ * rectangles overlap (France over Spain's border mosaic, Switzerland on top).
+ */
+interface Ortho {
+  name: string;
+  url: string;
+  /** [west, south, east, north] degrees: the service's coverage (a little larger than the country). */
+  bbox: [number, number, number, number];
+  maximumLevel: number;
+  credit: string;
+  /** A tile outside the coverage that comes back blank, to discard such tiles. */
+  outsideTile?: string;
+}
+const KVP = (base: string, layer: string, set: string, matrix: string, format = "image/jpeg", style = "default") =>
+  `${base}${base.includes("?") ? "&" : "?"}SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=${style}&FORMAT=${format}&TILEMATRIXSET=${set}&TILEMATRIX=${matrix}&TILEROW={y}&TILECOL={x}`;
+const ORTHOS: Ortho[] = [
+  // Spain: IGN PNOA (CC BY 4.0, scne.es).
+  { name: "es", url: KVP("https://www.ign.es/wmts/pnoa-ma", "OI.OrthoimageCoverage", "GoogleMapsCompatible", "{z}"), bbox: [-9.6, 35.8, 4.6, 44.0], maximumLevel: 20, credit: "PNOA © IGN España (scne.es), CC BY 4.0" },
+  // France: IGN Géoplateforme (~20 cm; Licence Ouverte 2.0).
+  { name: "fr", url: KVP("https://data.geopf.fr/wmts", "ORTHOIMAGERY.ORTHOPHOTOS", "PM", "{z}", "image/jpeg", "normal"), bbox: [-5.3, 41.2, 9.7, 51.2], maximumLevel: 19, credit: "© IGN – Géoplateforme (orthophotos)" },
+  // Poland: GUGiK Geoportal (no restrictions; Geoportal terms).
+  { name: "pl", url: KVP("https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMTS/StandardResolution", "ORTOFOTOMAPA", "EPSG:3857", "EPSG:3857:{z}"), bbox: [14.0, 48.9, 24.2, 55.0], maximumLevel: 19, credit: "Ortofotomapa © GUGiK (geoportal.gov.pl)" },
+  // Czechia: ČÚZK (ArcGIS tiles; errors outside).
+  { name: "cz", url: "https://ags.cuzk.cz/arcgis1/rest/services/ORTOFOTO_WM/MapServer/tile/{z}/{y}/{x}", bbox: [11.8, 48.5, 19.0, 51.2], maximumLevel: 20, credit: "Ortofoto © ČÚZK" },
+  // Netherlands: PDOK / Beeldmateriaal (no fees or constraints); white tiles outside.
+  {
+    name: "nl",
+    url: "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{zz}/{x}/{y}.jpeg",
+    bbox: [3.2, 50.7, 7.3, 53.6],
+    maximumLevel: 20,
+    credit: "Luchtfoto © Beeldmateriaal Nederland (PDOK)",
+    outsideTile: "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/14/8510/5448.jpeg",
+  },
+  // Flanders: Digitaal Vlaanderen (free; Vlaanderen terms); errors outside.
+  { name: "vl", url: KVP("https://geo.api.vlaanderen.be/OMWRGBMRVL/wmts", "omwrgbmrvl", "GoogleMapsVL", "{z}", "image/png", ""), bbox: [2.5, 50.65, 5.95, 51.55], maximumLevel: 20, credit: "Orthofoto © Digitaal Vlaanderen" },
+  // Austria: basemap.at (30 cm; CC BY 4.0).
+  { name: "at", url: "https://mapsneu.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg", bbox: [9.4, 46.3, 17.3, 49.1], maximumLevel: 19, credit: '<a href="https://basemap.at">basemap.at</a> orthofoto, CC BY 4.0' },
+];
+const rect = (o: Ortho) => Rectangle.fromDegrees(...o.bbox);
+
+function orthoLayer(o: Ortho): ImageryLayer {
+  // PDOK names its zoom levels with two digits.
+  const custom = o.url.includes("{zz}") ? { customTags: { zz: (_p: unknown, _x: number, _y: number, level: number) => String(level).padStart(2, "0") } } : {};
+  return new ImageryLayer(
+    new UrlTemplateImageryProvider({
+      url: o.url,
+      rectangle: rect(o),
+      minimumLevel: 6,
+      maximumLevel: o.maximumLevel,
+      credit: new Credit(o.credit),
+      ...custom,
+      ...(o.outsideTile ? { tileDiscardPolicy: new DiscardMissingTileImagePolicy({ missingImageUrl: o.outsideTile, pixelsToCheck: [new Cartesian2(0, 0), new Cartesian2(128, 128), new Cartesian2(255, 255), new Cartesian2(40, 200)] }) } : {}),
+    }),
+  );
+}
+
 /** SWISSIMAGE coverage (a little larger than Switzerland). */
 const SWISS_RECT = Rectangle.fromDegrees(5.8, 45.75, 10.6, 47.9);
 
@@ -27,7 +81,7 @@ const SWISS_RECT = Rectangle.fromDegrees(5.8, 45.75, 10.6, 47.9);
 /** Whether the photo layers have sub-metre orthophotos here (else Sentinel-2's 10 m pixels). */
 export function highResPhotoAt(latDeg: number, lonDeg: number): boolean {
   const c = Cartographic.fromDegrees(lonDeg, latDeg);
-  return [SWISS_RECT, FRANCE_RECT, AUSTRIA_RECT].some((r) => Rectangle.contains(r, c));
+  return [SWISS_RECT, ...ORTHOS.map(rect)].some((r) => Rectangle.contains(r, c));
 }
 
 export function swissImageProvider(): UrlTemplateImageryProvider {
@@ -127,8 +181,7 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     );
     // National orthophotos where they are free, Switzerland on top (sharpest, and where the
     // 3D scenery is). Elsewhere Sentinel-2 (10 m) shows through.
-    layers.add(new ImageryLayer(new UrlTemplateImageryProvider({ url: IGN_ORTHO, rectangle: FRANCE_RECT, minimumLevel: 6, maximumLevel: 19, credit: new Credit("© IGN – Géoplateforme (orthophotos)") })));
-    layers.add(new ImageryLayer(new UrlTemplateImageryProvider({ url: BASEMAP_AT, rectangle: AUSTRIA_RECT, minimumLevel: 6, maximumLevel: 19, credit: new Credit('<a href="https://basemap.at">basemap.at</a> orthofoto, CC BY 4.0') })));
+    for (const o of ORTHOS) layers.add(orthoLayer(o));
     layers.add(new ImageryLayer(swissImageProvider()));
   } else if (mode === "painted") {
     layers.add(new ImageryLayer(new PaintedImageryProvider(sunFrom(sun.azimuthDeg, Math.max(5, sun.elevationDeg))) as unknown as ImageryProvider));

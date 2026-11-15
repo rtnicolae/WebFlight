@@ -35,6 +35,11 @@ Fetched at runtime by the browser, never stored in the repository:
 | swisstopo swissTLM3D 3D Tiles, vegetation 3D Tiles, base vector tiles (`vectortiles*.geo.admin.ch`) | buildings, trees, water, the Grenchen runway geometry | Free geodata (OGD) of the Swiss Confederation; attribution "© swisstopo" |
 | IGN Géoplateforme orthophotos (`data.geopf.fr`) | aerial photos in France | Licence Ouverte / Open Licence 2.0 (Etalab); attribution "© IGN" |
 | basemap.at orthofoto (`mapsneu.wien.gv.at`) | aerial photos in Austria | CC BY 4.0, "basemap.at" |
+| IGN España PNOA (`www.ign.es`, WMTS `pnoa-ma`) | aerial photos in Spain | CC BY 4.0, "PNOA © IGN España (scne.es)" (stated in the service's AccessConstraints) |
+| GUGiK Geoportal ortofotomapa (`mapy.geoportal.gov.pl`) | aerial photos in Poland | free, no access constraints ("brak ograniczeń"); use implies the Geoportal terms (geoportal.gov.pl); attribution "© GUGiK" |
+| ČÚZK Ortofoto (`ags.cuzk.cz`, `ORTOFOTO_WM`) | aerial photos in Czechia | ČÚZK open data; attribution "© ČÚZK" (the service's copyright text) |
+| PDOK Luchtfoto RGB (`service.pdok.nl`, `Actueel_orthoHR`) | aerial photos in the Netherlands | no fees, no access constraints (service metadata); attribution "© Beeldmateriaal Nederland (PDOK)" |
+| Digitaal Vlaanderen orthophotos (`geo.api.vlaanderen.be`, `OMWRGBMRVL`) | aerial photos in Flanders | free of charge, under Digitaal Vlaanderen's terms for its geographic web services; attribution "© Digitaal Vlaanderen" |
 | OpenFreeMap (`tiles.openfreemap.org`, OpenMapTiles schema) | water, buildings, forests (trees), runway centrelines everywhere | Data © OpenStreetMap contributors (ODbL); tiles © OpenMapTiles (CC BY 4.0) |
 | OurAirports (`packages/environment/data/airfields-eu.json`, from github.com/davidmegginson/ourairports-data) | European airfields and runways | Public domain (The Unlicense) |
 | Open-Meteo forecast and historical APIs (`api.open-meteo.com`, `archive-api.open-meteo.com`), fetched live | the weather of the chosen hour | Free API, no key; data CC BY 4.0, attribution "Weather data by Open-Meteo.com" |
