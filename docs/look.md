@@ -31,6 +31,25 @@ These screenshots were taken in a cloud container whose network blocks the photo
 
 ## Scenery
 
+### Second pass: honest screenshots, real roofs, real clouds, cross-country
+
+| Ridge above Grenchen | Photo-draped buildings on final |
+|---|---|
+| ![](img/v2-ridge.jpg) | ![](img/v2-buildings.jpg) |
+| **On the runway (SWISSIMAGE)** | **Cross-country: French Jura (IGN), cumulus** |
+| ![](img/v2-runway.jpg) | ![](img/v2-xc-clouds.jpg) |
+
+- **Screenshots** are now taken only once the globe and every 3D tileset report loaded, with rendering throttled while loading (the container renders in software). The first scenery pass was judged on blurry, half-loaded frames.
+- **Buildings** carry the aerial photo (`Cesium3DTileset.imageryLayers`, new in Cesium 1.14x), so roofs show their real colours instead of the tiles' pastel materials.
+- **Clouds** are sorted sprite clusters (`web/src/clouds.ts`): procedurally drawn cauliflower puffs lit from above, shaded by the real sun direction, with a flat, slightly darker base layer at the cloud base, fading into the haze with distance. One sprite sheet behind a data URL, because per-billboard `setImage` with a shared id races in Cesium's texture atlas.
+- **Water** over photos is a light tint with a soft glint. The water normal map is tiled less, which stopped the glitter over big lakes.
+- **Cross-country.**
+  - *Thermals:* they now exist everywhere (`ThermalSky`: 6 km cells, 1–3 seeded thermals each, alive within ~18 km of the glider). Clouds keep their shape by thermal id.
+  - *Water:* streams around the glider from OpenFreeMap (OpenStreetMap, global, no key), with zoom-11 lakes and rivers ±30 km and zoom-14 ponds ±2 km.
+  - *Imagery:* IGN orthophotos in France and basemap.at in Austria, with SWISSIMAGE on top in Switzerland and Sentinel-2 elsewhere.
+  - *Start anywhere:* `?lat=…&lon=…&hdg=…&agl=…`.
+- **Runway** geometry comes from swisstopo's runway polygon (see the first pass).
+
 | Final at Grenchen (photos) | Buildings, trees, river |
 |---|---|
 | ![](img/scenery-photo-final.jpg) | ![](img/scenery-final.jpg) |
@@ -56,6 +75,6 @@ These were taken in the cloud container, which renders in software at about 15 f
 ### Still to do
 
 - The painted fallback could use the same vector data (forest, water, roads, buildings) instead of noise.
-- Scenery outside Switzerland: OSM buildings, trees and water (Overpass wasn't reachable from the container).
+- Buildings and trees outside Switzerland (OpenFreeMap has OSM building footprints with heights; forests as polygons).
 - swissALTI3D (0.5–2 m) terrain for rendering only, close to the ground.
 - Close-up detail textures (grass, asphalt), and a runway with markings in photo mode.
