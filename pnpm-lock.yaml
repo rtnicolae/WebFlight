@@ -111,7 +111,11 @@ importers:
         specifier: workspace:*
         version: link:../fdm-core
 
-  packages/scenery: {}
+  packages/scenery:
+    dependencies:
+      earcut:
+        specifier: 3.0.2
+        version: 3.0.2
 
 packages:
 
