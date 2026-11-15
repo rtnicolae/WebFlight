@@ -4,7 +4,7 @@
  * set buildings and trees on the same ground the renderer draws.
  */
 import { TerrariumTerrain, tileToLonLat } from "@webflight/environment";
-import { buildingMesh, fetchOsm, LocalFrame, treeInstances, type Mesh, type OsmTile } from "@webflight/scenery";
+import { buildingMesh, fetchOsm, LocalFrame, townTreeInstances, treeInstances, type Mesh, type OsmTile } from "@webflight/scenery";
 
 export type OsmRequest =
   | { id: number; kind: "buildings"; url: string; x: number; y: number }
@@ -27,7 +27,7 @@ const tile = (url: string, x: number, y: number): Promise<OsmTile> => {
   const k = `${x}/${y}`;
   let t = tiles.get(k);
   if (!t) {
-    t = fetchOsm(url, 14, x, y).catch(() => ({ buildings: [], forests: [] }));
+    t = fetchOsm(url, 14, x, y).catch(() => ({ buildings: [], forests: [], greens: [], roads: [] }));
     tiles.set(k, t);
     // Keep the last few dozen decoded tiles: trees ask for the same parent many times.
     if (tiles.size > 40) tiles.delete(tiles.keys().next().value!);
@@ -57,7 +57,12 @@ async function build(req: OsmRequest): Promise<void> {
     (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer, mesh.uvm.buffer]);
   } else {
     const [e0, n1] = frame.en(lon0, lat0), [e1, n0] = frame.en(lon1, lat1);
-    const trees = treeInstances(osm.forests, frame, ground, { spacingM: req.spacingM, bounds: { e0, n0, e1, n1 }, max: 6000 });
+    const forest = treeInstances(osm.forests, frame, ground, { spacingM: req.spacingM, bounds: { e0, n0, e1, n1 }, max: 6000 });
+    // Single trees in gardens, along streets and in parks.
+    const town = townTreeInstances(osm, frame, ground, { e0, n0, e1, n1 });
+    const trees = new Float32Array(forest.length + town.length);
+    trees.set(forest);
+    trees.set(town, forest.length);
     const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], trees };
     (self as unknown as Worker).postMessage(out, [trees.buffer]);
   }

@@ -93,7 +93,7 @@ function texture(base: string, role: TextureRole): Promise<LoadedTexture> {
 }
 async function groundTextures(base: string): Promise<GroundTextures> {
   const [grass, dryGrass, soil, drySoil] = await Promise.all((["grass", "dryGrass", "soil", "drySoil"] as const).map((k) => texture(base, k)));
-  return { grass: grass!.detail, dryGrass: dryGrass!.detail, soil: soil!.detail, drySoil: drySoil!.detail };
+  return { grass: grass!.detail, dryGrass: dryGrass!.detail, soil: soil!.detail, drySoil: drySoil!.detail, paved: (await texture(base, "gravel")).detail };
 }
 
 /** fetch with backoff on rate limits and server errors (1 s, 2 s, 4 s). */
@@ -370,6 +370,12 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
 
   const img = new ImageData(SIZE, SIZE);
   edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, img.data, SIZE, q.snap === false ? 0 : 0.8);
+  // Plain upsampling for built-up ground (only when the tile has any).
+  let smooth: Uint8ClampedArray | undefined;
+  if (cover.includes(COVERS.indexOf("urban") + 1)) {
+    smooth = new Uint8ClampedArray(SIZE * SIZE * 4);
+    edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, smooth, SIZE, 0);
+  }
   const az = (q.sun.azimuthDeg * Math.PI) / 180;
   const sunLow = Math.min(1.5, 1 / Math.tan((Math.max(8, q.sun.elevationDeg) * Math.PI) / 180));
   const n = 2 ** z;
@@ -382,7 +388,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     sunX: Math.sin(az),
     sunY: Math.cos(az),
     sunLow,
-  }, cover, tex);
+  }, cover, tex, smooth);
   ctx.putImageData(img, 0, 0);
 
   // Crisp vectors on top.

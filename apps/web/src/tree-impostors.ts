@@ -53,22 +53,27 @@ out float v_y;
 out vec3 v_upEC;
 void main() {
   vec4 p = czm_computePosition();
-  vec3 world = position3DHigh + position3DLow;
+  // Positions may be in the tile's local frame (Cesium keeps the instance's model matrix):
+  // work out up/right in world space, then bring the offsets back into model space.
+  mat3 m3 = mat3(czm_model);
+  vec3 world = (czm_model * vec4(position3DHigh + position3DLow, 1.0)).xyz;
   vec3 up = normalize(world);
   vec3 toCam = normalize(czm_viewerPositionWC - world);
   float elev = dot(toCam, up);
+  vec3 offset;
   if (corner.z < 0.5) {
     vec3 right = normalize(cross(up, toCam));
     float t = czm_frameNumber / 60.0;
     float sway = corner.y * corner.y * 0.25 * sin(t * 1.3 + dot(world, vec3(0.013, 0.021, 0.017)));
-    p.xyz += right * (corner.x * size.x + sway) + up * corner.y * size.y;
-    v_fade = 1.0 - smoothstep(0.55, 0.85, elev);
+    offset = right * (corner.x * size.x + sway) + up * corner.y * size.y;
+    v_fade = 1.0 - smoothstep(0.86, 0.98, elev);
   } else {
     vec3 east = normalize(cross(vec3(0.0, 0.0, 1.0), up));
     vec3 north = cross(up, east);
-    p.xyz += east * corner.x * size.x + north * (corner.y - 0.5) * size.x + up * size.y * 0.62;
-    v_fade = smoothstep(0.45, 0.8, elev);
+    offset = east * corner.x * size.x + north * (corner.y - 0.5) * size.x + up * size.y * 0.62;
+    v_fade = smoothstep(0.7, 0.92, elev);
   }
+  p.xyz += offset * m3; // world → model (m3 is a rotation: its transpose is its inverse)
   v_st = rect.xy + vec2(corner.x + 0.5, corner.y) * rect.zw;
   v_y = corner.z < 0.5 ? corner.y : 1.0;
   v_upEC = mat3(czm_view) * up;

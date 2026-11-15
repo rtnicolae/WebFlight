@@ -33,7 +33,9 @@ out float v_sway;
 out vec3 v_upEC;
 void main() {
   vec4 p = czm_computePosition();
-  vec3 world = position3DHigh + position3DLow;
+  // Positions may be in the cell's local frame: get the world position through czm_model.
+  mat3 m3 = mat3(czm_model);
+  vec3 world = (czm_model * vec4(position3DHigh + position3DLow, 1.0)).xyz;
   vec3 up = normalize(world);
   // Wind: tips sway along a slowly turning horizontal direction, phase by position.
   float t = czm_frameNumber / 60.0;
@@ -42,7 +44,7 @@ void main() {
   vec3 north = cross(up, east);
   float gust = 0.5 + 0.5 * sin(t * 0.7 + ph * 0.05);
   vec3 dir = normalize(east * 0.8 + north * 0.6);
-  p.xyz += dir * sway * (0.025 + 0.03 * gust) * sin(t * 2.3 + ph * 1.7);
+  p.xyz += (dir * sway * (0.025 + 0.03 * gust) * sin(t * 2.3 + ph * 1.7)) * m3;
   v_positionEC = (czm_modelViewRelativeToEye * p).xyz;
   v_color = color;
   v_sway = sway;

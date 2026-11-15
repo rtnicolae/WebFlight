@@ -152,6 +152,8 @@ export interface GroundTextures {
   dryGrass: DetailTexture;
   soil: DetailTexture;
   drySoil: DetailTexture;
+  /** Paved yards and lots in built-up areas. */
+  paved: DetailTexture;
 }
 
 /** Lush/dry blend of two textures at the sampler's current point into out. */
@@ -163,7 +165,7 @@ function mixInto(ts: TileSampler, lush: DetailTexture, dryT: DetailTexture, dry:
   for (let c = 0; c < 3; c++) out[c] = a[c]! + (b[c]! - a[c]!) * dry;
 }
 
-export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8Array, tex?: GroundTextures): void {
+export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8Array, tex?: GroundTextures, smooth?: Uint8ClampedArray): void {
   const ra = new Float32Array(3), rb = new Float32Array(3);
   const ts = new TileSampler(o.mPerPx);
   const gr = new Float32Array(3), so = new Float32Array(3);
@@ -176,6 +178,13 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
       // No recolouring: the detail tiles border plain Sentinel-2 tiles and must match them.
       let r = px[k]!, g = px[k + 1]!, b = px[k + 2]!;
       const c = cover && cover[j * size + i] ? COVERS[cover[j * size + i]! - 1]! : classify(r, g, b);
+      // Built-up ground: the plain (unsnapped) upsampling; snapping a smear of roofs and
+      // shadows gives jagged patches.
+      if (c === "urban" && smooth) {
+        r = smooth[k]!;
+        g = smooth[k + 1]!;
+        b = smooth[k + 2]!;
+      }
       let f = 1, tr = 1, tg = 1, tb = 1;
       if ((c === "crop" || c === "grass") && tex) {
         // Retexture open ground with HD photos: grass where the satellite pixel is green,
@@ -204,6 +213,25 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
       } else if (c === "grass") {
         // Grass: blades (sub-metre), tufts (metres), patches (tens of metres); mean 1.
         f = 1 + (valueNoise(wx, wy, 0.7, 31) - 0.5) * (mPerPx < 0.8 ? 0.16 : 0.05) + (valueNoise(wx, wy, 4, 33) - 0.5) * 0.1 + (valueNoise(wx, wy, 35, 32) - 0.5) * 0.08;
+      } else if (c === "urban" && tex) {
+        // Built-up ground between the buildings: lawns and gardens where the satellite is
+        // green, paved yards and lots elsewhere (pulled toward a concrete grey: the 10 m
+        // pixels there are a smear of roofs, walls and shadows).
+        const green = g - (r + b) / 2;
+        const t = Math.min(1, Math.max(0, (green - 2) / 10));
+        ts.at(wx, wy);
+        if (t > 0.02) ts.sample(tex.grass, gr);
+        else gr[0] = gr[1] = gr[2] = 1;
+        if (t < 0.98) ts.sample(tex.paved, so);
+        else so[0] = so[1] = so[2] = 1;
+        const lum = 0.3 * r + 0.59 * g + 0.11 * b;
+        const grey = Math.min(150, Math.max(92, lum)), pull = 0.55 * (1 - t) * Math.min(1, Math.max(0, (5 - mPerPx) / 3.5)); // eases in with zoom
+        r += (grey - r) * pull;
+        g += (grey - g) * pull;
+        b += (grey * 0.97 - b) * pull;
+        tr = so[0]! + (gr[0]! - so[0]!) * t;
+        tg = so[1]! + (gr[1]! - so[1]!) * t;
+        tb = so[2]! + (gr[2]! - so[2]!) * t;
       } else if (c === "urban") {
         f = 1 + (valueNoise(wx, wy, 2, 41) - 0.5) * 0.08;
       } else {

@@ -63,20 +63,37 @@ export function polygonsFromLayer(layer: MvtLayer, z: number, x: number, y: numb
 export interface OsmTile {
   buildings: OsmPolygon[];
   forests: OsmPolygon[];
+  /** Where single trees stand: residential land, parks, gardens, cemeteries (class in properties.kind). */
+  greens: OsmPolygon[];
+  /** Road and rail centrelines with half-widths [m], [lon, lat] points. */
+  roads: { pts: LonLat[]; halfM: number }[];
 }
 
+const ROAD_HALF_M: Record<string, number> = { motorway: 12, trunk: 9, primary: 7, secondary: 5.5, tertiary: 4.5, minor: 3.5, service: 2.5, track: 2, rail: 3, transit: 3 };
+
 export function osmFromTile(data: Uint8Array, z: number, x: number, y: number): OsmTile {
-  const t: OsmTile = { buildings: [], forests: [] };
+  const t: OsmTile = { buildings: [], forests: [], greens: [], roads: [] };
   for (const layer of decodeMvt(data)) {
     if (layer.name === "building") t.buildings = polygonsFromLayer(layer, z, x, y, () => true, true);
-    else if (layer.name === "landcover") t.forests = polygonsFromLayer(layer, z, x, y, (p) => p["class"] === "wood");
+    else if (layer.name === "landcover") {
+      t.forests = polygonsFromLayer(layer, z, x, y, (p) => p["class"] === "wood");
+      t.greens.push(...polygonsFromLayer(layer, z, x, y, (p) => p["class"] === "grass" && ["park", "garden", "allotments"].includes(String(p["subclass"]))).map((g) => ({ ...g, properties: { kind: "park" } })));
+    } else if (layer.name === "landuse") {
+      t.greens.push(...polygonsFromLayer(layer, z, x, y, (p) => ["residential", "suburb", "cemetery", "school", "hospital"].includes(String(p["class"]))).map((g) => ({ ...g, properties: { kind: g.properties["class"] === "cemetery" ? "park" : "residential" } })));
+    } else if (layer.name === "transportation") {
+      for (const f of layer.features) {
+        const half = ROAD_HALF_M[String(f.properties["class"] ?? "")];
+        if (f.type !== 2 || !half) continue;
+        for (const line of f.geometry) t.roads.push({ pts: line.map(([px, py]) => tileToLonLat(x + px / layer.extent, y + py / layer.extent, z)), halfM: half });
+      }
+    }
   }
   return t;
 }
 
 export async function fetchOsm(url: string, z: number, x: number, y: number): Promise<OsmTile> {
   const r = await fetch(url.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y)));
-  if (!r.ok) return { buildings: [], forests: [] };
+  if (!r.ok) return { buildings: [], forests: [], greens: [], roads: [] };
   return osmFromTile(new Uint8Array(await r.arrayBuffer()), z, x, y);
 }
 
@@ -411,6 +428,58 @@ export function treeInstances(forests: OsmPolygon[], frame: LocalFrame, ground: 
         out.push(x, y, frame.up(x, y, g - 0.3), H, (conifer ? 1 : 0) + Math.min(0.999, r()));
       }
     }
+  }
+  return new Float32Array(out);
+}
+
+/**
+ * Single trees in towns and parks (same 5-float instances as treeInstances): on a jittered
+ * world-anchored grid through residential land (gardens, street trees: about every other
+ * cell of 16 m) and parks (12 m), never on a building, within 2 m of one, or on a road.
+ * Smaller than forest trees and mostly broadleaf.
+ */
+export function townTreeInstances(t: OsmTile, frame: LocalFrame, ground: GroundFn, bounds: { e0: number; n0: number; e1: number; n1: number }): Float32Array {
+  const out: number[] = [];
+  const inB = (x: number, y: number, pad: number) => x >= bounds.e0 - pad && x < bounds.e1 + pad && y >= bounds.n0 - pad && y < bounds.n1 + pad;
+  const local = (r: LonLat[]) => r.map(([lon, lat]) => frame.en(lon, lat));
+  const touches = (r: [number, number][], pad: number) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of r) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    return x0 < bounds.e1 + pad && x1 > bounds.e0 - pad && y0 < bounds.n1 + pad && y1 > bounds.n0 - pad;
+  };
+  const buildings = t.buildings.map((b) => local(b.rings[0]!)).filter((r) => touches(r, 5));
+  const roads = t.roads.map((r) => ({ pts: local(r.pts), halfM: r.halfM })).filter((r) => touches(r.pts, 10));
+  const forests = t.forests.map((f) => local(f.rings[0]!)).filter((r) => touches(r, 0));
+  const segDist = (px: number, py: number, a: [number, number], b: [number, number]) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy;
+    const k = l ? Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / l)) : 0;
+    return Math.hypot(px - a[0] - k * dx, py - a[1] - k * dy);
+  };
+  const nearRing = (r: [number, number][], x: number, y: number, d: number) => point(r, x, y) || r.some((_, k) => k > 0 && segDist(x, y, r[k - 1]!, r[k]!) < d);
+  const taken = new Set<string>();
+  for (const g of t.greens) {
+    const park = g.properties["kind"] === "park";
+    const s = park ? 12 : 16, keep = park ? 0.6 : 0.5;
+    const rings = g.rings.map(local);
+    if (!touches(rings[0]!, 0)) continue;
+    for (let gy = Math.floor(bounds.n0 / s); gy * s < bounds.n1; gy++)
+      for (let gx = Math.floor(bounds.e0 / s); gx * s < bounds.e1; gx++) {
+        const key = `${s}/${gx}/${gy}`;
+        if (taken.has(key)) continue;
+        const [clon, clat] = frame.lonLat(gx * s, gy * s);
+        const r = rng(hash(Math.round(clon * 1e5) / 1e5, Math.round(clat * 1e5) / 1e5) ^ 0x51ed);
+        const x = (gx + r()) * s, y = (gy + r()) * s;
+        if (r() > keep || !inB(x, y, 0)) continue;
+        if (!point(rings[0]!, x, y) || rings.slice(1).some((h) => point(h, x, y))) continue;
+        taken.add(key);
+        if (forests.some((f) => point(f, x, y))) continue;
+        if (buildings.some((b) => nearRing(b, x, y, 2.5))) continue;
+        if (roads.some((rd) => rd.pts.some((_, k) => k > 0 && segDist(x, y, rd.pts[k - 1]!, rd.pts[k]!) < rd.halfM + 1))) continue;
+        const [lon, lat] = frame.lonLat(x, y);
+        const gH = ground(lon, lat);
+        const conifer = r() < 0.15;
+        out.push(x, y, frame.up(x, y, gH - 0.2), 5 + r() * (park ? 10 : 7), (conifer ? 1 : 0) + Math.min(0.999, r()));
+      }
   }
   return new Float32Array(out);
 }

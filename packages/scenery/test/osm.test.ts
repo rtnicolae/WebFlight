@@ -88,3 +88,26 @@ describe("tree instances (impostors)", () => {
     }
   });
 });
+
+import { townTreeInstances, type OsmTile } from "../src/index.ts";
+describe("town trees", () => {
+  it("stand in residential land, clear of buildings and roads", () => {
+    const tile: OsmTile = {
+      buildings: [{ rings: [rect(40, 40, 30, 30)], properties: {} }],
+      forests: [],
+      greens: [{ rings: [rect(0, 0, 200, 200)], properties: { kind: "residential" } }],
+      roads: [{ pts: [frame.lonLat(0, 120), frame.lonLat(200, 120)], halfM: 3.5 }],
+    };
+    const a = townTreeInstances(tile, frame, ground, { e0: 0, n0: 0, e1: 200, n1: 200 });
+    const n = a.length / 5;
+    expect(n).toBeGreaterThan(30);
+    expect(n).toBeLessThan(110);
+    for (let i = 0; i < n; i++) {
+      const x = a[i * 5]!, y = a[i * 5 + 1]!;
+      expect(x > 37.5 && x < 72.5 && y > 37.5 && y < 72.5).toBe(false);
+      expect(Math.abs(y - 120)).toBeGreaterThan(4.4);
+      expect(a[i * 5 + 3]!).toBeLessThan(13);
+    }
+    expect(Array.from(townTreeInstances(tile, frame, ground, { e0: 0, n0: 0, e1: 200, n1: 200 }))).toEqual(Array.from(a));
+  });
+});
