@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Detail preview</title>
+    <style>
+      body { margin: 0; background: #222; }
+      #grid { display: grid; gap: 0; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <!-- Dev tool: ?lat=&lon=&z=&n=&side=s2|detail renders an n×n block of tiles. -->
+    <div id="grid"></div>
+    <script type="module" src="/src/detail/preview.ts"></script>
+  </body>
+</html>
