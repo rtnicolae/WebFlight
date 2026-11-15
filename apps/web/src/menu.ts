@@ -8,7 +8,7 @@ import { advance, AIRFIELDS, DEFAULT_AIRFIELD, TerrariumTerrain, ThermalSky, typ
 import { addImagery, type ImageryMode } from "./imagery.ts";
 import { createViewer, ThermalLayer } from "./scene.ts";
 import { Scenery } from "./scenery.ts";
-import { sunPosition } from "./sun.ts";
+import { sunPosition } from "@webflight/environment";
 import type { ThermalView } from "./protocol.ts";
 
 const ICONS: Record<string, string> = {

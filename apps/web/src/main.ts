@@ -9,7 +9,7 @@ import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, ThermalLayer, type Runway } from "./scene.ts";
 import { addImagery, highResPhotoAt, type ImageryMode } from "./imagery.ts";
-import { sunPosition } from "./sun.ts";
+import { sunPosition } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import { Scenery } from "./scenery.ts";
 import { CockpitInteraction } from "./interaction.ts";
