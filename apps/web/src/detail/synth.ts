@@ -59,6 +59,8 @@ export function edgeAwareUpsample(src: Uint8ClampedArray, n: number, sx0: number
   }
 }
 
+import { sampleTwoScale, type DetailTexture } from "./textures.ts";
+
 export type Cover = "crop" | "forest" | "grass" | "water" | "urban";
 
 /** 32-bit hash of integer coordinates (+ salt). */
@@ -144,7 +146,16 @@ export interface SynthOptions {
  * land cover rasterized for this tile.
  */
 export const COVERS: Cover[] = ["crop", "forest", "grass", "water", "urban"];
-export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8Array): void {
+/** HD detail textures for the open ground (optional: without them, procedural grain). */
+export interface GroundTextures {
+  grass: DetailTexture;
+  dryGrass: DetailTexture;
+  soil: DetailTexture;
+  drySoil: DetailTexture;
+}
+
+export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8Array, tex?: GroundTextures): void {
+  const ra = new Float32Array(3), rb = new Float32Array(3);
   const { size, mPerPx } = o;
   for (let j = 0; j < size; j++) {
     const wy = o.y0 - (j + 0.5) * mPerPx;
@@ -155,9 +166,23 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
       let r = px[k]!, g = px[k + 1]!, b = px[k + 2]!;
       const c = cover && cover[j * size + i] ? COVERS[cover[j * size + i]! - 1]! : classify(r, g, b);
       let f = 1, tr = 1, tg = 1, tb = 1;
-      if (c === "crop") {
-        // Fields: keep the real colours and boundaries (edge-aware upsampling); add only the
-        // fine grain of crops and soil a 10 m pixel can't carry.
+      if ((c === "crop" || c === "grass") && tex) {
+        // Retexture open ground with HD photos: grass where the satellite pixel is green,
+        // soil where it is brown, a blend in between; dry and lush variants in patches of a
+        // few hundred metres. Ratios to the texture means: the real colours stay.
+        const green = g - (r + b) / 2;
+        const t = Math.min(1, Math.max(0, (green - 1) / 12));
+        const dry = valueNoise(wx, wy, 240, 71);
+        sampleTwoScale(tex.grass, wx, wy, mPerPx, ra);
+        sampleTwoScale(tex.dryGrass, wx, wy, mPerPx, rb);
+        const gr = [ra[0]! + (rb[0]! - ra[0]!) * dry, ra[1]! + (rb[1]! - ra[1]!) * dry, ra[2]! + (rb[2]! - ra[2]!) * dry];
+        sampleTwoScale(tex.soil, wx, wy, mPerPx, ra);
+        sampleTwoScale(tex.drySoil, wx, wy, mPerPx, rb);
+        const so = [ra[0]! + (rb[0]! - ra[0]!) * dry, ra[1]! + (rb[1]! - ra[1]!) * dry, ra[2]! + (rb[2]! - ra[2]!) * dry];
+        tr = so[0]! + (gr[0]! - so[0]!) * t;
+        tg = so[1]! + (gr[1]! - so[1]!) * t;
+        tb = so[2]! + (gr[2]! - so[2]!) * t;
+      } else if (c === "crop") {
         // (value noise averages 0.5: every factor here averages 1, so tones match Sentinel-2.)
         f = (1 + (valueNoise(wx, wy, 1.2, 8) - 0.5) * (mPerPx < 1 ? 0.1 : 0.04)) * (1 + (valueNoise(wx, wy, 7, 9) - 0.5) * 0.06);
       } else if (c === "forest") {

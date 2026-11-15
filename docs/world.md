@@ -71,8 +71,15 @@ tile in workers:
 1. the Sentinel-2 image, upsampled edge-aware (each pixel snapped toward the nearer of the
    two dominant colours of its 10 m neighbourhood, so real field edges, forest margins and
    roads become crisp where the data puts them) and levelled;
-2. fine texture a 10 m pixel can't carry (`synth.ts`, world-anchored): crop grain, forest
-   canopy with sun shadows, grass, paved yards around buildings. Nothing is invented at the
+2. open ground retextured with HD photo textures (Poly Haven, CC0; `textures.ts`): grass
+   where the satellite pixel is green, soil where it is brown, a blend in between, dry and
+   lush variants in patches. Each texture is a detail map (colour ÷ its mean, in a mip
+   pyramid), applied at two scales (true scale for low passes, ×7 so its clumps read as
+   meadow and crop texture from altitude), two rotated samples mixed by noise so no repeat
+   shows, gain on brightness only so the satellite hue stays. Where the texture is finer than
+   a pixel it averages to 1: tiles at every zoom keep the satellite's tone (no bands). Dirt
+   tracks, gravel and asphalt get their photos as tone-neutral soft-light overlays up close.
+   Forest keeps a procedural canopy with sun shadows. Nothing is invented at the
    scale of fields (an earlier version drew made-up strip fields; they fought the real layout);
 3. OpenStreetMap drawn crisp on top: water and waterways, roads (asphalt or dirt from the
    surface tag), railways, rooftops with shadows, runways (surface from OSM, else the

@@ -7,7 +7,8 @@
  */
 import { airfieldsAround, bearingDeg, designatorDeg } from "@webflight/environment";
 import { decodeMvt, type MvtLayer } from "@webflight/scenery";
-import { edgeAwareUpsample, synthesize, hash2, COVERS, type Cover } from "./synth.ts";
+import { edgeAwareUpsample, synthesize, hash2, COVERS, type Cover, type GroundTextures } from "./synth.ts";
+import { buildDetailTexture, TEXTURES, type DetailTexture, type TextureRole } from "./textures.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -19,6 +20,8 @@ export interface DetailRequest {
   s2Url: string;
   osmUrl: string;
   sun: { azimuthDeg: number; elevationDeg: number };
+  /** Base URL of the HD textures (public/textures/). */
+  texUrl: string;
   /** Debug switches (?synth=0, ?snap=0): skip the texture, skip the edge-aware snapping. */
   synth?: boolean;
   snap?: boolean;
@@ -56,6 +59,41 @@ const fill = (u: string, z: number, x: number, y: number) => u.replace("{z}", St
  */
 function flipped(cv: OffscreenCanvas): Promise<ImageBitmap> {
   return createImageBitmap(cv, { imageOrientation: "flipY" });
+}
+
+/** HD textures, decoded once per worker: detail maps (ratios) and canvas patterns (roads). */
+interface LoadedTexture {
+  detail: DetailTexture;
+  /** The texture as ratio × mid-grey: a tone-neutral overlay (soft-light). */
+  overlay: ImageBitmap;
+}
+const texCache = new Map<TextureRole, Promise<LoadedTexture>>();
+function texture(base: string, role: TextureRole): Promise<LoadedTexture> {
+  let t = texCache.get(role);
+  if (!t) {
+    t = (async () => {
+      const r = await fetch(base + TEXTURES[role].file);
+      if (!r.ok) throw new Error(`texture ${role} ${r.status}`);
+      const bitmap = await createImageBitmap(await r.blob());
+      const c = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      c.drawImage(bitmap, 0, 0);
+      const detail = buildDetailTexture(c.getImageData(0, 0, bitmap.width, bitmap.height).data, bitmap.width, TEXTURES[role].meters);
+      const img = new ImageData(detail.size, detail.size);
+      const l0 = detail.levels[0]!;
+      for (let i = 0; i < detail.size * detail.size; i++) {
+        for (let k = 0; k < 3; k++) img.data[i * 4 + k] = Math.min(255, 128 * l0[i * 3 + k]!);
+        img.data[i * 4 + 3] = 255;
+      }
+      return { detail, overlay: await createImageBitmap(img) };
+    })();
+    t.catch(() => texCache.delete(role));
+    texCache.set(role, t);
+  }
+  return t;
+}
+async function groundTextures(base: string): Promise<GroundTextures> {
+  const [grass, dryGrass, soil, drySoil] = await Promise.all((["grass", "dryGrass", "soil", "drySoil"] as const).map((k) => texture(base, k)));
+  return { grass: grass!.detail, dryGrass: dryGrass!.detail, soil: soil!.detail, drySoil: drySoil!.detail };
 }
 
 /** fetch with backoff on rate limits and server errors (1 s, 2 s, 4 s). */
@@ -156,7 +194,14 @@ function drawWaterways(ctx: Ctx, l: MvtLayer, f: ToPx, w: (m: number) => number)
 }
 
 /** Roads (paved / dirt, with verges), railways; narrow first so junctions read right. */
-function drawRoads(ctx: Ctx, roads: MvtLayer, f: ToPx, w: (m: number) => number, mPerPx: number): void {
+/** Road surface textures as soft-light overlays (normalized to mid-grey: tone-neutral). */
+interface RoadPatterns {
+  track: CanvasPattern;
+  gravel: CanvasPattern;
+  asphalt: CanvasPattern;
+}
+
+function drawRoads(ctx: Ctx, roads: MvtLayer, f: ToPx, w: (m: number) => number, mPerPx: number, pats?: RoadPatterns): void {
   const path = (_c: Ctx, rings: [number, number][][], g: ToPx) => trace(ctx, rings, g);
     // Verges/edges first, then surfaces, wider roads last so junctions read right.
     const list = roads.features.filter((ft) => ft.type === 2).map((ft) => {
@@ -181,6 +226,14 @@ function drawRoads(ctx: Ctx, roads: MvtLayer, f: ToPx, w: (m: number) => number,
       ctx.strokeStyle = r.paved ? "rgb(108, 107, 104)" : "rgb(166, 148, 120)";
       ctx.lineWidth = w(r.width);
       ctx.stroke();
+      // Up close, the surface photo on top: ruts on dirt tracks, gravel, asphalt.
+      if (pats && mPerPx < 1) {
+        const op = ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation = "soft-light";
+        ctx.strokeStyle = !r.paved ? pats.track : r.ft.properties["surface"] === "gravel" ? pats.gravel : pats.asphalt;
+        ctx.stroke();
+        ctx.globalCompositeOperation = op;
+      }
       if (r.paved && r.width >= 9 && mPerPx < 0.8) {
         ctx.setLineDash([w(3), w(6)]);
         ctx.strokeStyle = "rgba(230, 230, 222, 0.8)";
@@ -257,7 +310,12 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   const d = z - 14;
   const sub = 2 ** d;
   const ax = x >> d, ay = y >> d, ox = x - ax * sub, oy = y - ay * sub;
-  const [sat, layers] = await Promise.all([mosaic(q.s2Url, ax, ay), osm(q.osmUrl, ax, ay)]);
+  const [sat, layers, tex, roadTex] = await Promise.all([
+    mosaic(q.s2Url, ax, ay),
+    osm(q.osmUrl, ax, ay),
+    groundTextures(q.texUrl),
+    Promise.all((["track", "gravel", "asphalt"] as const).map((k) => texture(q.texUrl, k))),
+  ]);
   const cv = new OffscreenCanvas(SIZE, SIZE);
   const ctx = cv.getContext("2d", { willReadFrequently: true })!;
   ctx.imageSmoothingEnabled = true;
@@ -315,6 +373,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   const az = (q.sun.azimuthDeg * Math.PI) / 180;
   const sunLow = Math.min(1.5, 1 / Math.tan((Math.max(8, q.sun.elevationDeg) * Math.PI) / 180));
   const n = 2 ** z;
+  const world = { x0: ((x / n) * C - C / 2) * K, y0: (C / 2 - (y / n) * C) * K, mPerPx: (C / n / SIZE) * K };
   if (q.synth !== false) synthesize(img.data, {
     x0: ((x / n) * C - C / 2) * K,
     y0: (C / 2 - (y / n) * C) * K,
@@ -323,7 +382,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     sunX: Math.sin(az),
     sunY: Math.cos(az),
     sunLow,
-  }, cover);
+  }, cover, tex);
   ctx.putImageData(img, 0, 0);
 
   // Crisp vectors on top.
@@ -401,7 +460,16 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     }
   }
   const roads = layers.find((l) => l.name === "transportation");
-  if (roads) drawRoads(ctx, roads, toPx(roads.extent), w, mPerPx);
+  // World-anchored patterns (they join across tiles), from the same coordinates as synth.
+  const pattern = (t: LoadedTexture): CanvasPattern => {
+    const p = ctx.createPattern(t.overlay, "repeat")!;
+    const sc = t.detail.meters / t.detail.size / world.mPerPx, period = t.detail.size * sc;
+    const mod = (v: number) => ((v % period) + period) % period;
+    p.setTransform(new DOMMatrix([sc, 0, 0, sc, mod(-world.x0 / world.mPerPx), mod(world.y0 / world.mPerPx)]));
+    return p;
+  };
+  const [trackT, gravelT, asphaltT] = roadTex;
+  if (roads) drawRoads(ctx, roads, toPx(roads.extent), w, mPerPx, { track: pattern(trackT!), gravel: pattern(gravelT!), asphalt: pattern(asphaltT!) });
   const bld = layers.find((l) => l.name === "building");
   if (bld) {
     const f = toPx(bld.extent);

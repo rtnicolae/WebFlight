@@ -158,7 +158,7 @@ export class DetailImageryProvider {
   // coarse terrain tile (millions). Below DETAIL_MIN_LEVEL tiles come back empty, and the
   // layer only applies on detailed terrain (minimumTerrainLevel).
   readonly minimumLevel = 0;
-  readonly maximumLevel = 18;
+  readonly maximumLevel = 19;
   readonly tileDiscardPolicy = undefined;
   readonly errorEvent = new Event();
   readonly credit = new Credit("Ground detail synthesized from Sentinel-2 and © OpenStreetMap contributors");
@@ -214,7 +214,7 @@ export class DetailImageryProvider {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       const dbg = new URLSearchParams(location.search);
-      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, sun: this.sun, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
+      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: this.sun, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
     });
   }
 }
