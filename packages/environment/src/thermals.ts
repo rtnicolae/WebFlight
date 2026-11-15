@@ -7,7 +7,9 @@
  *  - updraft core (cosine), sink ring around it, -1 ft/s global sink outside
  * FlightGear's rand() calls use a seeded generator here, so a seed reproduces the sky.
  */
-import { distanceM, mulberry32 } from "./util.ts";
+import { sunPosition } from "./sun.ts";
+import { advance, distanceM, mulberry32 } from "./util.ts";
+import { soaringFrom, type Soaring, type Weather } from "./weather.ts";
 
 const FT_TO_M = 0.3048;
 const NM_TO_FT = 6076.11549;
@@ -65,8 +67,8 @@ export class Thermal {
   constructor(
     readonly spec: ThermalSpec,
     private readonly rand: () => number,
-    /** Ground [m] at a position, if known; with a cloud base [m] the top follows the ground. */
-    private readonly ground?: { at: (latDeg: number, lonDeg: number) => number | undefined; cloudBaseM: number },
+    /** Ground [m] at a position, if known, and the thermal top [m MSL] over a ground height. */
+    private readonly ground?: { at: (latDeg: number, lonDeg: number) => number | undefined; topM: (groundM: number) => number },
   ) {
     this.cycleTimer = 60 * Math.floor(rand() * 31);
     this.sliceLatDeg = spec.latDeg;
@@ -83,7 +85,7 @@ export class Thermal {
       if (g !== undefined) {
         this.groundTimer = 0;
         this.spec.groundElevFt = g / FT_TO_M;
-        this.spec.heightMslFt = Math.max(this.ground.cloudBaseM, g + 600) / FT_TO_M;
+        this.spec.heightMslFt = this.ground.topM(g) / FT_TO_M;
       }
     }
     const tmin1 = 5, tmin2 = 20, tmin3 = 25, tmin4 = 30;
@@ -202,7 +204,7 @@ export class ThermalField {
             groundElevFt: ground / FT_TO_M,
           },
           rand,
-          o.groundAt ? { at: o.groundAt, cloudBaseM: base } : undefined,
+          o.groundAt ? { at: o.groundAt, topM: (g) => Math.max(base, g + 600) } : undefined,
         ),
       );
     }
@@ -235,6 +237,36 @@ export interface ThermalSkyOptions {
   strengthMs?: [number, number];
   diameterM?: [number, number];
   groundAt?: (latDeg: number, lonDeg: number) => number | undefined;
+  /**
+   * The day's weather: replaces cloudBaseM / strengthMs / diameterM / perCellSpread with
+   * numbers, sizes and tops from the convective boundary layer, and places thermals where
+   * terrain and sun trigger them (needs groundAt; cells wait until their terrain is loaded).
+   */
+  weather?: Weather;
+}
+
+/** Where thermals start: how well a spot is heated and how well it releases bubbles. */
+export function triggerScore(groundAt: (lat: number, lon: number) => number | undefined, latDeg: number, lonDeg: number, sun: { azimuthDeg: number; elevationDeg: number }): number | undefined {
+  const h = groundAt(latDeg, lonDeg);
+  const D = 150;
+  const n = groundAt(...advance(latDeg, lonDeg, 0, D)), e = groundAt(...advance(latDeg, lonDeg, 90, D));
+  const sth = groundAt(...advance(latDeg, lonDeg, 180, D)), w = groundAt(...advance(latDeg, lonDeg, 270, D));
+  if (h === undefined || n === undefined || e === undefined || sth === undefined || w === undefined) return undefined;
+  // Sun on the slope relative to flat ground: south-east faces in the morning, south-west
+  // in the afternoon heat most.
+  const gx = (e - w) / (2 * D), gy = (n - sth) / (2 * D);
+  const len = Math.hypot(gx, gy, 1);
+  const r = Math.PI / 180, el = Math.max(5, sun.elevationDeg) * r, az = sun.azimuthDeg * r;
+  const sx = Math.sin(az) * Math.cos(el), sy = Math.cos(az) * Math.cos(el), sz = Math.sin(el);
+  const incidence = Math.max(0, (-gx * sx - gy * sy + sz) / len) / sz;
+  // Hilltops and ridges release the warm air; hollows and valley floors collect it.
+  let ring = 0, k = 0;
+  for (let b = 0; b < 360; b += 45) {
+    const g = groundAt(...advance(latDeg, lonDeg, b, 900));
+    if (g !== undefined) { ring += g; k++; }
+  }
+  const prominence = k ? h - ring / k : 0;
+  return incidence * (1 + 0.5 * Math.max(-1, Math.min(1, prominence / 120)));
 }
 
 const SKY_M_LAT = 111_132;
@@ -251,15 +283,82 @@ export class ThermalSky {
   private readonly cells = new Map<string, Thermal[]>();
   /** FGAIManager: lift of the nearest thermal [ft/s]. */
   strengthFps = 0;
-  private readonly o: Required<Omit<ThermalSkyOptions, "groundAt">> & Pick<ThermalSkyOptions, "groundAt">;
+  private readonly o: Required<Omit<ThermalSkyOptions, "groundAt" | "weather">> & Pick<ThermalSkyOptions, "groundAt" | "weather">;
 
   constructor(o: ThermalSkyOptions) {
     this.o = { cellM: 6000, perCellSpread: 3, radiusCells: 3, cloudBaseM: 1800, strengthMs: [1.0, 3.0], diameterM: [300, 700], ...o };
   }
 
-  /** The thermals of one cell, generated deterministically (fresh life cycles). */
-  cellThermals(cx: number, cy: number): Thermal[] {
+  private soaring: Soaring | undefined;
+  private sun: { azimuthDeg: number; elevationDeg: number } | undefined;
+
+  /** Weather-driven thermals of a cell, or undefined while its terrain is still loading. */
+  private weatherCell(cx: number, cy: number, w: Weather, rand: () => number): Thermal[] | undefined {
+    const o = this.o, ground = o.groundAt;
+    const s = (this.soaring ??= soaringFrom(w));
+    if (s.wStarMs < 0.5) return [];
+    const cLat = ((cy + 0.5) * o.cellM) / SKY_M_LAT, cLon = ((cx + 0.5) * o.cellM) / SKY_M_LON;
+    this.sun ??= sunPosition(new Date(w.timeUtc), cLat, cLon);
+    // Expected count from the spacing, ±40 %.
+    const n = Math.round(((o.cellM * o.cellM) / (s.spacingM * s.spacingM)) * (0.6 + 0.8 * rand()));
+    // Candidates scored by terrain and sun; the best of each group of four become thermals.
+    const cand: { lat: number; lon: number; score: number; g: number }[] = [];
+    for (let k = 0; k < n * 4; k++) {
+      const lat = ((cy + rand()) * o.cellM) / SKY_M_LAT, lon = ((cx + rand()) * o.cellM) / SKY_M_LON;
+      const jitter = rand();
+      if (!ground) {
+        cand.push({ lat, lon, score: 1, g: 0 });
+        continue;
+      }
+      const score = triggerScore(ground, lat, lon, this.sun);
+      const g = ground(lat, lon);
+      if (score === undefined || g === undefined) return undefined;
+      cand.push({ lat, lon, score: score * (0.5 + jitter), g });
+    }
+    const baseMsl = w.elevationM + s.thermalTopAglM;
+    const topM = (g: number) => Math.max(baseMsl, g + 0.6 * s.thermalTopAglM, g + 300);
+    const out: Thermal[] = [];
+    for (let k = 0; k < n; k++) {
+      const group = cand.slice(4 * k, 4 * k + 4).sort((a, b) => b.score - a.score);
+      const c = group[0]!;
+      if (c.score < 0.35) continue; // shaded slopes don't go
+      const strengthMs = s.wStarMs * (0.9 + 0.7 * rand()) * Math.min(1.4, Math.max(0.7, c.score));
+      const t = new Thermal(
+        {
+          latDeg: c.lat,
+          lonDeg: c.lon,
+          heightMslFt: topM(c.g) / FT_TO_M,
+          strengthFps: strengthMs / FT_TO_M,
+          diameterFt: (s.diameterM * (0.7 + 0.6 * rand())) / FT_TO_M,
+          groundElevFt: c.g / FT_TO_M,
+        },
+        rand,
+        ground ? { at: ground, topM } : undefined,
+      );
+      t.id = `${cx}:${cy}:${k}`;
+      out.push(t);
+    }
+    return out;
+  }
+
+  /** Cloud base [m MSL] of the day, if the weather makes cumulus. */
+  get cumulusBaseM(): number | undefined {
+    const w = this.o.weather;
+    if (!w) return this.o.cloudBaseM;
+    const s = (this.soaring ??= soaringFrom(w));
+    return s.cumulus ? w.elevationM + s.cloudBaseAglM : undefined;
+  }
+
+  /**
+   * The thermals of one cell, generated deterministically (fresh life cycles); with weather,
+   * undefined until the cell's terrain is loaded.
+   */
+  cellThermals(cx: number, cy: number): Thermal[] | undefined {
     const o = this.o;
+    if (o.weather) {
+      const h = (Math.imul(cx | 0, 0x27d4eb2d) ^ Math.imul(cy | 0, 0x165667b1) ^ Math.imul(o.seed | 0, 0x9e3779b9)) >>> 0;
+      return this.weatherCell(cx, cy, o.weather, mulberry32(h));
+    }
     const h = (Math.imul(cx | 0, 0x27d4eb2d) ^ Math.imul(cy | 0, 0x165667b1) ^ Math.imul(o.seed | 0, 0x9e3779b9)) >>> 0;
     const rand = mulberry32(h);
     const n = 1 + Math.floor(rand() * o.perCellSpread);
@@ -279,7 +378,7 @@ export class ThermalSky {
           groundElevFt: ground / FT_TO_M,
         },
         rand,
-        o.groundAt ? { at: o.groundAt, cloudBaseM: o.cloudBaseM } : undefined,
+        o.groundAt ? { at: o.groundAt, topM: (g) => Math.max(o.cloudBaseM, g + 600) } : undefined,
       );
       t.id = `${cx}:${cy}:${k}`;
       out.push(t);
@@ -292,7 +391,7 @@ export class ThermalSky {
     const c = this.o.cellM, r = Math.ceil(radiusM / c);
     const cx = Math.floor((lonDeg * SKY_M_LON) / c), cy = Math.floor((latDeg * SKY_M_LAT) / c);
     const out: Thermal[] = [];
-    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) out.push(...this.cellThermals(cx + dx, cy + dy));
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) out.push(...(this.cellThermals(cx + dx, cy + dy) ?? []));
     return out.filter((t) => distanceM(t.spec.latDeg, t.spec.lonDeg, latDeg, lonDeg) <= radiusM);
   }
 
@@ -307,7 +406,10 @@ export class ThermalSky {
     for (let dy = -r; dy <= r; dy++)
       for (let dx = -r; dx <= r; dx++) {
         const key = `${cx + dx}:${cy + dy}`;
-        if (!this.cells.has(key)) this.cells.set(key, this.cellThermals(cx + dx, cy + dy));
+        if (!this.cells.has(key)) {
+          const ts = this.cellThermals(cx + dx, cy + dy);
+          if (ts) this.cells.set(key, ts); // else: terrain still loading, retry next update
+        }
       }
     for (const key of this.cells.keys()) {
       const [x, y] = key.split(":").map(Number) as [number, number];

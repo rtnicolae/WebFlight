@@ -3,7 +3,7 @@ export type { TerrainOptions } from "./terrain.ts";
 export { decodePng } from "./png.ts";
 export { RidgeLift } from "./ridge.ts";
 export type { RidgeInput } from "./ridge.ts";
-export { Thermal, ThermalField, ThermalSky, strengthFactor } from "./thermals.ts";
+export { Thermal, ThermalField, ThermalSky, strengthFactor, triggerScore } from "./thermals.ts";
 export type { ThermalFieldOptions, ThermalSkyOptions, ThermalSpec, UserState, WindProfile } from "./thermals.ts";
 export { Environment } from "./environment.ts";
 export type { AircraftState, EnvironmentConfig, EnvironmentOutput } from "./environment.ts";

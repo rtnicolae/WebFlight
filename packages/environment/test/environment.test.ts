@@ -169,7 +169,7 @@ describe("ThermalSky (cross-country)", () => {
     // A cell's thermals are the same when generated again.
     const id = now[0]!;
     const [cx, cy, k] = id.split(":").map(Number) as [number, number, number];
-    const again = sky.cellThermals(cx, cy)[k]!;
+    const again = sky.cellThermals(cx, cy)![k]!;
     const live = sky.thermals.find((t) => t.id === id)!;
     expect([again.spec.latDeg, again.spec.lonDeg]).toEqual([live.spec.latDeg, live.spec.lonDeg]);
   });
