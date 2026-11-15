@@ -32,7 +32,7 @@ describe("weather", () => {
   it("picks the hour nearest the requested time, in UTC", () => {
     // 10:20 UTC = 13:20 local → the 13:00 row.
     const w = parseOpenMeteo(fixture, 45.7, 25.53, new Date("2026-07-15T10:20:00Z"));
-    expect(w.source).toBe("live");
+    expect(w.source).toBe("forecast");
     expect(w.timeUtc).toBe("2026-07-15T10:00:00.000Z");
     expect(w.utcOffsetH).toBe(3);
     expect(w.tempC).toBe(27.4);
@@ -94,5 +94,24 @@ describe("when", () => {
     expect(parseWhen("14:30")).toEqual({ kind: "local", hm: "14:30" });
     expect(parseWhen("2026-07-15T14:30")).toEqual({ kind: "local", date: "2026-07-15", hm: "14:30" });
     expect(parseWhen("afternoon")).toEqual({ kind: "now" });
+  });
+});
+
+describe("historical weather", () => {
+  it("builds winds aloft from the 100 m wind when there are no pressure levels", () => {
+    const { wind_speed_850hPa: _a, wind_direction_850hPa: _b, geopotential_height_850hPa: _c, wind_speed_700hPa: _d, wind_direction_700hPa: _e, geopotential_height_700hPa: _f, ...surface } = fixture.hourly;
+    const json = { ...fixture, hourly: { ...surface, wind_speed_100m: [9, 10, 11], wind_direction_100m: [300, 305, 310] } };
+    const w = parseOpenMeteo(json, 45.7, 25.53, new Date("2026-07-15T10:00:00Z"), "archive");
+    expect(w.source).toBe("archive");
+    expect(w.aloft[0]).toEqual({ altM: 633, fromDeg: 305, kt: 10 });
+    expect(w.aloft[1]!.altM).toBe(2033);
+    expect(w.aloft[1]!.kt).toBeCloseTo(10 * 15 ** (1 / 7), 5);
+  });
+
+  it("asks the archive for days older than the forecast's past range", () => {
+    const u = openMeteoUrl(45.7, 25.53, "2017-07-14", "2017-07-16", true);
+    expect(u.startsWith("https://archive-api.open-meteo.com/v1/archive?")).toBe(true);
+    expect(u).toContain("wind_speed_100m");
+    expect(u).not.toContain("hPa");
   });
 });

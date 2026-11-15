@@ -127,12 +127,14 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   const opts = document.createElement("div");
   opts.className = "menu-options";
   panel.appendChild(opts);
-  // When: now, or any local date and time at the field (the weather of that hour).
+  // When: now, or any local date and time at the field (that hour's weather).
   {
     const sec = document.createElement("div");
     sec.className = "menu-section";
     const local = new Date(F.time.getTime() + F.weather.utcOffsetH * 3600_000).toISOString().slice(0, 16);
-    sec.innerHTML = `<h2>When (local time)</h2><div class="menu-when"><button aria-pressed="${pick.time === "now"}">Now</button><input type="datetime-local" value="${local}" aria-label="Local date and time" /></div>`;
+    // Any hour of the last ten years (historical reanalysis) up to the 16-day forecast.
+    const day = (d: number) => new Date(Date.now() + d * 86400_000).toISOString().slice(0, 10);
+    sec.innerHTML = `<h2>When (local time)</h2><div class="menu-when"><button aria-pressed="${pick.time === "now"}">Now</button><input type="datetime-local" value="${local}" min="${day(-3653)}T00:00" max="${day(15)}T23:59" aria-label="Local date and time" /></div>`;
     sec.querySelector("button")!.onclick = () => {
       pick.time = "now";
       save();

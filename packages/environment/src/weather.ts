@@ -25,8 +25,12 @@ export interface WindLevel {
 }
 
 export interface Weather {
-  /** "live" (Open-Meteo), or "estimated" (sun-based, offline). */
-  source: "live" | "estimated";
+  /**
+   * "forecast": Open-Meteo forecast models (the last 92 days to 16 days ahead), "archive":
+   * Open-Meteo historical reanalysis (ERA5 / ECMWF IFS, any day since 1940), "estimated":
+   * sun-based, offline.
+   */
+  source: "forecast" | "archive" | "estimated";
   /** Valid time (ISO, UTC). */
   timeUtc: string;
   /** Local time offset from UTC [h] at the place. */
@@ -104,6 +108,11 @@ export function windAt(w: Weather, altM: number): { fromDeg: number; kt: number 
 }
 
 export const OPEN_METEO = "https://api.open-meteo.com/v1/forecast";
+/** Historical weather (reanalysis): surface and 100 m only, no pressure levels. */
+export const OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive";
+const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "shortwave_radiation", "boundary_layer_height"];
+/** The forecast API serves up to 92 past days; older days come from the archive. */
+export const FORECAST_PAST_DAYS = 90;
 const HOURLY = [
   "temperature_2m",
   "dew_point_2m",
@@ -122,8 +131,8 @@ const HOURLY = [
 ];
 
 /** Hourly data for local days `from`..`to` (yyyy-mm-dd; forecast range, ~3 months back to 16 days ahead). */
-export function openMeteoUrl(latDeg: number, lonDeg: number, from: string, to: string): string {
-  return `${OPEN_METEO}?latitude=${latDeg.toFixed(4)}&longitude=${lonDeg.toFixed(4)}&hourly=${HOURLY.join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
+export function openMeteoUrl(latDeg: number, lonDeg: number, from: string, to: string, archive = false): string {
+  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${latDeg.toFixed(4)}&longitude=${lonDeg.toFixed(4)}&hourly=${(archive ? ARCHIVE_HOURLY : HOURLY).join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
 }
 
 interface OpenMeteoResponse {
@@ -137,7 +146,7 @@ interface OpenMeteoResponse {
  * The hour of an Open-Meteo forecast response nearest `when`. Missing values fall back to
  * the sun-based estimate for that quantity.
  */
-export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: number, when: Date): Weather {
+export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: number, when: Date, source: "forecast" | "archive" = "forecast"): Weather {
   const h = json.hourly;
   const times = h?.time;
   if (!h || !times?.length) throw new Error("open-meteo: no hourly data");
@@ -159,10 +168,17 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
     const kt = v(`wind_speed_${p}`), dir = v(`wind_direction_${p}`), z = v(`geopotential_height_${p}`);
     if (kt !== undefined && dir !== undefined) aloft.push({ altM: z ?? (p === "850hPa" ? 1500 : 3000), fromDeg: dir, kt });
   }
+  // Reanalysis without pressure levels: 100 m wind, and a power-law profile (exponent 1/7,
+  // the neutral-boundary-layer standard) to 1500 m above ground.
+  const kt100 = v("wind_speed_100m"), dir100 = v("wind_direction_100m");
+  if (!aloft.length && kt100 !== undefined && dir100 !== undefined) {
+    const g = json.elevation ?? 0;
+    aloft.push({ altM: g + 100, fromDeg: dir100, kt: kt100 }, { altM: g + 1500, fromDeg: dir100, kt: kt100 * Math.pow(15, 1 / 7) });
+  }
   const t = v("temperature_2m") ?? est.tempC;
   const sw = v("shortwave_radiation") ?? est.shortwaveWm2;
   return {
-    source: "live",
+    source,
     timeUtc: new Date(times[best]! * 1000).toISOString(),
     utcOffsetH: offset / 3600,
     elevationM: json.elevation ?? 0,
@@ -233,11 +249,12 @@ export async function weatherFor(latDeg: number, lonDeg: number, when: WhenSpec,
   const guessH = Math.round(lonDeg / 15);
   const localDay = when.kind === "local" && when.date ? when.date : ymd(new Date(now.getTime() + guessH * 3600_000));
   const d0 = new Date(`${localDay}T00:00:00Z`);
+  const archive = now.getTime() - d0.getTime() > FORECAST_PAST_DAYS * 86400_000;
   let json: OpenMeteoResponse | undefined;
   try {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 8000);
-    const r = await fetch(openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000))), { signal: ctl.signal });
+    const timer = setTimeout(() => ctl.abort(), 10_000);
+    const r = await fetch(openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), archive), { signal: ctl.signal });
     clearTimeout(timer);
     if (r.ok) json = (await r.json()) as OpenMeteoResponse;
   } catch {}
@@ -249,7 +266,7 @@ export async function weatherFor(latDeg: number, lonDeg: number, when: WhenSpec,
   }
   if (json) {
     try {
-      return { weather: parseOpenMeteo(json, latDeg, lonDeg, time), time };
+      return { weather: parseOpenMeteo(json, latDeg, lonDeg, time, archive ? "archive" : "forecast"), time };
     } catch {}
   }
   return { weather: { ...estimateWeather(latDeg, lonDeg, time, elevationM), utcOffsetH: offsetH }, time };
@@ -260,5 +277,7 @@ export function describeWeather(w: Weather): string {
   const s = soaringFrom(w);
   const wind = w.windKt < 1 ? "calm" : `${String(Math.round(w.windFromDeg / 10) * 10).padStart(3, "0")}° ${Math.round(w.windKt)} kt`;
   const sky = s.wStarMs < 0.5 ? "no thermals" : `${s.cumulus ? `Cu base ${Math.round((w.elevationM + s.cloudBaseAglM) / 50) * 50} m` : `blue to ${Math.round((w.elevationM + s.thermalTopAglM) / 50) * 50} m`} · w* ${s.wStarMs.toFixed(1)} m/s`;
-  return `${w.source === "live" ? "Live" : "Estimated"}: ${wind} · ${Math.round(w.tempC)}°C · ${sky}`;
+  const src = { forecast: "Forecast", archive: "Historical", estimated: "Estimated (offline)" }[w.source];
+  const day = new Date(Date.parse(w.timeUtc) + w.utcOffsetH * 3600_000).toISOString().slice(0, 16).replace("T", " ");
+  return `${src} ${day}: ${wind} · ${Math.round(w.tempC)}°C · ${sky}`;
 }
