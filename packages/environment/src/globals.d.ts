@@ -6,3 +6,11 @@ declare class AbortController {
   readonly signal: unknown;
   abort(): void;
 }
+declare class URL {
+  constructor(url: string, base?: string | URL);
+  readonly href: string;
+  readonly protocol: string;
+}
+interface ImportMeta {
+  readonly url: string;
+}

@@ -13,3 +13,4 @@ export type { FdmLike as EnvFdmLike } from "./fdm.ts";
 export * from "./sites.ts";
 export { sunPosition } from "./sun.ts";
 export * from "./weather.ts";
+export * from "./airfields.ts";

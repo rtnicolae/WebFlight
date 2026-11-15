@@ -35,7 +35,10 @@ Fetched at runtime by the browser, never stored in the repository:
 | swisstopo swissTLM3D 3D Tiles, vegetation 3D Tiles, base vector tiles (`vectortiles*.geo.admin.ch`) | buildings, trees, water, the Grenchen runway geometry | Free geodata (OGD) of the Swiss Confederation; attribution "© swisstopo" |
 | IGN Géoplateforme orthophotos (`data.geopf.fr`) | aerial photos in France | Licence Ouverte / Open Licence 2.0 (Etalab); attribution "© IGN" |
 | basemap.at orthofoto (`mapsneu.wien.gv.at`) | aerial photos in Austria | CC BY 4.0, "basemap.at" |
-| OpenFreeMap (`tiles.openfreemap.org`, OpenMapTiles schema) | water everywhere | Data © OpenStreetMap contributors (ODbL); tiles © OpenMapTiles (CC BY 4.0) |
+| OpenFreeMap (`tiles.openfreemap.org`, OpenMapTiles schema) | water, buildings, forests (trees), runway centrelines everywhere | Data © OpenStreetMap contributors (ODbL); tiles © OpenMapTiles (CC BY 4.0) |
+| OurAirports (`packages/environment/data/airfields-eu.json`, from github.com/davidmegginson/ourairports-data) | European airfields and runways | Public domain (The Unlicense) |
+| Open-Meteo forecast API (`api.open-meteo.com`), fetched live | the day's weather | Free API, no key; data CC BY 4.0, attribution "Weather data by Open-Meteo.com" |
+| earcut (npm, already a Cesium dependency) | roof triangulation | ISC |
 | Painted terrain | fallback when the photo servers can't be reached | generated in the browser from Terrarium heights (no third-party imagery) |
 
 ## Code ported from FlightGear (GPL-2.0-or-later)
