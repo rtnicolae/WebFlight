@@ -36,3 +36,15 @@ NODE_USE_ENV_PROXY=1 pnpm --filter @webflight/environment airfields
 The gym (RL) tasks still use fixed set-ups (Grenchen runway frame, fixed thermals); they
 should move to random airfields and recorded weather snapshots (a `Weather` value is plain
 data and replays exactly).
+
+## Buildings and trees everywhere
+
+Outside Switzerland, buildings and forest trees come from OpenStreetMap (OpenFreeMap tiles),
+meshed in a worker (`osm-worker.ts`) and drawn one primitive per tile (`osm-layer.ts`):
+walls on the real footprints, hipped or gabled tile roofs on houses, flat roofs on larger
+blocks; low-poly broadleaf and conifer crowns scattered through `landcover=wood`, conifers
+commoner with height. Buildings stream in zoom-14 tiles within ±1 tile, trees in zoom-16
+cells within ±2 (±3 on ultra) around the aircraft; everything is set on the same terrain
+the renderer draws. Brașov from 250 m:
+
+![Brașov: OSM buildings and forest](img/osm-brasov.jpg)

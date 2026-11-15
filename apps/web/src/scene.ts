@@ -34,6 +34,8 @@ export interface LookOptions {
 export function createViewer(container: HTMLElement, opts: LookOptions): Viewer {
   const viewer = new Viewer(container, {
     baseLayer: false,
+    // 3D only: no 2D/Columbus views, and custom primitives need only 3D positions.
+    scene3DOnly: true,
     terrainProvider: opts.terrain ? terrariumTerrainProvider(opts.terrain) : new EllipsoidTerrainProvider(),
     animation: false,
     timeline: false,

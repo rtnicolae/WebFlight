@@ -1,5 +1,6 @@
 /**
- * 3D scenery over Switzerland from swisstopo open data (no key):
+ * 3D scenery. Elsewhere in Europe: OpenStreetMap buildings and forest trees (osm-layer.ts).
+ * Over Switzerland from swisstopo open data (no key):
  *  - buildings: swissTLM3D buildings as 3D Tiles (real roof shapes)
  *  - trees: swisstopo vegetation 3D Tiles (instanced tree models at surveyed positions)
  *  - water: lakes and rivers from the base vector tiles, drawn with an animated water
@@ -28,6 +29,7 @@ import {
 import { lonLatToTile } from "@webflight/environment";
 import { BASE_VT, fetchWater, type WaterPolygon } from "@webflight/scenery";
 import { swissImageProvider } from "./imagery.ts";
+import { OsmLayer } from "./osm-layer.ts";
 
 const TLM3D = "https://vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.swisstlm3d.3d/20190313/tileset.json";
 const VEGETATION = "https://vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.vegetation.3d/20190313/tileset.json";
@@ -48,6 +50,9 @@ export interface SceneryOptions {
   treeDetail: number;
   /** Drape SWISSIMAGE on the buildings (photo mode). */
   drape: boolean;
+  /** OSM trees elsewhere: spacing [m] and zoom-16 cells around the aircraft. */
+  osmTreeSpacingM?: number;
+  osmTreeRings?: number;
 }
 
 /**
@@ -82,6 +87,7 @@ async function waterSource(): Promise<{ url: string; global: boolean }> {
 
 export class Scenery {
   private readonly waterTiles = new Map<string, GroundPrimitive | null>();
+  private osm: OsmLayer | undefined;
   private centres: Record<number, string> = {};
   private water: { url: string; global: boolean } | undefined;
 
@@ -130,6 +136,19 @@ export class Scenery {
         })
         .catch((e: unknown) => console.warn("trees:", e));
     }
+    // Elsewhere: OpenStreetMap buildings and forests, streamed around the aircraft.
+    if (o.buildings || o.trees)
+      void OsmLayer.create(viewer, {
+        buildings: o.buildings,
+        trees: o.trees,
+        shadows: o.shadows,
+        treeSpacingM: o.osmTreeSpacingM ?? 10,
+        treeRings: o.osmTreeRings ?? 2,
+        covered: inSwitzerland,
+      }).then((l) => {
+        this.osm = l;
+        l?.update(site.latDeg, site.lonDeg);
+      });
     if (o.water)
       void waterSource().then((w) => {
         this.water = w;
@@ -166,6 +185,7 @@ export class Scenery {
    * behind are dropped, so a cross-country flight keeps a constant amount of scenery.
    */
   update(latDeg: number, lonDeg: number): void {
+    this.osm?.update(latDeg, lonDeg);
     if (!this.o.water || !this.started || !this.water) return;
     if (!this.water.global && !inSwitzerland(latDeg, lonDeg)) return;
     const ring = (z: number, r: number, keep: number, kinds: (k: string) => boolean) => {

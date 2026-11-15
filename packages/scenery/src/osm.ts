@@ -173,7 +173,7 @@ const hash = (a: number, b: number) => (Math.imul(Math.round(a * 1e6), 73856093)
 /** Plaster, render and brick wall colours of central-European towns. */
 const WALLS = [[236, 230, 216], [228, 218, 196], [240, 236, 228], [222, 204, 176], [232, 214, 200], [214, 210, 202], [226, 222, 206], [196, 150, 120]];
 /** Pitched roofs: clay tiles, weathered tiles, slate/metal. */
-const PITCHED = [[168, 84, 58], [150, 76, 56], [128, 70, 54], [176, 102, 70], [98, 92, 90], [84, 86, 92]];
+const PITCHED = [[150, 86, 66], [136, 80, 64], [118, 74, 60], [156, 104, 80], [96, 92, 90], [82, 84, 90]];
 /** Flat roofs: gravel, bitumen, metal. */
 const FLAT = [[150, 148, 142], [124, 122, 118], [168, 166, 160], [110, 112, 116]];
 
@@ -347,8 +347,8 @@ export function treeMesh(forests: OsmPolygon[], frame: LocalFrame, ground: Groun
         const g = ground(lon, lat);
         const conifer = r() < 0.25 + Math.max(0, Math.min(0.6, (g - 700) / 800));
         const H = (conifer ? 16 : 13) + r() * 10;
-        const shade = 0.8 + r() * 0.35;
-        const base = conifer ? [52, 74, 50] : [74, 98, 52];
+        const shade = 0.75 + r() * 0.4;
+        const base = conifer ? [36, 52, 38] : [56, 74, 42];
         const col = base.map((v) => Math.min(255, v * shade));
         tree(m, x, y, frame.up(x, y, g - 0.5), H, conifer, col, r() * Math.PI);
         placed++;
