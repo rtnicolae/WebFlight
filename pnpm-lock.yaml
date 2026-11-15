@@ -56,6 +56,9 @@ importers:
       '@webflight/launch':
         specifier: workspace:*
         version: link:../../packages/launch
+      '@webflight/scenery':
+        specifier: workspace:*
+        version: link:../../packages/scenery
       cesium:
         specifier: 1.147.0
         version: 1.147.0
