@@ -1,15 +1,16 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
-import { advance, AIRFIELDS, DEFAULT_AIRFIELD, FLAT_TEST, TerrariumTerrain, ThermalSky, type EnvironmentConfig } from "@webflight/environment";
+import { advance, TerrariumTerrain } from "@webflight/environment";
 import { AircraftView } from "./aircraft.ts";
 import { ChaseCamera } from "./camera.ts";
 import { Hud } from "./hud.ts";
 import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
-import { addRunway, createViewer, ThermalLayer, type Runway } from "./scene.ts";
+import { addRunway, createViewer, ThermalLayer } from "./scene.ts";
+import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, highResPhotoAt, type ImageryMode } from "./imagery.ts";
-import { sunPosition } from "@webflight/environment";
+import { soaringFrom, sunPosition } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import { Scenery } from "./scenery.ts";
 import { CockpitInteraction } from "./interaction.ts";
@@ -20,103 +21,33 @@ const AIRCRAFT = params.get("aircraft") ?? "ASK21";
 const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL, location.href)).href;
 
 /**
- * Where and how to fly (URL parameters):
- *   site=ghimbav (default, home base) | grenchen | flat (the old test field on the ellipsoid)
- *   start=final (straight-in final) | ridge (where the site has one) | thermal (in a young thermal)
- *         | winch | aerotow (on the runway: L starts the launch, O opens the hook)
+ * Where and how to fly (URL parameters). Everything else (runway in use, wind, thermals,
+ * ridge lift, cloud base, light) comes from the data for that place and time.
+ *   field=IDENT&at=lat,lon: an OurAirports airfield (default: home base Ghimbav)
+ *   launch=aerotow (default) | winch: on the runway in use (L starts, O releases)
+ *   lat, lon, hdg, agl: start in the air there instead (free flight)
+ *   time=now (default) | HH:MM (today, local) | YYYY-MM-DDTHH:MM (local): the weather then
+ *   rwy=04: a runway other than the longest · wind=from@kt: override the weather's wind
  *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
- *   time=morning | noon | afternoon (default) | evening | HH:MM (local summer time, CEST)
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
- *   wind=150@20 (from° @ kt) · thermals=0|1 · seed=N · columns=1 (draw lift columns)
- *   dist, agl, eas: start distance from the runway [m], height above ground [m], speed [km/h]
- *   lat, lon, hdg: start anywhere (in the air, agl default 600 m)
+ *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
  */
-const SITE = params.get("site") === "flat" ? "flat" : (params.get("site") ?? DEFAULT_AIRFIELD.id) in AIRFIELDS ? params.get("site") ?? DEFAULT_AIRFIELD.id : DEFAULT_AIRFIELD.id;
-const FIELD = AIRFIELDS[SITE] ?? DEFAULT_AIRFIELD;
-const START_KIND = (params.get("start") ?? "final") as "final" | "ridge" | "thermal" | "winch" | "aerotow";
-const LAUNCH = START_KIND === "winch" || START_KIND === "aerotow" ? START_KIND : undefined;
-const RUNWAY: Runway =
-  SITE === "flat"
-    ? { latDeg: FLAT_TEST.latDeg, lonDeg: FLAT_TEST.lonDeg, headingDeg: 0, lengthM: 800, widthM: 40, paved: false }
-    : { latDeg: FIELD.latDeg, lonDeg: FIELD.lonDeg, headingDeg: FIELD.headingDeg, lengthM: FIELD.lengthM, widthM: FIELD.widthM, paved: FIELD.paved };
-
-function parseWind(): { fromDeg: number; kt: number } {
-  const m = /^(\d+(?:\.\d+)?)@(\d+(?:\.\d+)?)$/.exec(params.get("wind") ?? "");
-  if (m) return { fromDeg: Number(m[1]), kt: Number(m[2]) };
-  // Ridge soaring needs wind onto the face; otherwise the site's usual breeze.
-  if (SITE === "flat") return { fromDeg: 0, kt: 0 };
-  const [from, kt] = START_KIND === "ridge" && FIELD.ridge ? FIELD.ridge.wind : FIELD.wind;
-  return { fromDeg: from, kt };
-}
-const WIND = parseWind();
-const THERMALS = SITE !== "flat" && params.get("thermals") !== "0";
+const AIR_START = params.has("lat") && params.has("lon");
+const LAUNCH = AIR_START ? undefined : params.get("launch") === "winch" ? "winch" : "aerotow";
 const SEED = Number(params.get("seed") ?? 1);
-
-/** Mid-July, local summer time at the site. */
-function simTime(): Date {
-  const presets: Record<string, string> = { morning: "07:15", noon: "13:15", afternoon: "16:30", evening: "20:50" };
-  const v = params.get("time") ?? "afternoon";
-  const hm = presets[v] ?? (/^\d{1,2}:\d{2}$/.test(v) ? v : "16:30");
-  const [h, m] = hm.split(":").map(Number) as [number, number];
-  return new Date(Date.UTC(2026, 6, 15, h - FIELD.utcOffsetH, m));
-}
-const TIME = simTime();
 const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
 const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
 
-/** Renderer-side terrain (same tiles as the worker's); set in main(). */
-let renderTerrain: TerrariumTerrain | undefined;
-
-async function startState(): Promise<StartState> {
-  const eas = Number(params.get("eas") ?? 90);
-  // Anywhere: ?lat=…&lon=…&hdg=…&agl=… (cross-country, bookmarks).
-  if (params.has("lat") && params.has("lon"))
-    return { latDeg: Number(params.get("lat")), lonDeg: Number(params.get("lon")), headingDeg: Number(params.get("hdg") ?? 0), aglM: Number(params.get("agl") ?? 600), easKmh: eas };
-  if (START_KIND === "ridge" && SITE !== "flat" && FIELD.ridge) {
-    // Down the windward face from the crest, flying along the ridge.
-    const { crest, faceDeg } = FIELD.ridge;
-    const [lat, lon] = advance(crest.latDeg, crest.lonDeg, faceDeg, 700);
-    return { latDeg: lat, lonDeg: lon, headingDeg: crest.headingDeg, aglM: Number(params.get("agl") ?? 250), easKmh: eas };
-  }
-  if (START_KIND === "thermal" && ENVIRONMENT.thermalSky) {
-    // The sky is seeded per cell, so the worker builds the same thermals: start in one that
-    // has just formed (well clear of its dying phase), off its centre at our height (the
-    // column leans downwind).
-    const all = new ThermalSky({ ...ENVIRONMENT.thermalSky }).thermalsAround(RUNWAY.latDeg, RUNWAY.lonDeg, 8000);
-    const fresh = all.filter((t) => t.cycleTimer >= 5 * 60 && t.cycleTimer <= 10 * 60);
-    const pool = fresh.length ? fresh : all;
-    const th = pool.reduce((a, b) => (a.spec.strengthFps >= b.spec.strengthFps ? a : b));
-    const groundM = renderTerrain ? await renderTerrain.heightAtAsync(th.spec.latDeg, th.spec.lonDeg) : 0;
-    th.spec.groundElevFt = groundM / 0.3048;
-    th.spec.heightMslFt = Math.max(ENVIRONMENT.thermalSky.cloudBaseM ?? 1800, groundM + 600) / 0.3048;
-    // Default: 60 % of the way up the thermal (FG's profile gives ~0.8 of full strength there).
-    const aglM = Number(params.get("agl") ?? 0.6 * (th.spec.heightMslFt * 0.3048 - groundM));
-    const altFt = (groundM + aglM) / 0.3048;
-    th.run(0, { latDeg: th.spec.latDeg, lonDeg: th.spec.lonDeg, altFt }, { groundFromDeg: WIND.fromDeg, groundKt: WIND.kt, aloftFromDeg: WIND.fromDeg, aloftKt: WIND.kt });
-    const r = (th.spec.diameterFt * 0.3048) / 4;
-    const [lat, lon] = advance(th.sliceLatDeg, th.sliceLonDeg, 270, r);
-    return { latDeg: lat, lonDeg: lon, headingDeg: 0, aglM, easKmh: Number(params.get("eas") ?? 85) };
-  }
-  if (LAUNCH) {
-    // On the runway, 50 m past the threshold of the low-numbered direction.
-    const [lat, lon] = advance(RUNWAY.latDeg, RUNWAY.lonDeg, RUNWAY.headingDeg + 180, RUNWAY.lengthM / 2 - 50);
-    return { latDeg: lat, lonDeg: lon, headingDeg: RUNWAY.headingDeg, aglM: 0, easKmh: 0, ground: { launch: LAUNCH, winchType: params.get("winchtype") === "0" ? 0 : 1, seed: SEED } };
-  }
-  // Straight-in final: `dist` before the threshold of the low-numbered runway.
-  const dist = Number(params.get("dist") ?? 2500) + RUNWAY.lengthM / 2;
-  const [lat, lon] = advance(RUNWAY.latDeg, RUNWAY.lonDeg, RUNWAY.headingDeg + 180, dist);
-  return { latDeg: lat, lonDeg: lon, headingDeg: RUNWAY.headingDeg, aglM: Number(params.get("agl") ?? 220), easKmh: eas };
+async function startState(F: Flight): Promise<StartState> {
+  if (AIR_START || !F.runway)
+    return { latDeg: F.latDeg, lonDeg: F.lonDeg, headingDeg: Number(params.get("hdg") ?? 0), aglM: Number(params.get("agl") ?? 600), easKmh: Number(params.get("eas") ?? 90) };
+  // On the runway in use, 50 m past its threshold.
+  const R = F.runway;
+  const [lat, lon] = advance(R.latDeg, R.lonDeg, R.headingDeg + 180, R.lengthM / 2 - 50);
+  return { latDeg: lat, lonDeg: lon, headingDeg: R.headingDeg, aglM: 0, easKmh: 0, ground: { launch: LAUNCH ?? "aerotow", winchType: params.get("winchtype") === "0" ? 0 : 1, seed: SEED } };
 }
 
-const ENVIRONMENT: EnvironmentConfig = {
-  windFromDeg: WIND.fromDeg,
-  windKt: WIND.kt,
-  ridgeLift: true,
-  // Thermals everywhere along the way (cells of 6 km, seeded): fly cross-country.
-  thermalSky: THERMALS ? { seed: SEED, cloudBaseM: FIELD.cloudBaseM } : false,
-};
-const WORLD: WorldConfig = { terrain: SITE === "flat" ? "flat" : "terrarium", environment: ENVIRONMENT };
 /** ASK21 solo (pointmass 1 = copilot). */
 const LOADOUT: Record<number, number> = { 0: 80, 1: 0, 2: 0 };
 
@@ -128,25 +59,26 @@ async function main(): Promise<void> {
   const res = await fetch(new URL("manifest.json", BUNDLE));
   if (!res.ok) throw new Error(`No bundle for ${AIRCRAFT} (${res.status}). Run: pnpm bundle:ask21`);
   const manifest = (await res.json()) as BundleManifestCore;
+  setStatus("Airfield, runway and weather…");
+  const F = await resolveFlight(params);
+  const RUNWAY = F.runway, TIME = F.time;
+  const WORLD: WorldConfig = { terrain: "terrarium", environment: F.environment };
 
   // The renderer draws the same Terrarium heights the worker flies on.
-  if (WORLD.terrain === "terrarium") renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
-  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, ...(renderTerrain ? { terrain: renderTerrain } : {}) });
-  const sun = sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg);
+  const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
+  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain });
+  const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
   // 30 m strip is a smudge) draw ours.
-  const imageryReady = addImagery(viewer, SITE === "flat" && IMAGERY === "photo" ? "grid" : IMAGERY, sun).then((mode) => {
-    if (mode !== "photo" || !highResPhotoAt(RUNWAY.latDeg, RUNWAY.lonDeg) || params.get("runway") === "1") addRunway(viewer, RUNWAY);
+  const imageryReady = addImagery(viewer, IMAGERY, sun).then((mode) => {
+    if (RUNWAY && (mode !== "photo" || !highResPhotoAt(RUNWAY.latDeg, RUNWAY.lonDeg) || params.get("runway") === "1")) addRunway(viewer, RUNWAY);
     return mode;
   });
-  const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg));
+  const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, soaringFrom(F.weather).cumulus);
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
-  const scenery =
-    SITE === "flat"
-      ? undefined
-      : Scenery.create(viewer, RUNWAY, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo" });
+  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo" });
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);
@@ -163,7 +95,7 @@ async function main(): Promise<void> {
   let paused = false;
   let fdmHz = 0;
   const input = new PilotInput({
-    reset: () => void startState().then((start) => send({ type: "reset", start })),
+    reset: () => void startState(F).then((start) => send({ type: "reset", start })),
     toggleView: () => cam.toggle(),
     togglePause: () => send({ type: "pause", paused: (paused = !paused) }),
     toggleHelp: () => hud.toggleHelp(),
@@ -171,7 +103,7 @@ async function main(): Promise<void> {
     release: () => send({ type: "launch", action: "release" }),
     winchFaster: () => send({ type: "launch", action: "faster" }),
     winchSlower: () => send({ type: "launch", action: "slower" }),
-    menu: () => location.assign(`?menu&time=${encodeURIComponent(params.get("time") ?? "afternoon")}`),
+    menu: () => location.assign(`?menu&time=${encodeURIComponent(params.get("time") ?? "now")}${F.field ? `&field=${F.field.ident}&at=${F.field.latDeg},${F.field.lonDeg}` : ""}`),
   });
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -220,10 +152,9 @@ async function main(): Promise<void> {
 
   // Warm the renderer's terrain around the start at the zooms Cesium will ask for first, in
   // parallel, so its level-by-level refinement doesn't wait on one download per level.
-  const start = await startState();
-  const warm = renderTerrain
-    ? Promise.all([[13, 5000], [12, 9000], [11, 16000], [10, 30000], [9, 60000], [8, 120000]].map(([z, r]) => renderTerrain!.load(start.latDeg, start.lonDeg, r!, z!))).catch(() => {})
-    : Promise.resolve();
+  const start = await startState(F);
+  hud.message(F.weatherText);
+  const warm = Promise.all([[13, 5000], [12, 9000], [11, 16000], [10, 30000], [9, 60000], [8, 120000]].map(([z, r]) => renderTerrain.load(start.latDeg, start.lonDeg, r!, z!))).catch(() => {});
   setStatus("Starting flight model…");
   send({
     type: "init",
@@ -293,7 +224,7 @@ async function main(): Promise<void> {
         paused,
         ...(air ? { air } : {}),
         ...(launchText ? { launch: launchText } : {}),
-        site: SITE === "flat" ? "flat test field" : `${FIELD.name} · ${START_KIND}`,
+        site: LAUNCH ? `${F.name} · ${LAUNCH}` : F.name,
       },
       dt,
     );

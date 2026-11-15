@@ -1,7 +1,7 @@
 export { TerrariumTerrain, fetchTerrariumTile, lonLatToTile, tileToLonLat, TERRARIUM_URL } from "./terrain.ts";
 export type { TerrainOptions } from "./terrain.ts";
 export { decodePng } from "./png.ts";
-export { findRidgeStart, RidgeLift } from "./ridge.ts";
+export { RidgeLift } from "./ridge.ts";
 export type { RidgeInput } from "./ridge.ts";
 export { Thermal, ThermalField, ThermalSky, strengthFactor, triggerScore } from "./thermals.ts";
 export type { ThermalFieldOptions, ThermalSkyOptions, ThermalSpec, UserState, WindProfile } from "./thermals.ts";

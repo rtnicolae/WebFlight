@@ -1,10 +1,14 @@
 /**
- * Builds data/airfields-eu.json from OurAirports (public domain,
+ * Builds data/airfields/ from OurAirports (public domain,
  * https://github.com/davidmegginson/ourairports-data): Europe's small, medium and large
- * airports with their open runways. Run: pnpm --filter @webflight/environment airfields
- * (Node needs NODE_USE_ENV_PROXY=1 behind a proxy.)
+ * airports with their open runways, cut into zoom-7 Web Mercator tiles
+ * (data/airfields/7/x/y.json, loaded around the start point) plus a search index
+ * (data/airfields/index.json: ident, name, town, country, lat, lon; loaded only to search).
+ * Run: pnpm --filter @webflight/environment airfields (NODE_USE_ENV_PROXY=1 behind a proxy).
  */
-import { writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { AIRFIELD_TILE_ZOOM } from "../src/airfields.ts";
+import { lonLatToTile } from "../src/terrain.ts";
 
 const SRC = "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main";
 const FT = 0.3048;
@@ -66,9 +70,23 @@ async function main() {
     if (!runways.length) continue;
     out.push([a["ident"], a["name"], round(Number(a["latitude_deg"]), 6), round(Number(a["longitude_deg"]), 6), round((num(a["elevation_ft"]!) ?? 0) * FT, 0), kinds[a["type"]!], a["municipality"], a["iso_country"], runways]);
   }
-  const file = new URL("../data/airfields-eu.json", import.meta.url);
-  writeFileSync(file, JSON.stringify({ source: "OurAirports (public domain), " + new Date().toISOString().slice(0, 10), fields: ["ident", "name", "lat", "lon", "elevM", "kind", "municipality", "country", "runways: [le, he, lengthM, widthM, surface, leLat, leLon, heLat, heLon]"], airfields: out }));
-  console.log(`${out.length} airfields`);
+  const dir = new URL("../data/airfields/", import.meta.url);
+  rmSync(dir, { recursive: true, force: true });
+  const source = "OurAirports (public domain), " + new Date().toISOString().slice(0, 10);
+  const tiles = new Map<string, unknown[]>();
+  for (const a of out as [string, string, number, number, ...unknown[]][]) {
+    const [fx, fy] = lonLatToTile(a[3], a[2], AIRFIELD_TILE_ZOOM);
+    const k = `${Math.floor(fx)}/${Math.floor(fy)}`;
+    tiles.set(k, [...(tiles.get(k) ?? []), a]);
+  }
+  for (const [k, list] of tiles) {
+    const f = new URL(`${AIRFIELD_TILE_ZOOM}/${k}.json`, dir);
+    mkdirSync(new URL(".", f), { recursive: true });
+    writeFileSync(f, JSON.stringify({ source, airfields: list }));
+  }
+  const index = (out as unknown[][]).map((a) => [a[0], a[1], a[6], a[7], a[2], a[3]]);
+  writeFileSync(new URL("index.json", dir), JSON.stringify({ source, fields: ["ident", "name", "municipality", "country", "lat", "lon"], airfields: index }));
+  console.log(`${out.length} airfields in ${tiles.size} tiles`);
 }
 
 void main();

@@ -1,11 +1,12 @@
 /**
- * Europe's airfields and runways from OurAirports (public domain; data/airfields-eu.json,
- * built by scripts/airfields.ts), with runway geometry resolved from, in order:
+ * Europe's airfields and runways from OurAirports (public domain; data/airfields/, built by
+ * scripts/airfields.ts, tiled so only the data around the start loads), with runway geometry
+ * resolved from, in order:
  *  1. OpenStreetMap runway lines near the field (passed in; the most precise where mapped),
  *  2. OurAirports' runway end coordinates,
  *  3. the runway designator (magnetic heading / 10) through the airfield's reference point.
  */
-import { advance, distanceM } from "./util.ts";
+import { distanceM } from "./util.ts";
 
 export interface RunwayData {
   /** Designators of the two ends, e.g. "04" / "22". */
@@ -131,11 +132,11 @@ export function resolveRunway(field: AirfieldData, rw: RunwayData, osm: OsmRunwa
 }
 
 /** Airfields matching a query (ident, name or town; accents ignored), best first. */
-export function searchAirfields(all: AirfieldData[], query: string, limit = 12): AirfieldData[] {
+export function searchAirfields<T extends { ident: string; name: string; municipality: string }>(all: T[], query: string, limit = 12): T[] {
   const norm = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const q = norm(query.trim());
   if (!q) return [];
-  const scored: [number, AirfieldData][] = [];
+  const scored: [number, T][] = [];
   for (const a of all) {
     const id = a.ident.toLowerCase(), name = norm(a.name), town = norm(a.municipality);
     let s = 0;
@@ -143,40 +144,72 @@ export function searchAirfields(all: AirfieldData[], query: string, limit = 12):
     else if (id.startsWith(q)) s = 60;
     else if (name.startsWith(q) || town.startsWith(q)) s = 50;
     else if (name.includes(q) || town.includes(q)) s = 30;
-    if (s) scored.push([s + (a.kind === "s" ? 2 : 0), a]); // small fields: gliding
+    if (s) scored.push([s, a]);
   }
   return scored.sort((x, y) => y[0] - x[0]).slice(0, limit).map(([, a]) => a);
 }
 
-/** Nearest airfields to a point. */
-export function nearestAirfields(all: AirfieldData[], latDeg: number, lonDeg: number, limit = 5): AirfieldData[] {
-  return all
-    .map((a) => [distanceM(latDeg, lonDeg, a.latDeg, a.lonDeg), a] as const)
-    .sort((x, y) => x[0] - y[0])
-    .slice(0, limit)
-    .map(([, a]) => a);
+/** Home base: Ghimbav Aerodrome (Brașov), with its position to find its data tile. */
+export const HOME_AIRFIELD = { ident: "RO-0010", latDeg: 45.699386, lonDeg: 25.528414 };
+
+/** Airfield data tiles (zoom-7 Web Mercator, ~200–300 km in Europe). */
+export const AIRFIELD_TILE_ZOOM = 7;
+const DATA = new URL("../data/airfields/", import.meta.url);
+
+async function readJson(path: string): Promise<unknown> {
+  const u = new URL(path, DATA);
+  if (u.protocol === "file:") {
+    const fs = (await import("node:fs/promises" as string)) as { readFile(u: URL, enc: string): Promise<string> };
+    return JSON.parse(await fs.readFile(u, "utf8"));
+  }
+  const r = await fetch(u.href);
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
 }
 
-/** A point `distM` before the `le` threshold on the extended centreline. */
-export function finalFix(rw: Runway, distM: number): [number, number] {
-  return advance(rw.latDeg, rw.lonDeg, rw.headingDeg + 180, rw.lengthM / 2 + distM);
+const tileCache = new Map<string, Promise<AirfieldData[]>>();
+function airfieldTile(x: number, y: number): Promise<AirfieldData[]> {
+  const k = `${x}/${y}`;
+  let t = tileCache.get(k);
+  if (!t) {
+    // A tile without airfields has no file.
+    t = readJson(`${AIRFIELD_TILE_ZOOM}/${k}.json`).then((j) => parseAirfields(j as { airfields: unknown[] }), () => []);
+    tileCache.set(k, t);
+  }
+  return t;
 }
 
-/** Home base: Ghimbav Aerodrome (Brașov). */
-export const HOME_AIRFIELD = "RO-0010";
+/** Airfields within `radiusM` of a point, loading only the data tiles that cover it. */
+export async function airfieldsAround(latDeg: number, lonDeg: number, radiusM: number): Promise<AirfieldData[]> {
+  const n = 2 ** AIRFIELD_TILE_ZOOM;
+  const dLat = radiusM / 111_132, dLon = radiusM / (111_320 * Math.cos((latDeg * Math.PI) / 180));
+  const tx = (lon: number) => Math.floor(((lon + 180) / 360) * n);
+  const ty = (lat: number) => Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * n);
+  const jobs: Promise<AirfieldData[]>[] = [];
+  for (let x = tx(lonDeg - dLon); x <= tx(lonDeg + dLon); x++) for (let y = ty(latDeg + dLat); y <= ty(latDeg - dLat); y++) jobs.push(airfieldTile(x, y));
+  return (await Promise.all(jobs)).flat().filter((a) => distanceM(latDeg, lonDeg, a.latDeg, a.lonDeg) <= radiusM);
+}
 
-/** The bundled data file (Vite serves it as an asset; Node reads it from disk). */
-export const AIRFIELDS_URL = new URL("../data/airfields-eu.json", import.meta.url);
+/** An airfield by ident near a known point (the point only selects the data tile). */
+export async function airfieldAt(ident: string, latDeg: number, lonDeg: number): Promise<AirfieldData | undefined> {
+  return (await airfieldsAround(latDeg, lonDeg, 5000)).find((a) => a.ident.toLowerCase() === ident.toLowerCase());
+}
 
-let cache: Promise<AirfieldData[]> | undefined;
-export function loadAirfields(): Promise<AirfieldData[]> {
-  cache ??= (async () => {
-    if (AIRFIELDS_URL.protocol === "file:") {
-      const fs = (await import("node:fs/promises" as string)) as { readFile(u: URL, enc: string): Promise<string> };
-      return parseAirfields(JSON.parse(await fs.readFile(AIRFIELDS_URL, "utf8")) as { airfields: unknown[] });
-    }
-    const r = await fetch(AIRFIELDS_URL.href);
-    return parseAirfields((await r.json()) as { airfields: unknown[] });
-  })();
-  return cache;
+/** A search index entry: enough to find a field and then load its tile. */
+export interface AirfieldIndexEntry {
+  ident: string;
+  name: string;
+  municipality: string;
+  country: string;
+  latDeg: number;
+  lonDeg: number;
+}
+
+let index: Promise<AirfieldIndexEntry[]> | undefined;
+/** The search index (all of Europe, names and positions only): load it only to search. */
+export function loadAirfieldIndex(): Promise<AirfieldIndexEntry[]> {
+  index ??= readJson("index.json").then((j) =>
+    ((j as { airfields: [string, string, string, string, number, number][] }).airfields).map(([ident, name, municipality, country, latDeg, lonDeg]) => ({ ident, name, municipality, country, latDeg, lonDeg })),
+  );
+  return index;
 }

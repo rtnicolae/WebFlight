@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateWeather, openMeteoUrl, parseOpenMeteo, soaringFrom, windAt, type Weather } from "../src/index.ts";
+import { estimateWeather, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, windAt, type Weather } from "../src/index.ts";
 
 // Shape of an Open-Meteo /v1/forecast response with timezone=auto&timeformat=unixtime.
 const fixture = {
@@ -79,10 +79,20 @@ describe("weather", () => {
   });
 
   it("asks Open-Meteo for knots, local time and the levels it parses", () => {
-    const u = openMeteoUrl(45.7, 25.53);
+    const u = openMeteoUrl(45.7, 25.53, "2026-07-14", "2026-07-16");
+    expect(u).toContain("start_date=2026-07-14&end_date=2026-07-16");
     expect(u).toContain("wind_speed_unit=kn");
     expect(u).toContain("timezone=auto");
     expect(u).toContain("timeformat=unixtime");
     expect(u).toContain("boundary_layer_height");
+  });
+});
+
+describe("when", () => {
+  it("reads now, today's local time and a local date-time", () => {
+    expect(parseWhen(null)).toEqual({ kind: "now" });
+    expect(parseWhen("14:30")).toEqual({ kind: "local", hm: "14:30" });
+    expect(parseWhen("2026-07-15T14:30")).toEqual({ kind: "local", date: "2026-07-15", hm: "14:30" });
+    expect(parseWhen("afternoon")).toEqual({ kind: "now" });
   });
 });

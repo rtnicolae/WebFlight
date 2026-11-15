@@ -155,6 +155,8 @@ export class ThermalLayer {
     private readonly viewer: Viewer,
     private readonly showColumns = false,
     sun: { azimuthDeg: number; elevationDeg: number } = { azimuthDeg: 230, elevationDeg: 40 },
+    /** Whether the day's thermals are marked by cumulus (else blue: no clouds drawn). */
+    private readonly cumulus = true,
   ) {
     const az = (sun.azimuthDeg * Math.PI) / 180, el = (Math.max(5, sun.elevationDeg) * Math.PI) / 180;
     this.clouds = new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) });
@@ -162,7 +164,7 @@ export class ThermalLayer {
 
   update(list: ThermalView[]): void {
     this.clouds.set(
-      list.map((t) => ({
+      (this.cumulus ? list : []).map((t) => ({
         id: t.id,
         latDeg: t.latDeg,
         lonDeg: t.lonDeg,

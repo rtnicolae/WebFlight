@@ -121,8 +121,9 @@ const HOURLY = [
   "boundary_layer_height",
 ];
 
-export function openMeteoUrl(latDeg: number, lonDeg: number): string {
-  return `${OPEN_METEO}?latitude=${latDeg.toFixed(4)}&longitude=${lonDeg.toFixed(4)}&hourly=${HOURLY.join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&past_days=2&forecast_days=3`;
+/** Hourly data for local days `from`..`to` (yyyy-mm-dd; forecast range, ~3 months back to 16 days ahead). */
+export function openMeteoUrl(latDeg: number, lonDeg: number, from: string, to: string): string {
+  return `${OPEN_METEO}?latitude=${latDeg.toFixed(4)}&longitude=${lonDeg.toFixed(4)}&hourly=${HOURLY.join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
 }
 
 interface OpenMeteoResponse {
@@ -211,49 +212,40 @@ export function estimateWeather(latDeg: number, lonDeg: number, when: Date, elev
   };
 }
 
-/** Live weather nearest a time, or the estimate if Open-Meteo can't be reached. */
-export async function fetchWeather(latDeg: number, lonDeg: number, when: Date): Promise<Weather> {
-  return (await weatherFor(latDeg, lonDeg, { kind: "now" }, 0, when)).weather;
+/** When to fly: now, or a local date and time at the place (live forecast or recent past). */
+export type WhenSpec = { kind: "now" } | { kind: "local"; date?: string; hm: string };
+
+/** "now" | "HH:MM" (today) | "YYYY-MM-DDTHH:MM" (local time at the place). */
+export function parseWhen(s: string | null | undefined): WhenSpec {
+  const m = /^(?:(\d{4}-\d{2}-\d{2})T)?(\d{1,2}:\d{2})$/.exec(s ?? "");
+  if (!m) return { kind: "now" };
+  return m[1] ? { kind: "local", date: m[1], hm: m[2]! } : { kind: "local", hm: m[2]! };
 }
+
+const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 /**
- * When to fly: now (live), a local time today (live forecast), or a typical summer day
- * (the deterministic estimate on 15 July at that local time).
+ * The weather and the sim time for a place and a WhenSpec: Open-Meteo for the local day
+ * asked (the response's UTC offset turns local time into UTC), else the sun-based estimate.
  */
-export type WhenSpec = { kind: "now" } | { kind: "today"; hm: string } | { kind: "summer"; hm: string };
-
-export function parseWhen(s: string | null | undefined): WhenSpec {
-  const presets: Record<string, string> = { morning: "10:00", noon: "13:00", afternoon: "15:30", evening: "19:00" };
-  if (!s || s === "now") return { kind: "now" };
-  const [kind, v = "afternoon"] = s.includes(":") && !/^\d/.test(s) ? [s.slice(0, s.indexOf(":")), s.slice(s.indexOf(":") + 1)] : ["today", s];
-  const hm = presets[v] ?? (/^\d{1,2}:\d{2}$/.test(v) ? v : "15:30");
-  return kind === "summer" ? { kind: "summer", hm } : { kind: "today", hm };
-}
-
-const atLocal = (y: number, mo: number, d: number, hm: string, offsetH: number) => {
-  const [h, m] = hm.split(":").map(Number) as [number, number];
-  return new Date(Date.UTC(y, mo, d, h, m) - offsetH * 3600_000);
-};
-
-/** The weather and the sim time for a place and a WhenSpec. */
 export async function weatherFor(latDeg: number, lonDeg: number, when: WhenSpec, elevationM = 0, now = new Date()): Promise<{ weather: Weather; time: Date }> {
-  if (when.kind === "summer") {
-    const time = atLocal(now.getUTCFullYear(), 6, 15, when.hm, Math.round(lonDeg / 15) + 1);
-    return { weather: estimateWeather(latDeg, lonDeg, time, elevationM), time };
-  }
+  // The local date isn't known before the offset is: ask for the day either side as well.
+  const guessH = Math.round(lonDeg / 15);
+  const localDay = when.kind === "local" && when.date ? when.date : ymd(new Date(now.getTime() + guessH * 3600_000));
+  const d0 = new Date(`${localDay}T00:00:00Z`);
   let json: OpenMeteoResponse | undefined;
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 8000);
-    const r = await fetch(openMeteoUrl(latDeg, lonDeg), { signal: ctl.signal });
+    const r = await fetch(openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000))), { signal: ctl.signal });
     clearTimeout(timer);
     if (r.ok) json = (await r.json()) as OpenMeteoResponse;
   } catch {}
-  const offsetH = json?.utc_offset_seconds !== undefined ? json.utc_offset_seconds / 3600 : Math.round(lonDeg / 15);
+  const offsetH = json?.utc_offset_seconds !== undefined ? json.utc_offset_seconds / 3600 : guessH;
   let time = now;
-  if (when.kind === "today") {
-    const local = new Date(now.getTime() + offsetH * 3600_000);
-    time = atLocal(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), when.hm, offsetH);
+  if (when.kind === "local") {
+    const [h, m] = when.hm.split(":").map(Number) as [number, number];
+    time = new Date(d0.getTime() + (h * 60 + m) * 60_000 - offsetH * 3600_000);
   }
   if (json) {
     try {
