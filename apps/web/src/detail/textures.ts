@@ -73,7 +73,7 @@ export function sampleRatio(t: DetailTexture, wx: number, wy: number, mPerPx: nu
  * so its clumps read as meadow patches and crop texture from a glider's height; the micro
  * layer, at about true scale, shows on low passes and on the ground.
  */
-const MACRO = 7;
+const MACRO = 16;
 /**
  * Contrast gains around 1 (mean-preserving): the photos' grain lives mostly below a pixel at
  * glider heights, so the averaged levels vary by only 2–5 %; the gains make it 10–15 %.
@@ -122,7 +122,11 @@ export class TileSampler {
   private readonly mic = new Float32Array(3);
   private readonly mac = new Float32Array(3);
 
-  constructor(private readonly mPerPx: number) {}
+  /** Macro gain: full from altitude, gentle close up where the true-scale grain shows. */
+  private readonly macroGain: number;
+  constructor(private readonly mPerPx: number) {
+    this.macroGain = 1.2 + (MACRO_GAIN - 1.2) * Math.min(1, Math.max(0, (mPerPx - 0.1) / 0.3));
+  }
 
   private levels(t: DetailTexture) {
     let e = this.lv.get(t);
@@ -171,17 +175,19 @@ export class TileSampler {
     one(e.micro, t.meters, this.m1x, this.m1y, this.m2x, this.m2y, this.wm, this.km, this.mic);
     one(e.macro, t.meters * MACRO, this.M1x, this.M1y, this.M2x, this.M2y, this.wM, this.kM, this.mac);
     const lm = (this.mic[0]! + this.mic[1]! + this.mic[2]!) / 3, lM = (this.mac[0]! + this.mac[1]! + this.mac[2]!) / 3;
-    const L = (1 + (lm - 1) * MICRO_GAIN) * (1 + (lM - 1) * MACRO_GAIN);
+    const L = (1 + (lm - 1) * MICRO_GAIN) * (1 + (lM - 1) * this.macroGain);
     for (let c = 0; c < 3; c++) out[c] = Math.max(0.3, L * (1 + (this.mic[c]! - lm) * CHROMA));
   }
 }
 
 /** Detail textures by role, with the ground size each repeat covers. */
 export const TEXTURES = {
-  grass: { file: "leafy_grass.jpg", meters: 6 },
-  dryGrass: { file: "grass_ground.jpg", meters: 7 },
-  soil: { file: "farm_soil.jpg", meters: 6 },
-  drySoil: { file: "dry_mud_field_001.jpg", meters: 8 },
+  // About true scale (the photos cover ~2–3 m), for the ground under the wheels; the ×16
+  // macro layer (~40 m) carries the look from altitude.
+  grass: { file: "leafy_grass.jpg", meters: 2.4 },
+  dryGrass: { file: "grass_ground.jpg", meters: 2.8 },
+  soil: { file: "farm_soil.jpg", meters: 2.2 },
+  drySoil: { file: "dry_mud_field_001.jpg", meters: 3 },
   track: { file: "aerial_mud_1.jpg", meters: 8 },
   gravel: { file: "gravel_road.jpg", meters: 4 },
   asphalt: { file: "aerial_asphalt_01.jpg", meters: 30 },

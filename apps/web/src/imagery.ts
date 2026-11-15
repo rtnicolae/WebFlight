@@ -16,7 +16,7 @@ import { openFreeMapTiles } from "./osm-source.ts";
 export type ImageryMode = "photo" | "painted" | "grid" | "osm";
 
 const SWISSIMAGE = "https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg";
-const S2CLOUDLESS = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg";
+export const S2CLOUDLESS = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg";
 /**
  * Free national orthophotos (no key), all Web Mercator tiles with CORS; each checked for a
  * real photo inside and for what it returns outside its country (errors, or white tiles:
@@ -158,7 +158,8 @@ export class DetailImageryProvider {
   // coarse terrain tile (millions). Below DETAIL_MIN_LEVEL tiles come back empty, and the
   // layer only applies on detailed terrain (minimumTerrainLevel).
   readonly minimumLevel = 0;
-  readonly maximumLevel = 19;
+  // Down to ~5 cm per pixel under a glider standing on the field.
+  readonly maximumLevel = 21;
   readonly tileDiscardPolicy = undefined;
   readonly errorEvent = new Event();
   readonly credit = new Credit("Ground detail synthesized from Sentinel-2 and © OpenStreetMap contributors");

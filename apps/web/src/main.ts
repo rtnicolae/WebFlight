@@ -9,10 +9,12 @@ import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, ThermalLayer } from "./scene.ts";
 import { resolveFlight, type Flight } from "./world.ts";
-import { addImagery, highResPhotoAt, type ImageryMode } from "./imagery.ts";
+import { addImagery, highResPhotoAt, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import { soaringFrom, sunPosition } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import { Scenery } from "./scenery.ts";
+import { GrassLayer } from "./grass/grass-layer.ts";
+import { openFreeMapTiles } from "./osm-source.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
@@ -79,6 +81,13 @@ async function main(): Promise<void> {
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
   const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 8 : 10, osmTreeRings: QUALITY === "ultra" ? 3 : 2 });
+  // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
+  const grassParam = params.get("grass");
+  const osmTiles = await openFreeMapTiles();
+  const grass =
+    osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
+      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { cellM: 10, radiusM: QUALITY === "ultra" ? 70 : 45, density: QUALITY === "ultra" ? 40 : 28, maxHeightM: 60 })
+      : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);
@@ -194,6 +203,10 @@ async function main(): Promise<void> {
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
+    if (grass) {
+      const cam = viewer.camera.positionCartographic;
+      grass.update(cam, renderTerrain.heightAt((cam.latitude * 180) / Math.PI, (cam.longitude * 180) / Math.PI));
+    }
     let launchText: string | undefined;
     if (LAUNCH) {
       const connected = g(LAUNCH === "winch" ? "/sim/hitches/winch/open" : "/sim/hitches/aerotow/open") === 0;
