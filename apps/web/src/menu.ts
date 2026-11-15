@@ -132,6 +132,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   const date = timeFor(pick.time);
   const terrain = new TerrariumTerrain({ zoom: 13 });
   const viewer = createViewer(document.getElementById("cesium")!, { time: date, shadows: false, terrain, quality: pick.quality === "ultra" ? "ultra" : "high" });
+  (window as unknown as { webflightViewer: unknown }).webflightViewer = viewer;
   void addImagery(viewer, pick.imagery, sunPosition(date, GRENCHEN.latDeg, GRENCHEN.lonDeg));
   const field = new ThermalField({ seed: 1, centerLatDeg: GRENCHEN.latDeg, centerLonDeg: GRENCHEN.lonDeg, radiusM: 12_000, count: 30, cloudBaseM: 1900 });
   const thermals: ThermalView[] = field.thermals.map((t) => {
@@ -146,9 +147,9 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
       phase: time <= 0.2 ? "forming" : time <= 0.8 ? "formed" : time <= 1 ? "dying" : "dead",
     };
   });
-  new ThermalLayer(viewer).update(thermals);
+  new ThermalLayer(viewer, false, sunPosition(date, GRENCHEN.latDeg, GRENCHEN.lonDeg)).update(thermals);
   // Lakes and rivers read well from the orbit; buildings and trees are too small up here.
-  Scenery.create(viewer, GRENCHEN, { buildings: false, trees: false, water: true, shadows: false, treeDetail: 24 });
+  Scenery.create(viewer, GRENCHEN, { buildings: false, trees: false, water: true, shadows: false, treeDetail: 24, drape: false });
   document.getElementById("boot")!.hidden = true;
   const centre = Cartesian3.fromDegrees(7.47, 47.215, 900);
   let heading = CMath.toRadians(200);

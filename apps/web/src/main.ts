@@ -130,14 +130,14 @@ async function main(): Promise<void> {
     if (mode !== "photo" || params.get("runway") === "1") addRunway(viewer, RUNWAY);
     return mode;
   });
-  const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1");
+  const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg));
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
-  await imageryReady;
+  const imageryMode = await imageryReady;
   const scenery =
     SITE === "flat"
       ? undefined
-      : Scenery.create(viewer, RUNWAY, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24 });
+      : Scenery.create(viewer, RUNWAY, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo" });
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);

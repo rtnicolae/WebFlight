@@ -1,10 +1,7 @@
 /** Cesium viewer: real terrain (Terrarium) or the plain ellipsoid, light and atmosphere, runways, cumulus. */
 import {
-  Cartesian2,
   Cartesian3,
-  CloudCollection,
   Color,
-  type CumulusCloud,
   CustomHeightmapTerrainProvider,
   EllipsoidTerrainProvider,
   WebMercatorTilingScheme,
@@ -16,6 +13,7 @@ import {
 } from "cesium";
 import type { TerrariumTerrain } from "@webflight/environment";
 import type { ThermalView } from "./protocol.ts";
+import { CloudLayer } from "./clouds.ts";
 
 const M_PER_DEG_LAT = 111_132;
 
@@ -145,63 +143,47 @@ export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProv
 }
 
 /**
- * A cumulus over each thermal (Cesium's procedural cumulus impostors): a cluster of puffs
- * with a flat base at the thermal top (cloud base), growing while the thermal forms and
- * fading as it dies. With `columns`, the lift columns are drawn too.
+ * A cumulus over each thermal (sprite clouds, clouds.ts): flat base at the thermal's cloud
+ * base, growing while the thermal forms and fading as it dies, so clouds mark the lift as
+ * real ones do. With `columns`, the lift columns are drawn too.
  */
 export class ThermalLayer {
-  private readonly clouds = new CloudCollection({ noiseDetail: 16.0, noiseOffset: Cartesian3.ZERO });
-  private readonly sets = new Map<number, { puffs: { cloud: CumulusCloud; w: number; h: number }[]; column?: Entity }>();
+  private readonly clouds: CloudLayer;
+  private readonly columns = new Map<number, Entity>();
 
   constructor(
     private readonly viewer: Viewer,
-    private readonly columns = false,
+    private readonly showColumns = false,
+    sun: { azimuthDeg: number; elevationDeg: number } = { azimuthDeg: 230, elevationDeg: 40 },
   ) {
-    viewer.scene.primitives.add(this.clouds);
+    const az = (sun.azimuthDeg * Math.PI) / 180, el = (Math.max(5, sun.elevationDeg) * Math.PI) / 180;
+    this.clouds = new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) });
   }
 
   update(list: ThermalView[]): void {
+    this.clouds.set(
+      list.map((t) => ({
+        latDeg: t.latDeg,
+        lonDeg: t.lonDeg,
+        baseM: t.topM,
+        // Cumulus are wider than the thermal feeding them.
+        radiusM: Math.max(300, t.radiusM * 2.2),
+        size: t.phase === "formed" ? 1 : t.phase === "forming" ? 0.6 : t.phase === "dying" ? 0.75 : 0,
+        opacity: t.phase === "dying" ? 0.55 : t.phase === "dead" ? 0 : 1,
+      })),
+    );
+    if (!this.showColumns) return;
     list.forEach((t, i) => {
-      let set = this.sets.get(i);
-      if (!set) {
-        set = { puffs: [] };
-        // Deterministic per thermal: a few puffs around the core, the tallest in the middle.
-        let seed = (i + 1) * 9301;
-        const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-        const n = 5 + Math.floor(rnd() * 4);
-        const r = Math.max(250, t.radiusM);
-        const cosLat = Math.cos((t.latDeg * Math.PI) / 180);
-        for (let k = 0; k < n; k++) {
-          const a = rnd() * 2 * Math.PI, d = k === 0 ? 0 : r * (0.4 + 0.9 * rnd());
-          const w = r * (k === 0 ? 2.2 : 1.2 + 0.8 * rnd());
-          const h = w * (k === 0 ? 0.75 : 0.45 + 0.25 * rnd());
-          const lat = t.latDeg + (d * Math.cos(a)) / M_PER_DEG_LAT, lon = t.lonDeg + (d * Math.sin(a)) / (M_PER_DEG_LAT * cosLat);
-          const cloud = this.clouds.add({
-            position: Cartesian3.fromDegrees(lon, lat, t.topM + h * 0.42),
-            scale: new Cartesian2(w, h),
-            maximumSize: new Cartesian3(w, h, w * 0.7),
-            slice: 0.36 + 0.1 * rnd(),
-            brightness: 1.0,
-          });
-          set.puffs.push({ cloud, w, h });
-        }
-        if (this.columns) {
-          const len = t.topM - t.groundM;
-          set.column = this.viewer.entities.add({
-            position: Cartesian3.fromDegrees(t.lonDeg, t.latDeg, t.groundM + len / 2),
-            cylinder: { length: len, topRadius: t.radiusM, bottomRadius: t.radiusM, material: Color.ORANGE.withAlpha(0.12), outline: false },
-          });
-        }
-        this.sets.set(i, set);
+      let col = this.columns.get(i);
+      if (!col) {
+        const len = t.topM - t.groundM;
+        col = this.viewer.entities.add({
+          position: Cartesian3.fromDegrees(t.lonDeg, t.latDeg, t.groundM + len / 2),
+          cylinder: { length: len, topRadius: t.radiusM, bottomRadius: t.radiusM, material: Color.ORANGE.withAlpha(0.12), outline: false },
+        });
+        this.columns.set(i, col);
       }
-      const size = t.phase === "formed" ? 1 : t.phase === "forming" ? 0.65 : t.phase === "dying" ? 0.8 : 0;
-      const bright = t.phase === "dying" ? 0.82 : 1;
-      for (const p of set.puffs) {
-        p.cloud.show = size > 0;
-        p.cloud.scale = new Cartesian2(p.w * size, p.h * size);
-        p.cloud.brightness = bright;
-      }
-      if (set.column) set.column.show = size > 0;
+      col.show = t.phase === "formed" || t.phase === "forming";
     });
   }
 }

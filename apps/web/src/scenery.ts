@@ -17,6 +17,7 @@ import {
   Color,
   GeometryInstance,
   GroundPrimitive,
+  ImageryLayer,
   Material,
   MaterialAppearance,
   PolygonGeometry,
@@ -26,6 +27,7 @@ import {
 } from "cesium";
 import { lonLatToTile } from "@webflight/environment";
 import { fetchWater, type WaterPolygon } from "@webflight/scenery";
+import { swissImageProvider } from "./imagery.ts";
 
 const TLM3D = "https://vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.swisstlm3d.3d/20190313/tileset.json";
 const VEGETATION = "https://vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.vegetation.3d/20190313/tileset.json";
@@ -44,17 +46,25 @@ export interface SceneryOptions {
    * renderer at 8). 24 keeps trees near the glider and thins them with distance.
    */
   treeDetail: number;
+  /** Drape SWISSIMAGE on the buildings (photo mode). */
+  drape: boolean;
 }
 
-function waterMaterial(): Material {
+/**
+ * Water: over aerial photos a light tint with a soft sun glint (the photo already shows the
+ * lake), painted mode a solid lake colour. Waves are broad: a fine normal map tiled thousands
+ * of times over a large lake aliases into glitter from altitude.
+ */
+function waterMaterial(overPhoto: boolean): Material {
   return Material.fromType("Water", {
-    baseWaterColor: new Color(0.13, 0.27, 0.33, 0.92),
-    blendColor: new Color(0.1, 0.3, 0.3, 1.0),
+    baseWaterColor: overPhoto ? new Color(0.16, 0.3, 0.36, 0.35) : new Color(0.17, 0.33, 0.4, 0.95),
+    blendColor: new Color(0.12, 0.28, 0.32, 1.0),
     normalMap: buildModuleUrl("Assets/Textures/waterNormals.jpg"),
-    frequency: 9000.0,
-    animationSpeed: 0.008,
-    amplitude: 3.0,
-    specularIntensity: 0.6,
+    frequency: 1200.0,
+    animationSpeed: 0.004,
+    amplitude: 1.2,
+    specularIntensity: overPhoto ? 0.25 : 0.4,
+    fadeFactor: 1.0,
   });
 }
 
@@ -91,9 +101,10 @@ export class Scenery {
     if (o.buildings) {
       void Cesium3DTileset.fromUrl(TLM3D, { maximumScreenSpaceError: 12, shadows, dynamicScreenSpaceError: true, skipLevelOfDetail: true })
         .then((ts) => {
-          // Warm walls and slightly darker roofs read better against aerial photos than
-          // the tiles' flat pastel materials.
-          ts.style = new Cesium3DTileStyle({ color: "color('#ddd5c9')" });
+          // Drape the aerial photo over the buildings: roofs take their real colours and
+          // walls the colours at their footprint, instead of the tiles' flat pastel materials.
+          if (o.drape) ts.imageryLayers.add(new ImageryLayer(swissImageProvider()));
+          else ts.style = new Cesium3DTileStyle({ color: "color('#ddd5c9')" });
           viewer.scene.primitives.add(ts);
         })
         .catch((e: unknown) => console.warn("buildings:", e));
@@ -127,7 +138,7 @@ export class Scenery {
         const prim = this.viewer.scene.primitives.add(
           new GroundPrimitive({
             geometryInstances: polys.map((p) => new GeometryInstance({ geometry: new PolygonGeometry({ polygonHierarchy: hierarchy(p), vertexFormat: MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat }) })),
-            appearance: new MaterialAppearance({ material: waterMaterial(), materialSupport: MaterialAppearance.MaterialSupport.TEXTURED, faceForward: true }),
+            appearance: new MaterialAppearance({ material: waterMaterial(this.o.drape), materialSupport: MaterialAppearance.MaterialSupport.TEXTURED, faceForward: true }),
             classificationType: ClassificationType.TERRAIN,
             asynchronous: true,
           }),

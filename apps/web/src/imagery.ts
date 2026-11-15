@@ -17,6 +17,11 @@ const S2CLOUDLESS = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/defau
 /** SWISSIMAGE coverage (a little larger than Switzerland). */
 const SWISS_RECT = Rectangle.fromDegrees(5.8, 45.75, 10.6, 47.9);
 
+/** SWISSIMAGE aerial photos (Switzerland). */
+export function swissImageProvider(): UrlTemplateImageryProvider {
+  return new UrlTemplateImageryProvider({ url: SWISSIMAGE, rectangle: SWISS_RECT, minimumLevel: 8, maximumLevel: 20, credit: new Credit('© <a href="https://www.swisstopo.admin.ch">swisstopo</a> SWISSIMAGE') });
+}
+
 /** Painted tiles from a small worker pool. */
 export class PaintedImageryProvider {
   readonly tilingScheme = new WebMercatorTilingScheme();
@@ -108,11 +113,7 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
         }),
       ),
     );
-    layers.add(
-      new ImageryLayer(
-        new UrlTemplateImageryProvider({ url: SWISSIMAGE, rectangle: SWISS_RECT, minimumLevel: 8, maximumLevel: 20, credit: new Credit('© <a href="https://www.swisstopo.admin.ch">swisstopo</a> SWISSIMAGE') }),
-      ),
-    );
+    layers.add(new ImageryLayer(swissImageProvider()));
   } else if (mode === "painted") {
     layers.add(new ImageryLayer(new PaintedImageryProvider(sunFrom(sun.azimuthDeg, Math.max(5, sun.elevationDeg))) as unknown as ImageryProvider));
   } else if (mode === "osm") {
