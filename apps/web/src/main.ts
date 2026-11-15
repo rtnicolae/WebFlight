@@ -1,7 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
-import { advance, FLAT_TEST, GRENCHEN, JURA_CREST, TerrariumTerrain, ThermalSky, type EnvironmentConfig } from "@webflight/environment";
+import { advance, AIRFIELDS, DEFAULT_AIRFIELD, FLAT_TEST, TerrariumTerrain, ThermalSky, type EnvironmentConfig } from "@webflight/environment";
 import { AircraftView } from "./aircraft.ts";
 import { ChaseCamera } from "./camera.ts";
 import { Hud } from "./hud.ts";
@@ -21,9 +21,9 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
 
 /**
  * Where and how to fly (URL parameters):
- *   site=grenchen (default, real terrain) | flat (the old test field on the ellipsoid)
- *   start=final (straight-in final, runway 07) | ridge (Jura SE face) | thermal (high over the field)
- *         | winch | aerotow (on runway 07: L starts the launch, O opens the hook)
+ *   site=ghimbav (default, home base) | grenchen | flat (the old test field on the ellipsoid)
+ *   start=final (straight-in final) | ridge (where the site has one) | thermal (in a young thermal)
+ *         | winch | aerotow (on the runway: L starts the launch, O opens the hook)
  *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
  *   time=morning | noon | afternoon (default) | evening | HH:MM (local summer time, CEST)
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
@@ -32,31 +32,34 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   dist, agl, eas: start distance from the runway [m], height above ground [m], speed [km/h]
  *   lat, lon, hdg: start anywhere (in the air, agl default 600 m)
  */
-const SITE = params.get("site") === "flat" ? "flat" : "grenchen";
+const SITE = params.get("site") === "flat" ? "flat" : (params.get("site") ?? DEFAULT_AIRFIELD.id) in AIRFIELDS ? params.get("site") ?? DEFAULT_AIRFIELD.id : DEFAULT_AIRFIELD.id;
+const FIELD = AIRFIELDS[SITE] ?? DEFAULT_AIRFIELD;
 const START_KIND = (params.get("start") ?? "final") as "final" | "ridge" | "thermal" | "winch" | "aerotow";
 const LAUNCH = START_KIND === "winch" || START_KIND === "aerotow" ? START_KIND : undefined;
 const RUNWAY: Runway =
   SITE === "flat"
     ? { latDeg: FLAT_TEST.latDeg, lonDeg: FLAT_TEST.lonDeg, headingDeg: 0, lengthM: 800, widthM: 40, paved: false }
-    : { latDeg: GRENCHEN.latDeg, lonDeg: GRENCHEN.lonDeg, headingDeg: GRENCHEN.headingDeg, lengthM: 1000, widthM: 23, paved: true };
+    : { latDeg: FIELD.latDeg, lonDeg: FIELD.lonDeg, headingDeg: FIELD.headingDeg, lengthM: FIELD.lengthM, widthM: FIELD.widthM, paved: FIELD.paved };
 
 function parseWind(): { fromDeg: number; kt: number } {
   const m = /^(\d+(?:\.\d+)?)@(\d+(?:\.\d+)?)$/.exec(params.get("wind") ?? "");
   if (m) return { fromDeg: Number(m[1]), kt: Number(m[2]) };
-  // Ridge soaring needs wind onto the Jura's SE face; elsewhere a light breeze from there.
-  return SITE === "flat" ? { fromDeg: 0, kt: 0 } : { fromDeg: 150, kt: START_KIND === "ridge" ? 20 : 8 };
+  // Ridge soaring needs wind onto the face; otherwise the site's usual breeze.
+  if (SITE === "flat") return { fromDeg: 0, kt: 0 };
+  const [from, kt] = START_KIND === "ridge" && FIELD.ridge ? FIELD.ridge.wind : FIELD.wind;
+  return { fromDeg: from, kt };
 }
 const WIND = parseWind();
 const THERMALS = SITE !== "flat" && params.get("thermals") !== "0";
 const SEED = Number(params.get("seed") ?? 1);
 
-/** Mid-July over Switzerland (CEST = UTC+2). */
+/** Mid-July, local summer time at the site. */
 function simTime(): Date {
   const presets: Record<string, string> = { morning: "07:15", noon: "13:15", afternoon: "16:30", evening: "20:50" };
   const v = params.get("time") ?? "afternoon";
   const hm = presets[v] ?? (/^\d{1,2}:\d{2}$/.test(v) ? v : "16:30");
   const [h, m] = hm.split(":").map(Number) as [number, number];
-  return new Date(Date.UTC(2026, 6, 15, h - 2, m));
+  return new Date(Date.UTC(2026, 6, 15, h - FIELD.utcOffsetH, m));
 }
 const TIME = simTime();
 const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
@@ -70,10 +73,11 @@ async function startState(): Promise<StartState> {
   // Anywhere: ?lat=…&lon=…&hdg=…&agl=… (cross-country, bookmarks).
   if (params.has("lat") && params.has("lon"))
     return { latDeg: Number(params.get("lat")), lonDeg: Number(params.get("lon")), headingDeg: Number(params.get("hdg") ?? 0), aglM: Number(params.get("agl") ?? 600), easKmh: eas };
-  if (START_KIND === "ridge" && SITE !== "flat") {
-    // Down the windward face from the Weissenstein crest, flying along the ridge.
-    const [lat, lon] = advance(JURA_CREST.latDeg, JURA_CREST.lonDeg, 150, 700);
-    return { latDeg: lat, lonDeg: lon, headingDeg: JURA_CREST.headingDeg, aglM: Number(params.get("agl") ?? 250), easKmh: eas };
+  if (START_KIND === "ridge" && SITE !== "flat" && FIELD.ridge) {
+    // Down the windward face from the crest, flying along the ridge.
+    const { crest, faceDeg } = FIELD.ridge;
+    const [lat, lon] = advance(crest.latDeg, crest.lonDeg, faceDeg, 700);
+    return { latDeg: lat, lonDeg: lon, headingDeg: crest.headingDeg, aglM: Number(params.get("agl") ?? 250), easKmh: eas };
   }
   if (START_KIND === "thermal" && ENVIRONMENT.thermalSky) {
     // The sky is seeded per cell, so the worker builds the same thermals: start in one that
@@ -110,7 +114,7 @@ const ENVIRONMENT: EnvironmentConfig = {
   windKt: WIND.kt,
   ridgeLift: true,
   // Thermals everywhere along the way (cells of 6 km, seeded): fly cross-country.
-  thermalSky: THERMALS ? { seed: SEED, cloudBaseM: 1900 } : false,
+  thermalSky: THERMALS ? { seed: SEED, cloudBaseM: FIELD.cloudBaseM } : false,
 };
 const WORLD: WorldConfig = { terrain: SITE === "flat" ? "flat" : "terrarium", environment: ENVIRONMENT };
 /** ASK21 solo (pointmass 1 = copilot). */
@@ -288,7 +292,7 @@ async function main(): Promise<void> {
         paused,
         ...(air ? { air } : {}),
         ...(launchText ? { launch: launchText } : {}),
-        site: SITE === "flat" ? "flat test field" : `${GRENCHEN.name} · ${START_KIND}`,
+        site: SITE === "flat" ? "flat test field" : `${FIELD.name} · ${START_KIND}`,
       },
       dt,
     );

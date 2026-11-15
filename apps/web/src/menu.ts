@@ -1,10 +1,10 @@
 /**
- * Title screen: a slow orbit over Grenchen and the Jura under the day's cumulus, with the
+ * Title screen: a slow orbit over the chosen airfield under the day's cumulus, with the
  * scenarios and a few options. "Fly" starts the sim by navigating to its URL parameters
  * (the sim reads everything from the URL, so any flight can be bookmarked or shared).
  */
 import { HeadingPitchRange, Cartesian3, Math as CMath } from "cesium";
-import { GRENCHEN, TerrariumTerrain, ThermalSky } from "@webflight/environment";
+import { advance, AIRFIELDS, DEFAULT_AIRFIELD, TerrariumTerrain, ThermalSky, type Airfield } from "@webflight/environment";
 import { addImagery, type ImageryMode } from "./imagery.ts";
 import { createViewer, ThermalLayer } from "./scene.ts";
 import { Scenery } from "./scenery.ts";
@@ -20,14 +20,14 @@ const ICONS: Record<string, string> = {
 };
 
 const SCENARIOS = [
-  { id: "final", name: "Final approach", text: "Line up for runway 07 at Grenchen and land." },
-  { id: "ridge", name: "Ridge soaring", text: "Ride the Jura's south face in a 20 kt wind." },
+  { id: "final", name: "Final approach", text: "Line up with the runway and land." },
+  { id: "ridge", name: "Ridge soaring", text: "Ride the ridge's windward face." },
   { id: "thermal", name: "Thermal", text: "Under a young cumulus: circle and climb." },
   { id: "winch", name: "Winch launch", text: "1000 m of cable. Press L to launch." },
   { id: "aerotow", name: "Aerotow", text: "Follow the tug in high tow up to 800 m." },
 ] as const;
 
-type Pick = { start: string; time: string; wind: string; imagery: ImageryMode; quality: string };
+type Pick = { site: string; start: string; time: string; wind: string; imagery: ImageryMode; quality: string };
 
 function segmented(parent: HTMLElement, label: string, options: [string, string][], value: string, onPick: (v: string) => void): void {
   const sec = document.createElement("div");
@@ -59,6 +59,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
     }
   })();
   const pick: Pick = {
+    site: params.get("site") ?? remembered.site ?? DEFAULT_AIRFIELD.id,
     start: params.get("start") ?? remembered.start ?? "final",
     time: params.get("time") ?? remembered.time ?? "afternoon",
     wind: remembered.wind ?? "auto",
@@ -66,17 +67,26 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
     quality: params.get("quality") ?? remembered.quality ?? "high",
   };
 
+  if (!(pick.site in AIRFIELDS)) pick.site = DEFAULT_AIRFIELD.id;
+  const field: Airfield = AIRFIELDS[pick.site]!;
+  if (pick.start === "ridge" && !field.ridge) pick.start = "final";
   const root = document.getElementById("menu")!;
   root.hidden = false;
   const panel = document.createElement("div");
   panel.className = "menu-panel";
-  panel.innerHTML = `<h1 class="menu-title">WebFlight</h1><p class="menu-tagline">Gliding over the Swiss Jura · ASK 21 · JSBSim</p>`;
+  panel.innerHTML = `<h1 class="menu-title">WebFlight</h1><p class="menu-tagline">Gliding in Europe · ASK 21 · JSBSim</p>`;
+  segmented(panel, "Airfield", Object.values(AIRFIELDS).map((a) => [a.id, a.name] as [string, string]), pick.site, (v) => {
+    pick.site = v;
+    save();
+    location.replace(`?menu&site=${v}&time=${pick.time}`); // move the backdrop
+  });
   const cards = document.createElement("div");
   cards.className = "menu-section";
   cards.innerHTML = `<h2>Scenario</h2>`;
   const list = document.createElement("div");
   list.className = "menu-cards";
   for (const s of SCENARIOS) {
+    if (s.id === "ridge" && !field.ridge) continue;
     const b = document.createElement("button");
     b.className = "menu-card";
     b.setAttribute("aria-pressed", String(s.id === pick.start));
@@ -96,7 +106,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   panel.appendChild(opts);
   segmented(opts, "Time of day", [["morning", "Morning"], ["noon", "Noon"], ["afternoon", "Afternoon"], ["evening", "Evening"]], pick.time, (v) => {
     pick.time = v;
-    location.replace(`?menu&time=${v}`); // relight the backdrop
+    location.replace(`?menu&site=${pick.site}&time=${v}`); // relight the backdrop
     save();
   });
   segmented(opts, "Wind", [["auto", "Auto"], ["0@0", "Calm"], ["240@8", "Light W"], ["150@15", "SE 15 kt"], ["150@25", "SE 25 kt"]], pick.wind, (v) => (pick.wind = v));
@@ -109,7 +119,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   panel.appendChild(go);
   const foot = document.createElement("div");
   foot.className = "menu-foot";
-  foot.innerHTML = "Keyboard or gamepad. H shows the controls in flight, Esc comes back here.<br>Aircraft: FlightGear ASK 21 (GPL). Terrain: Mapzen Terrarium. Imagery: swisstopo, EOX Sentinel-2 cloudless.";
+  foot.innerHTML = "Keyboard or gamepad. H shows the controls in flight, Esc comes back here.<br>Aircraft: FlightGear ASK 21 (GPL). Terrain: Mapzen Terrarium. Imagery: swisstopo, IGN, basemap.at, EOX Sentinel-2 cloudless. Maps: OpenStreetMap via OpenFreeMap.";
   panel.appendChild(foot);
   root.appendChild(panel);
 
@@ -120,7 +130,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   }
   function fly(): void {
     save();
-    const q = new URLSearchParams({ start: pick.start, time: pick.time, imagery: pick.imagery, quality: pick.quality });
+    const q = new URLSearchParams({ site: pick.site, start: pick.start, time: pick.time, imagery: pick.imagery, quality: pick.quality });
     if (pick.wind !== "auto") q.set("wind", pick.wind);
     location.assign(`?${q}`);
   }
@@ -129,12 +139,12 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   });
 
   // Backdrop: the real scene, orbiting slowly.
-  const date = timeFor(pick.time);
+  const date = timeFor(pick.time, field.utcOffsetH);
   const terrain = new TerrariumTerrain({ zoom: 13 });
   const viewer = createViewer(document.getElementById("cesium")!, { time: date, shadows: false, terrain, quality: pick.quality === "ultra" ? "ultra" : "high" });
   (window as unknown as { webflightViewer: unknown }).webflightViewer = viewer;
-  void addImagery(viewer, pick.imagery, sunPosition(date, GRENCHEN.latDeg, GRENCHEN.lonDeg));
-  const sky = new ThermalSky({ seed: 1, cloudBaseM: 1900 }).thermalsAround(GRENCHEN.latDeg, GRENCHEN.lonDeg, 25_000);
+  void addImagery(viewer, pick.imagery, sunPosition(date, field.latDeg, field.lonDeg));
+  const sky = new ThermalSky({ seed: 1, cloudBaseM: field.cloudBaseM }).thermalsAround(field.latDeg, field.lonDeg, 25_000);
   const thermals: ThermalView[] = sky.map((t) => {
     const time = t.cycleTimer / (25 * 60);
     return {
@@ -148,11 +158,14 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
       phase: time <= 0.2 ? "forming" : time <= 0.8 ? "formed" : time <= 1 ? "dying" : "dead",
     };
   });
-  new ThermalLayer(viewer, false, sunPosition(date, GRENCHEN.latDeg, GRENCHEN.lonDeg)).update(thermals);
+  new ThermalLayer(viewer, false, sunPosition(date, field.latDeg, field.lonDeg)).update(thermals);
   // Lakes and rivers read well from the orbit; buildings and trees are too small up here.
-  Scenery.create(viewer, GRENCHEN, { buildings: false, trees: false, water: true, shadows: false, treeDetail: 24, drape: false });
+  Scenery.create(viewer, field, { buildings: false, trees: false, water: true, shadows: false, treeDetail: 24, drape: false });
   document.getElementById("boot")!.hidden = true;
-  const centre = Cartesian3.fromDegrees(7.47, 47.215, 900);
+  // Orbit a point a few km from the field, towards its ridge if it has one.
+  const [cLat, cLon] = field.ridge ? [(field.latDeg + field.ridge.crest.latDeg) / 2, (field.lonDeg + field.ridge.crest.lonDeg) / 2] : advance(field.latDeg, field.lonDeg, 0, 3000);
+  const groundM = await terrain.heightAtAsync(cLat, cLon).catch(() => 500);
+  const centre = Cartesian3.fromDegrees(cLon, cLat, groundM + 450);
   let heading = CMath.toRadians(200);
   let last = performance.now();
   viewer.scene.preUpdate.addEventListener(() => {
@@ -164,8 +177,8 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
 }
 
 /** Same presets as the sim (main.ts simTime). */
-function timeFor(v: string): Date {
+function timeFor(v: string, utcOffsetH: number): Date {
   const presets: Record<string, string> = { morning: "07:15", noon: "13:15", afternoon: "16:30", evening: "20:50" };
   const [h, m] = (presets[v] ?? "16:30").split(":").map(Number) as [number, number];
-  return new Date(Date.UTC(2026, 6, 15, h - 2, m));
+  return new Date(Date.UTC(2026, 6, 15, h - utcOffsetH, m));
 }
