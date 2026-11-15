@@ -4,11 +4,17 @@
  *   let { obs } = await env.reset(seed);
  *   for (;;) { const r = env.step(action); if (r.terminated || r.truncated) break; }
  *
- * Determinism: every reset builds a fresh JSBSim instance (≈ 20 ms), the episode's
- * randomness comes from one seeded generator, and terrain is preloaded and frozen, so the
- * same seed and the same actions give bit-identical observations and rewards.
+ * Each episode happens at an airfield and in weather drawn from data (sites.ts): wind,
+ * ridge lift and thermals come from that weather and the terrain, as in the browser sim.
+ *
+ * Determinism: every reset builds a fresh JSBSim instance (≈ 20 ms), the site and the
+ * episode's randomness come from generators seeded by the reset seed, and terrain is
+ * preloaded around the site and frozen, so the same seed and the same actions give
+ * bit-identical observations and rewards.
  */
 import { applyEnvironment, Environment, mulberry32, type TerrariumTerrain } from "@webflight/environment";
+import { RunwayFrame } from "./common.ts";
+import type { GymSite, SitePicker } from "./sites.ts";
 import { controlsToJsbsim, Fdm, FdmError, LBS_PER_KG, P, type AircraftFiles, type AirbrakeRoute, type FdmOptions } from "@webflight/fdm-core";
 import type { BoxSpec, Episode, StepResult, Task } from "./types.ts";
 
@@ -18,8 +24,12 @@ export interface GliderEnvOptions {
   /** Pointmass index → kg. */
   loadoutKg: Record<number, number>;
   airbrake: AirbrakeRoute;
-  /** Real terrain (preloaded around the task's site and frozen), or none: the ellipsoid. */
+  /** Where episodes happen: dataSites(…) (random airfields and weather) or fixedSite(…). */
+  sites: SitePicker;
+  /** Real terrain (preloaded around each episode's runway and frozen), or none: the ellipsoid. */
   terrain?: TerrariumTerrain;
+  /** Thermals from the weather (default on). */
+  thermals?: boolean;
   /** Agent decisions per second (action repeat = 120 / decisionHz FDM steps). */
   decisionHz?: number;
   /** FDM steps between environment/launch updates. */
@@ -34,6 +44,7 @@ export class GliderEnv {
   private fdm: Fdm | undefined;
   private readonly obsBuf: Float64Array;
   private siteGroundM = 0;
+  private loadedSite = "";
   /** Simulated seconds and FDM steps over the env's lifetime (for speed reports). */
   simSeconds = 0;
 
@@ -44,14 +55,19 @@ export class GliderEnv {
   }
 
   static async make(o: GliderEnvOptions): Promise<GliderEnv> {
-    const env = new GliderEnv(o);
-    if (o.terrain) {
-      o.terrain.frozen = false;
-      await o.terrain.load(o.task.site.latDeg, o.task.site.lonDeg, o.task.terrainRadiusM);
-      env.siteGroundM = await o.terrain.heightAtAsync(o.task.site.latDeg, o.task.site.lonDeg);
-      o.terrain.frozen = true;
-    }
-    return env;
+    return new GliderEnv(o);
+  }
+
+  /** Terrain around a site, loaded once per site and frozen (no loads during an episode). */
+  private async prepareTerrain(site: GymSite): Promise<void> {
+    const t = this.o.terrain;
+    const key = `${site.ident}/${site.runway.name}`;
+    if (!t || key === this.loadedSite) return;
+    t.frozen = false;
+    await t.load(site.runway.latDeg, site.runway.lonDeg, this.o.task.terrainRadiusM);
+    this.siteGroundM = await t.heightAtAsync(site.runway.latDeg, site.runway.lonDeg);
+    t.frozen = true;
+    this.loadedSite = key;
   }
 
   get task(): Task {
@@ -64,6 +80,8 @@ export class GliderEnv {
   }
 
   async reset(seed = 0): Promise<{ obs: Float64Array; info: Record<string, unknown> }> {
+    const site = await this.o.sites(mulberry32((seed ^ 0x5bd1e995) >>> 0));
+    await this.prepareTerrain(site);
     this.fdm?.destroy();
     const fdm = await Fdm.create(this.o.fdm ?? {});
     this.fdm = fdm;
@@ -74,9 +92,21 @@ export class GliderEnv {
     const fallback = this.siteGroundM;
     const hz = this.o.decisionHz ?? 10;
     const repeat = Math.max(1, Math.round(1 / (hz * fdm.dt)));
+    const w = site.weather, aloft = w.aloft[0];
     const ep: Episode = {
       fdm,
-      environment: new Environment({ windFromDeg: 0, windKt: 0, ridgeLift: false, thermals: false }, terrain),
+      site,
+      runway: new RunwayFrame(site.runway, site.runway.headingDeg, site.runway.lengthM, site.runway.widthM),
+      environment: new Environment(
+        {
+          windFromDeg: w.windFromDeg,
+          windKt: w.windKt,
+          ...(aloft ? { aloftFromDeg: aloft.fromDeg, aloftKt: aloft.kt } : {}),
+          ridgeLift: !!terrain,
+          thermalSky: this.o.thermals !== false && terrain ? { seed: seed >>> 0, weather: w } : false,
+        },
+        terrain,
+      ),
       terrain,
       groundAt: (lat, lon) => (terrain ? (terrain.heightAt(lat, lon) ?? fallback) : 0),
       controls: { aileron: 0, elevator: 0, rudder: 0, elevatorTrim: 0, airbrake: 0 },
@@ -92,7 +122,7 @@ export class GliderEnv {
     this.o.task.setup(ep);
     this.applyControls();
     this.o.task.observe(ep, this.obsBuf);
-    return { obs: Float64Array.from(this.obsBuf), info: { seed, ...ep.state } };
+    return { obs: Float64Array.from(this.obsBuf), info: { seed, site: { ident: site.ident, name: site.name, runway: site.runway.name, weather: { source: w.source, timeUtc: w.timeUtc, windFromDeg: w.windFromDeg, windKt: w.windKt } }, ...ep.state } };
   }
 
   private applyControls(): void {

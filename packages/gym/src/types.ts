@@ -1,6 +1,8 @@
 import type { Environment, TerrariumTerrain } from "@webflight/environment";
 import type { Fdm, FgControls } from "@webflight/fdm-core";
 import type { Launch } from "@webflight/launch";
+import type { RunwayFrame } from "./common.ts";
+import type { GymSite } from "./sites.ts";
 
 /** A box: one entry per dimension. */
 export interface BoxSpec {
@@ -22,6 +24,10 @@ export interface StepResult {
 /** Everything a task can touch during an episode. */
 export interface Episode {
   readonly fdm: Fdm;
+  /** The episode's airfield, runway in use and weather (from data). */
+  readonly site: GymSite;
+  /** The runway in use as a frame (threshold of the into-wind direction). */
+  readonly runway: RunwayFrame;
   environment: Environment;
   readonly terrain: TerrariumTerrain | undefined;
   /** Ground elevation [m] (frozen terrain; fallback: the site's elevation). */
@@ -55,10 +61,9 @@ export interface Task {
   readonly action: BoxSpec;
   /** Maximum episode length [s] (truncation). */
   readonly maxSeconds: number;
-  /** Terrain to preload (and freeze) around the site [m]. */
+  /** Terrain to preload (and freeze) around the episode's runway [m]. */
   readonly terrainRadiusM: number;
-  readonly site: { latDeg: number; lonDeg: number };
-  /** Set up a new episode: initial conditions, wind, launch … (FDM is fresh and loaded). */
+  /** Set up a new episode: initial conditions, launch … (FDM is fresh, site and weather set). */
   setup(ep: Episode): void;
   /** Apply an action (already clipped to the action box) to ep.controls / the launch. */
   act(ep: Episode, action: readonly number[]): void;

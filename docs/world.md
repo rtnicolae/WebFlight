@@ -31,11 +31,24 @@ Overrides for testing: `rwy=04`, `wind=270@15`, `thermals=0`, `seed=N`.
 NODE_USE_ENV_PROXY=1 pnpm --filter @webflight/environment airfields
 ```
 
-## Not data-driven yet
+## The gym (RL)
 
-The gym (RL) tasks still use fixed set-ups (Grenchen runway frame, fixed thermals); they
-should move to random airfields and recorded weather snapshots (a `Weather` value is plain
-data and replays exactly).
+Each episode draws an airfield and runway from the data (OurAirports runways with surveyed
+ends, so no network is needed for the geometry) and a weather snapshot by its seed; the
+runway in use faces into that wind, and wind, ridge lift and thermals come from the weather
+and the terrain (`packages/gym/src/sites.ts`). Terrain is loaded per site and frozen, so
+episodes stay bit-reproducible. The tasks keep only their own start set-up (a randomized
+final for `landing`, the tug for `aerotow`).
+
+Weather snapshots are recorded from Open-Meteo (historical days included):
+
+```
+NODE_USE_ENV_PROXY=1 pnpm --filter @webflight/gym record-weather 500
+```
+
+which writes `packages/gym/data/weather-snapshots.json`. Without that file the gym uses the
+sun-based estimate with a randomized wind and reports `weather.source = "estimated"` in the
+episode info. Tests pin one site with `fixedSite(…)` (Grenchen from the data).
 
 ## Buildings and trees everywhere
 

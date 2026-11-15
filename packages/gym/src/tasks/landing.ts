@@ -1,10 +1,10 @@
 /**
- * Landing: from a randomized final approach to Grenchen runway 07 (real terrain), land on
- * the runway and stop.
+ * Landing: from a randomized final approach to the episode's runway in use (airfield,
+ * weather and terrain from data: sites.ts), land on the runway and stop.
  *
  * Start (per seed): 600–2500 m before the threshold, on a 3–8° path ±20 m (≥ 40 m above
  * the threshold), up to ±60 m (scaled with distance) off the centreline, heading ±15° off
- * the runway, 80–110 km/h, wind 0–12 kt from any direction, ridge lift on.
+ * the runway, 80–110 km/h; wind, ridge lift and thermals from the episode's weather.
  *
  * Rewards:
  *   shaping   Φ(s') − Φ(s) with Φ = −(|along − aim| + 2·|cross|)/500 (aim point 150 m past
@@ -16,9 +16,8 @@
  *   out of bounds (> 1.5 km off the centreline, > 600 m AGL, 1 km past the runway end
  *             still airborne): truncated, no extra reward
  */
-import { Environment, GRENCHEN } from "@webflight/environment";
 import { FT_PER_M, KMH_PER_KT, trimSteadyGlide } from "@webflight/fdm-core";
-import { applyBaseAction, BASE_ACTION, BASE_OBSERVATION, concatSpec, mainWheelOnGround, observeBase, RunwayFrame, structureOnGround, uniform, wrapDeg } from "../common.ts";
+import { applyBaseAction, BASE_ACTION, BASE_OBSERVATION, concatSpec, mainWheelOnGround, observeBase, structureOnGround, uniform, wrapDeg } from "../common.ts";
 import type { BoxSpec, Episode, Evaluation, Task } from "../types.ts";
 
 const FT = 0.3048;
@@ -45,8 +44,6 @@ export class LandingTask implements Task {
   readonly action = BASE_ACTION;
   readonly maxSeconds = 300;
   readonly terrainRadiusM = 7000;
-  readonly runway = new RunwayFrame(GRENCHEN, GRENCHEN.headingDeg, 1000, 23);
-  readonly site = GRENCHEN;
 
   private st(ep: Episode): LandingState {
     return ep.state as LandingState;
@@ -54,32 +51,30 @@ export class LandingTask implements Task {
 
   private phi(ep: Episode): number {
     const f = ep.fdm;
-    const p = this.runway.toRunway(f.get("position/lat-geod-deg"), f.get("position/long-gc-deg"));
+    const p = ep.runway.toRunway(f.get("position/lat-geod-deg"), f.get("position/long-gc-deg"));
     return -(Math.abs(p.along - AIM_M) + 2 * Math.abs(p.cross)) / 500;
   }
 
   setup(ep: Episode): void {
-    const r = ep.rand, rw = this.runway;
+    const r = ep.rand, rw = ep.runway;
     const dist = uniform(r, 600, 2500);
     const slope = (uniform(r, 3, 8) * Math.PI) / 180;
     const cross = uniform(r, -60, 60) * (dist / 2500);
     const headingDeg = rw.headingDeg + uniform(r, -15, 15);
     const easKmh = uniform(r, 80, 110);
-    const windKt = uniform(r, 0, 12), windFromDeg = uniform(r, 0, 360);
     const thrElev = ep.groundAt(rw.thresholdLatDeg, rw.thresholdLonDeg);
     const heightAboveThr = Math.max(40, dist * Math.tan(slope) + uniform(r, -20, 20));
     const pos = rw.fromRunway(-dist, cross);
     const ground = ep.groundAt(pos.latDeg, pos.lonDeg);
     const agl = Math.max(30, thrElev + heightAboveThr - ground);
 
-    ep.environment = new Environment({ windFromDeg, windKt, ridgeLift: true, thermals: false }, ep.terrain);
     ep.fdm.set("position/terrain-elevation-asl-ft", ground * FT_PER_M);
     const trim = trimSteadyGlide(ep.fdm, {
       speed: { veKts: easKmh / KMH_PER_KT },
       base: { "ic/lat-geod-deg": pos.latDeg, "ic/long-gc-deg": pos.lonDeg, "ic/terrain-elevation-ft": ground * FT_PER_M, "ic/h-agl-ft": agl * FT_PER_M, "ic/psi-true-deg": headingDeg },
     });
     ep.controls.elevatorTrim = trim.control;
-    Object.assign(ep.state, { prevPhi: 0, airSinkMs: 0, thresholdElevM: thrElev, start: { distM: dist, crossM: cross, headingDeg, easKmh, windKt, windFromDeg, aglM: agl } });
+    Object.assign(ep.state, { prevPhi: 0, airSinkMs: 0, thresholdElevM: thrElev, start: { distM: dist, crossM: cross, headingDeg, easKmh, aglM: agl } });
     this.st(ep).prevPhi = this.phi(ep);
   }
 
@@ -97,7 +92,7 @@ export class LandingTask implements Task {
 
   observe(ep: Episode, out: Float64Array): void {
     observeBase(ep, out);
-    const f = ep.fdm, rw = this.runway;
+    const f = ep.fdm, rw = ep.runway;
     const p = rw.toRunway(f.get("position/lat-geod-deg"), f.get("position/long-gc-deg"));
     const err = (wrapDeg(f.get("attitude/psi-deg") - rw.headingDeg) * Math.PI) / 180;
     const c = ep.environment.config;
@@ -113,7 +108,7 @@ export class LandingTask implements Task {
   }
 
   evaluate(ep: Episode): Evaluation {
-    const f = ep.fdm, s = this.st(ep), rw = this.runway;
+    const f = ep.fdm, s = this.st(ep), rw = ep.runway;
     const p = rw.toRunway(f.get("position/lat-geod-deg"), f.get("position/long-gc-deg"));
     const phi = this.phi(ep);
     let reward = phi - s.prevPhi;

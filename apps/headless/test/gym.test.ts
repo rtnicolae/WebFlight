@@ -1,8 +1,16 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { mulberry32 } from "@webflight/environment";
-import { aerotowBaseline, landingBaseline, randomPolicy, type GliderEnv, type Policy, type StepResult } from "@webflight/gym";
+import { airfieldAt, estimateWeather, mulberry32, type Weather } from "@webflight/environment";
+import { aerotowBaseline, fixedSite, landingBaseline, randomPolicy, type GliderEnv, type Policy, type SitePicker, type StepResult } from "@webflight/gym";
 import { ASK21, ensureAircraft } from "../src/gliders.ts";
 import { makeGym } from "../src/gym.ts";
+
+/** Grenchen (LSZG) runway 06/24 from the data, in a light south-westerly without thermals. */
+async function grenchen(): Promise<SitePicker> {
+  const lszg = (await airfieldAt("LSZG", 47.18, 7.42))!;
+  const calm = estimateWeather(lszg.latDeg, lszg.lonDeg, new Date("2026-07-15T22:00:00Z"), lszg.elevM);
+  const w: Weather = { ...calm, windFromDeg: 240, windKt: 6, aloft: calm.aloft.map((l) => ({ ...l, fromDeg: 240, kt: 9 })) };
+  return fixedSite(lszg, w);
+}
 
 async function episode(env: GliderEnv, seed: number, policy: Policy, record?: number[][]) {
   let { obs } = await env.reset(seed);
@@ -18,11 +26,11 @@ async function episode(env: GliderEnv, seed: number, policy: Policy, record?: nu
   return { total, info: r.info, steps: record?.length };
 }
 
-describe("gym: landing (Grenchen 07, randomized final)", () => {
+describe("gym: landing (Grenchen from the data, randomized final)", () => {
   let env: GliderEnv;
   beforeAll(async () => {
     await ensureAircraft(ASK21);
-    env = await makeGym("landing");
+    env = await makeGym("landing", { sites: await grenchen() });
   }, 300_000);
 
   it("describes its spaces, and observations stay inside them", async () => {
@@ -71,7 +79,7 @@ describe("gym: landing (Grenchen 07, randomized final)", () => {
 describe("gym: aerotow take-off", () => {
   let env: GliderEnv;
   beforeAll(async () => {
-    env = await makeGym("aerotow");
+    env = await makeGym("aerotow", { sites: await grenchen() });
   }, 300_000);
 
   it("the scripted baseline stays on tow until the tug releases it 800 m up", async () => {
@@ -107,4 +115,27 @@ describe("gym: aerotow take-off", () => {
     await run(b);
     expect(b).toEqual(a);
   }, 120_000);
+});
+
+describe("gym: sites from data", () => {
+  let env: GliderEnv;
+  beforeAll(async () => {
+    env = await makeGym("landing");
+  }, 300_000);
+
+  it("draws airfields and weather by seed, reproducibly, and lands at them", async () => {
+    const sites = new Set<string>();
+    for (const seed of [1, 2, 3]) {
+      const a = await env.reset(seed);
+      const site = a.info["site"] as { ident: string; runway: string; weather: { source: string } };
+      sites.add(site.ident);
+      expect(site.weather.source).toMatch(/forecast|archive|estimated/);
+      const b = await env.reset(seed);
+      expect(b.obs).toEqual(a.obs);
+      expect(b.info["site"]).toEqual(site);
+    }
+    expect(sites.size).toBeGreaterThan(1);
+    const e = await episode(env, 2, landingBaseline());
+    expect(["landed", "landed_off_runway", "crashed", "out_of_bounds", "time_limit"]).toContain(e.info["outcome"]);
+  }, 300_000);
 });

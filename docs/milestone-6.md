@@ -45,7 +45,7 @@ Actions use FlightGear conventions: `aileron`, `elevator` (+ = nose down), `rudd
 
 ### `landing`
 
-Grenchen runway 07 on real terrain; up to 300 s.
+the episode's airfield and runway in use (drawn from data with the weather, see docs/world.md) on real terrain; up to 300 s.
 
 - **Start (per seed):** 600–2500 m before the threshold, on a 3–8° path ±20 m (at least 40 m above the threshold elevation). Up to ±60 m off the centreline (scaled with distance), heading ±15°, 80–110 km/h. Wind 0–12 kt from any direction; ridge lift on.
 - **Extra observations:** distance to the aim point (150 m past the threshold), cross-track, heading error (sin/cos), headwind and crosswind (a windsock), height above the threshold.

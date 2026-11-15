@@ -1,8 +1,8 @@
 /**
- * Aerotow take-off: standing on Grenchen runway 07 behind FlightGear's drag robot (DR400) on
- * a 60 m rope; take off, follow the tug in high tow until it releases 800 m up.
+ * Aerotow take-off: standing on the episode's runway in use (from data: sites.ts) behind
+ * FlightGear's drag robot (DR400) on a 60 m rope; take off, follow the tug in high tow until it releases 800 m up.
  *
- * Start (per seed): wind 0–8 kt from any direction, the tug's legs and turns (seeded).
+ * Start (per seed): the tug's legs and turns (seeded); wind and lift from the weather.
  * Extra action: release (> 0.5 opens the hook).
  *
  * Rewards:
@@ -15,10 +15,9 @@
  *   failed     −100: weak link broke, structure contact, |roll| > 70°, ground contact again
  *              after being airborne while still on tow
  */
-import { Environment, GRENCHEN } from "@webflight/environment";
 import { FT_PER_M, type Vec3 } from "@webflight/fdm-core";
 import { bodyPointEcef, directionInBody, ecef, geodetic, hitchBodyM, Launch, readAttitude } from "@webflight/launch";
-import { applyBaseAction, ASK21_HITCHES, BASE_ACTION, BASE_OBSERVATION, concatSpec, mainWheelOnGround, observeBase, RunwayFrame, structureOnGround, uniform, wrapDeg } from "../common.ts";
+import { applyBaseAction, ASK21_HITCHES, BASE_ACTION, BASE_OBSERVATION, concatSpec, mainWheelOnGround, observeBase, structureOnGround, uniform, wrapDeg } from "../common.ts";
 import type { BoxSpec, Episode, Evaluation, Task } from "../types.ts";
 
 const FT = 0.3048;
@@ -45,18 +44,14 @@ export class AerotowTask implements Task {
   readonly action: BoxSpec = { names: [...BASE_ACTION.names, "release"], low: [...BASE_ACTION.low, 0], high: [...BASE_ACTION.high, 1] };
   readonly maxSeconds = 600;
   readonly terrainRadiusM = 15000;
-  readonly runway = new RunwayFrame(GRENCHEN, GRENCHEN.headingDeg, 1000, 23);
-  readonly site = GRENCHEN;
 
   private st(ep: Episode): TowState {
     return ep.state as TowState;
   }
 
   setup(ep: Episode): void {
-    const r = ep.rand, rw = this.runway, f = ep.fdm;
-    const windKt = uniform(r, 0, 8), windFromDeg = uniform(r, 0, 360);
+    const r = ep.rand, rw = ep.runway, f = ep.fdm;
     const tugSeed = Math.floor(r() * 2 ** 31);
-    ep.environment = new Environment({ windFromDeg, windKt, ridgeLift: true, thermals: false }, ep.terrain);
     const pos = rw.fromRunway(50, 0);
     const ground = ep.groundAt(pos.latDeg, pos.lonDeg);
     f.set("position/terrain-elevation-asl-ft", ground * FT_PER_M);
@@ -77,7 +72,7 @@ export class AerotowTask implements Task {
     f.step(Math.round(1 / f.dt)); // settle on the wheels
     ep.launch = new Launch(f, { kind: "aerotow", hitches: ASK21_HITCHES, groundAtM: ep.groundAt, headingDeg: rw.headingDeg, seed: tugSeed });
     ep.launch.start();
-    Object.assign(ep.state, { startAltM: f.get("position/geod-alt-ft") * FT, airborne: false, rel: [0, 0, 0], agentReleased: false, start: { windKt, windFromDeg, tugSeed } });
+    Object.assign(ep.state, { startAltM: f.get("position/geod-alt-ft") * FT, airborne: false, rel: [0, 0, 0], agentReleased: false, start: { tugSeed } });
   }
 
   act(ep: Episode, a: readonly number[]): void {

@@ -168,7 +168,8 @@ async function readJson(path: string): Promise<unknown> {
 }
 
 const tileCache = new Map<string, Promise<AirfieldData[]>>();
-function airfieldTile(x: number, y: number): Promise<AirfieldData[]> {
+/** All airfields of one data tile (zoom AIRFIELD_TILE_ZOOM). */
+export function airfieldTile(x: number, y: number): Promise<AirfieldData[]> {
   const k = `${x}/${y}`;
   let t = tileCache.get(k);
   if (!t) {
