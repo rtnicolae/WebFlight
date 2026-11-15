@@ -14,7 +14,8 @@
     "cesium": "1.147.0",
     "@webflight/fg-host": "workspace:*",
     "@webflight/environment": "workspace:*",
-    "@webflight/launch": "workspace:*"
+    "@webflight/launch": "workspace:*",
+    "@webflight/scenery": "workspace:*"
   },
   "devDependencies": {
     "vite": "^8.3.8"

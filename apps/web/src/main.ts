@@ -11,6 +11,7 @@ import { addRunway, createViewer, ThermalLayer, type Runway } from "./scene.ts";
 import { addImagery, type ImageryMode } from "./imagery.ts";
 import { sunPosition } from "./sun.ts";
 import { showMenu } from "./menu.ts";
+import { Scenery } from "./scenery.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
@@ -125,10 +126,18 @@ async function main(): Promise<void> {
   const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, ...(renderTerrain ? { terrain: renderTerrain } : {}) });
   const sun = sunPosition(TIME, RUNWAY.latDeg, RUNWAY.lonDeg);
   // Photos show the real runway; otherwise draw ours.
-  void addImagery(viewer, SITE === "flat" && IMAGERY === "photo" ? "grid" : IMAGERY, sun).then((mode) => {
+  const imageryReady = addImagery(viewer, SITE === "flat" && IMAGERY === "photo" ? "grid" : IMAGERY, sun).then((mode) => {
     if (mode !== "photo" || params.get("runway") === "1") addRunway(viewer, RUNWAY);
+    return mode;
   });
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1");
+  // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
+  // After the imagery probe, so the scenery downloads don't starve it.
+  await imageryReady;
+  const scenery =
+    SITE === "flat"
+      ? undefined
+      : Scenery.create(viewer, RUNWAY, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24 });
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);
@@ -244,6 +253,7 @@ async function main(): Promise<void> {
     const m = aircraft.update(d, layout, dt);
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
+    scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
     let launchText: string | undefined;
     if (LAUNCH) {
       const connected = g(LAUNCH === "winch" ? "/sim/hitches/winch/open" : "/sim/hitches/aerotow/open") === 0;

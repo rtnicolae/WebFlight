@@ -72,22 +72,24 @@ export class PaintedImageryProvider {
 }
 
 /** Can the photo servers be reached (one tile each, with a timeout)? */
-export async function photoAvailable(timeoutMs = 4000): Promise<boolean> {
-  const probe = async (url: string) => {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), timeoutMs);
-    try {
-      const r = await fetch(url, { signal: c.signal });
-      return r.ok;
-    } catch {
-      return false;
-    } finally {
-      clearTimeout(t);
-    }
-  };
+export async function photoAvailable(timeoutMs = 10000): Promise<boolean> {
   const tile = (u: string) => u.replace("{z}", "13").replace("{x}", "4264").replace("{y}", "2898");
-  const [ch, s2] = await Promise.all([probe(tile(SWISSIMAGE)), probe(tile(S2CLOUDLESS))]);
-  return ch || s2;
+  const c = new AbortController();
+  const timer = setTimeout(() => c.abort(), timeoutMs);
+  const probe = (url: string) =>
+    fetch(url, { signal: c.signal }).then((r) => {
+      if (!r.ok) throw new Error(String(r.status));
+      return true;
+    });
+  try {
+    // Whichever server answers first is enough.
+    return await Promise.any([probe(tile(SWISSIMAGE)), probe(tile(S2CLOUDLESS))]);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+    c.abort();
+  }
 }
 
 export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimuthDeg: number; elevationDeg: number }): Promise<ImageryMode> {
@@ -108,7 +110,7 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     );
     layers.add(
       new ImageryLayer(
-        new UrlTemplateImageryProvider({ url: SWISSIMAGE, rectangle: SWISS_RECT, minimumLevel: 8, maximumLevel: 19, credit: new Credit('© <a href="https://www.swisstopo.admin.ch">swisstopo</a> SWISSIMAGE') }),
+        new UrlTemplateImageryProvider({ url: SWISSIMAGE, rectangle: SWISS_RECT, minimumLevel: 8, maximumLevel: 20, credit: new Credit('© <a href="https://www.swisstopo.admin.ch">swisstopo</a> SWISSIMAGE') }),
       ),
     );
   } else if (mode === "painted") {

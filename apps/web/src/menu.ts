@@ -7,6 +7,7 @@ import { HeadingPitchRange, Cartesian3, Math as CMath } from "cesium";
 import { GRENCHEN, TerrariumTerrain, ThermalField } from "@webflight/environment";
 import { addImagery, type ImageryMode } from "./imagery.ts";
 import { createViewer, ThermalLayer } from "./scene.ts";
+import { Scenery } from "./scenery.ts";
 import { sunPosition } from "./sun.ts";
 import type { ThermalView } from "./protocol.ts";
 
@@ -146,6 +147,8 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
     };
   });
   new ThermalLayer(viewer).update(thermals);
+  // Lakes and rivers read well from the orbit; buildings and trees are too small up here.
+  Scenery.create(viewer, GRENCHEN, { buildings: false, trees: false, water: true, shadows: false, treeDetail: 24 });
   document.getElementById("boot")!.hidden = true;
   const centre = Cartesian3.fromDegrees(7.47, 47.215, 900);
   let heading = CMath.toRadians(200);
