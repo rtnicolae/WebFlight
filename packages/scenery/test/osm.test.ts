@@ -71,3 +71,20 @@ describe("osm trees", () => {
     expect(half.positions.length / 3 / 30).toBeCloseTo(trees / 2, -1);
   });
 });
+
+import { treeInstances } from "../src/index.ts";
+describe("tree instances (impostors)", () => {
+  it("places trees inside forests with heights and kinds, stably", () => {
+    const wood: OsmPolygon = { rings: [rect(0, 0, 200, 100)], properties: { class: "wood" } };
+    const a = treeInstances([wood], frame, ground, { spacingM: 10 });
+    expect(Array.from(a)).toEqual(Array.from(treeInstances([wood], frame, ground, { spacingM: 10 })));
+    const n = a.length / 5;
+    expect(n).toBeGreaterThan(150);
+    for (let i = 0; i < n; i++) {
+      expect(a[i * 5]!).toBeGreaterThan(-12);
+      expect(a[i * 5]!).toBeLessThan(212);
+      expect(a[i * 5 + 3]!).toBeGreaterThan(10);
+      expect(Math.floor(a[i * 5 + 4]!)).toBeLessThanOrEqual(1);
+    }
+  });
+});

@@ -4,7 +4,7 @@
  * set buildings and trees on the same ground the renderer draws.
  */
 import { TerrariumTerrain, tileToLonLat } from "@webflight/environment";
-import { buildingMesh, fetchOsm, LocalFrame, treeMesh, type Mesh, type OsmTile } from "@webflight/scenery";
+import { buildingMesh, fetchOsm, LocalFrame, treeInstances, type Mesh, type OsmTile } from "@webflight/scenery";
 
 export type OsmRequest =
   | { id: number; kind: "buildings"; url: string; x: number; y: number }
@@ -15,7 +15,10 @@ export interface OsmResult {
   id: number;
   /** Local frame origin: lon, lat, height. */
   origin: [number, number, number];
-  mesh: Mesh;
+  /** Buildings: a mesh. */
+  mesh?: Mesh;
+  /** Trees: instances, 5 floats each (see treeInstances). */
+  trees?: Float32Array;
 }
 
 const terrain = new TerrariumTerrain({ zoom: 13, maxTiles: 256 });
@@ -48,12 +51,14 @@ async function build(req: OsmRequest): Promise<void> {
   const [osm] = await Promise.all([req.kind === "buildings" ? tile(req.url, req.x, req.y) : tile(req.url, req.x >> 2, req.y >> 2), terrain.load(clat, clon, halfM)]);
   const ground = (lon: number, lat: number) => terrain.heightAt(lat, lon) ?? 0;
   const frame = new LocalFrame(clon, clat, ground(clon, clat));
-  let mesh: Mesh;
-  if (req.kind === "buildings") mesh = buildingMesh(osm.buildings, frame, ground);
-  else {
+  if (req.kind === "buildings") {
+    const mesh = buildingMesh(osm.buildings, frame, ground);
+    const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], mesh };
+    (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer]);
+  } else {
     const [e0, n1] = frame.en(lon0, lat0), [e1, n0] = frame.en(lon1, lat1);
-    mesh = treeMesh(osm.forests, frame, ground, { spacingM: req.spacingM, bounds: { e0, n0, e1, n1 }, max: 6000 });
+    const trees = treeInstances(osm.forests, frame, ground, { spacingM: req.spacingM, bounds: { e0, n0, e1, n1 }, max: 6000 });
+    const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], trees };
+    (self as unknown as Worker).postMessage(out, [trees.buffer]);
   }
-  const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], mesh };
-  (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer]);
 }

@@ -25,6 +25,7 @@ import { lonLatToTile, tileToLonLat } from "@webflight/environment";
 import type { Mesh } from "@webflight/scenery";
 import type { OsmRequest, OsmResult } from "./osm-worker.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
+import { loadTreeAtlas, treeImpostors, type TreeAtlas } from "./tree-impostors.ts";
 
 export interface OsmLayerOptions {
   buildings: boolean;
@@ -75,8 +76,8 @@ void main() {
 }`;
 
 function primitive(r: OsmResult, shadows: boolean): Primitive | undefined {
-  const m: Mesh = r.mesh;
-  if (!m.indices.length) return undefined;
+  const m: Mesh | undefined = r.mesh;
+  if (!m || !m.indices.length) return undefined;
   const pos = new Float64Array(m.positions);
   const geometry = new Geometry({
     attributes: Object.assign(new GeometryAttributes(), {
@@ -106,6 +107,7 @@ export class OsmLayer {
   private readonly pending = new Map<number, string>();
   private nextId = 1;
   private url: string | undefined;
+  private atlas: TreeAtlas | undefined;
   private lastKey = "";
 
   private constructor(
@@ -116,7 +118,7 @@ export class OsmLayer {
       const key = this.pending.get(e.data.id);
       this.pending.delete(e.data.id);
       if (!key || !this.tiles.has(key)) return; // dropped meanwhile
-      const p = primitive(e.data, this.o.shadows);
+      const p = e.data.trees ? (this.atlas ? treeImpostors(this.atlas, e.data.origin, e.data.trees) : undefined) : primitive(e.data, this.o.shadows);
       if (p) this.viewer.scene.primitives.add(p);
       this.tiles.set(key, p ?? null);
     };
@@ -127,6 +129,8 @@ export class OsmLayer {
     if (!url) return undefined;
     const l = new OsmLayer(viewer, o);
     l.url = url;
+    // Photoreal tree impostors (CC0 models rendered offline); without them no trees are drawn.
+    if (o.trees) l.atlas = await loadTreeAtlas(new URL(import.meta.env.BASE_URL, location.href).href).catch(() => undefined);
     return l;
   }
 
@@ -169,7 +173,9 @@ export class OsmLayer {
           const c = centre(16, x, y);
           if (this.o.covered(c.lat, c.lon)) continue;
           want.add(k);
-          jobs.push([dx * dx + dy * dy, k, { kind: "trees", x, y, spacingM: this.o.treeSpacingM }]);
+          // Sparser further out (far trees are small; the forest keeps its outline).
+          const ring = Math.max(Math.abs(dx), Math.abs(dy));
+          jobs.push([dx * dx + dy * dy, k, { kind: "trees", x, y, spacingM: this.o.treeSpacingM * (1 + 0.6 * Math.max(0, ring - 1)) }]);
         }
     }
     for (const [, k, req] of jobs.sort((a, b) => a[0] - b[0])) this.request(k, req);

@@ -358,6 +358,38 @@ export function treeMesh(forests: OsmPolygon[], frame: LocalFrame, ground: Groun
   return m.build();
 }
 
+/**
+ * Tree instances for impostors, with the same world-anchored placement as treeMesh: per tree
+ * 5 floats — east, north, up (local frame) of the base, height [m], and kind + seed packed as
+ * kind (0 broadleaf, 1 conifer) + a fraction in [0, 1) for the renderer's variant choice.
+ */
+export function treeInstances(forests: OsmPolygon[], frame: LocalFrame, ground: GroundFn, o: TreeOptions): Float32Array {
+  const out: number[] = [];
+  const s = o.spacingM;
+  for (const poly of forests) {
+    const rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
+    let e0 = Infinity, n0 = Infinity, e1 = -Infinity, n1 = -Infinity;
+    for (const [x, y] of rings[0]!) { e0 = Math.min(e0, x); n0 = Math.min(n0, y); e1 = Math.max(e1, x); n1 = Math.max(n1, y); }
+    if (o.bounds) { e0 = Math.max(e0, o.bounds.e0); n0 = Math.max(n0, o.bounds.n0); e1 = Math.min(e1, o.bounds.e1); n1 = Math.min(n1, o.bounds.n1); }
+    for (let gy = Math.floor(n0 / s); gy * s <= n1; gy++) {
+      for (let gx = Math.floor(e0 / s); gx * s <= e1; gx++) {
+        if (o.max !== undefined && out.length / 5 >= o.max) return new Float32Array(out);
+        const [clon, clat] = frame.lonLat(gx * s, gy * s);
+        const r = rng(hash(Math.round(clon * 1e5) / 1e5, Math.round(clat * 1e5) / 1e5));
+        const x = (gx + r()) * s, y = (gy + r()) * s;
+        if (o.bounds && (x < o.bounds.e0 || x >= o.bounds.e1 || y < o.bounds.n0 || y >= o.bounds.n1)) continue;
+        if (!point(rings[0]!, x, y) || rings.slice(1).some((h) => point(h, x, y))) continue;
+        const [lon, lat] = frame.lonLat(x, y);
+        const g = ground(lon, lat);
+        const conifer = r() < 0.25 + Math.max(0, Math.min(0.6, (g - 700) / 800));
+        const H = (conifer ? 16 : 11) + r() * (conifer ? 10 : 9);
+        out.push(x, y, frame.up(x, y, g - 0.3), H, (conifer ? 1 : 0) + Math.min(0.999, r()));
+      }
+    }
+  }
+  return new Float32Array(out);
+}
+
 function tree(m: MeshBuilder, x: number, y: number, z: number, H: number, conifer: boolean, col: number[], rot: number) {
   // Crown profile: [height fraction, radius fraction] from bottom to top; radius = H/3.
   const R = conifer ? H * 0.24 : H * 0.36;

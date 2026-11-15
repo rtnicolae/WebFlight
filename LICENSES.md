@@ -44,6 +44,7 @@ Fetched at runtime by the browser, never stored in the repository:
 | OurAirports (`packages/environment/data/airfields-eu.json`, from github.com/davidmegginson/ourairports-data) | European airfields and runways | Public domain (The Unlicense) |
 | Open-Meteo forecast and historical APIs (`api.open-meteo.com`, `archive-api.open-meteo.com`), fetched live | the weather of the chosen hour | Free API, no key; data CC BY 4.0, attribution "Weather data by Open-Meteo.com" |
 | earcut (npm, already a Cesium dependency) | roof triangulation | ISC |
+| Poly Haven tree models (tree_small_02, island_tree_02, fir_tree_01), rendered offline into `apps/web/public/trees/atlas.png` (side and top impostor views; the models are not in the repository) | tree impostors | CC0 (polyhaven.com/license) |
 | Poly Haven textures (`apps/web/public/textures/`: leafy_grass, grass_ground, farm_soil, dry_mud_field_001, aerial_mud_1, gravel_road, aerial_asphalt_01; 1K colour maps, re-encoded) | HD detail for grass, soil, tracks, gravel and asphalt | CC0 (polyhaven.com/license) |
 | Painted terrain | fallback when the photo servers can't be reached | generated in the browser from Terrarium heights (no third-party imagery) |
 

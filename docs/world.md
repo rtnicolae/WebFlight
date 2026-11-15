@@ -93,3 +93,15 @@ did not answer from outside Romania).
 From the glider at 220 m:
 
 ![Ghimbav with detail](img/romania-detail.jpg)
+
+## Close range (MSFS-style)
+
+- **Grass**: 3D blades near the camera (`grass/`): tufts where the ground is grass (green in
+  Sentinel-2, not a road, paved runway, building, water or forest in OSM), short mown grass on
+  grass strips and in aerodromes, coloured from the satellite, densest at the camera and
+  dithered out with distance, swaying in the wind. High 45 m, Ultra 70 m.
+- **Ground** under it: the HD textures at true scale, detail tiles down to zoom 21.
+- **Trees**: impostors (`tree-impostors.ts`): photoscanned CC0 trees (Poly Haven) rendered
+  offline from the side and from above into one atlas; each tree is a side card turning to the
+  camera plus a top card, cross-faded by view angle, lit by the sim's sun, swaying. Placed in
+  OSM forests (conifers commoner with height), denser near the camera and sparser outwards.

@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
-  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 8 : 10, osmTreeRings: QUALITY === "ultra" ? 3 : 2 });
+  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4 });
   // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
