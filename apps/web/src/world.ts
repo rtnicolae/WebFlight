@@ -4,6 +4,8 @@
  * the estimate), and from those the wind, lift and the runway direction in use (into wind).
  */
 import {
+  fetchOpenMeteo,
+  OPEN_METEO_ARCHIVE,
   airfieldAt,
   airfieldsAround,
   describeWeather,
@@ -38,6 +40,29 @@ export interface Flight {
   weatherText: string;
 }
 
+/**
+ * Open-Meteo through a small localStorage cache: the menu and the sim ask for the same hour,
+ * and the free API limits requests per day. Historical days never change (kept); forecasts
+ * are reused for an hour. At most 30 responses (~15 kB each), oldest dropped first.
+ */
+async function cachedOpenMeteo(url: string): Promise<unknown> {
+  const KEY = "webflight.wx";
+  type Entry = { url: string; at: number; json: unknown };
+  let store: Entry[] = [];
+  try {
+    store = JSON.parse(localStorage.getItem(KEY) ?? "[]") as Entry[];
+  } catch {}
+  const hit = store.find((e) => e.url === url);
+  const fresh = (e: Entry) => e.url.startsWith(OPEN_METEO_ARCHIVE) || Date.now() - e.at < 3600_000;
+  if (hit && fresh(hit)) return hit.json;
+  const json = await fetchOpenMeteo(url);
+  store = [{ url, at: Date.now(), json }, ...store.filter((e) => e.url !== url && fresh(e))].slice(0, 30);
+  try {
+    localStorage.setItem(KEY, JSON.stringify(store));
+  } catch {}
+  return json;
+}
+
 const withTimeout = <T,>(p: Promise<T>, ms: number, fallback: T) => Promise.race([p, new Promise<T>((r) => setTimeout(() => r(fallback), ms))]);
 
 /**
@@ -63,7 +88,7 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
   const lat = air ? Number(params.get("lat")) : field?.latDeg ?? HOME_AIRFIELD.latDeg;
   const lon = air ? Number(params.get("lon")) : field?.lonDeg ?? HOME_AIRFIELD.lonDeg;
   const [{ weather, time }, osmLines] = await Promise.all([
-    weatherFor(lat, lon, when, field?.elevM ?? 0),
+    weatherFor(lat, lon, when, field?.elevM ?? 0, new Date(), { fetchJson: cachedOpenMeteo }),
     field ? withTimeout(openFreeMapTiles().then((u) => (u ? fetchRunwayLines(u, field.latDeg, field.lonDeg) : [])), 8000, []) : Promise.resolve([]),
   ]);
   // Wind: the weather's, or ?wind=from@kt for every level.

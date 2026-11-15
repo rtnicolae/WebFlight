@@ -51,6 +51,8 @@ export interface Weather {
   shortwaveWm2: number;
   /** Convective boundary-layer depth above ground [m]. */
   boundaryLayerM: number;
+  /** Why the estimate was used (e.g. "Open-Meteo: daily request limit reached"). */
+  note?: string;
 }
 
 export interface Soaring {
@@ -244,20 +246,28 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
  * The weather and the sim time for a place and a WhenSpec: Open-Meteo for the local day
  * asked (the response's UTC offset turns local time into UTC), else the sun-based estimate.
  */
-export async function weatherFor(latDeg: number, lonDeg: number, when: WhenSpec, elevationM = 0, now = new Date()): Promise<{ weather: Weather; time: Date }> {
+export async function weatherFor(
+  latDeg: number,
+  lonDeg: number,
+  when: WhenSpec,
+  elevationM = 0,
+  now = new Date(),
+  /** fetchJson: replace the fetch (e.g. with a cache); it should throw with a reason on failure. */
+  opts: { fetchJson?: (url: string) => Promise<unknown> } = {},
+): Promise<{ weather: Weather; time: Date }> {
   // The local date isn't known before the offset is: ask for the day either side as well.
   const guessH = Math.round(lonDeg / 15);
   const localDay = when.kind === "local" && when.date ? when.date : ymd(new Date(now.getTime() + guessH * 3600_000));
   const d0 = new Date(`${localDay}T00:00:00Z`);
   const archive = now.getTime() - d0.getTime() > FORECAST_PAST_DAYS * 86400_000;
+  const url = openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), archive);
   let json: OpenMeteoResponse | undefined;
+  let note = "";
   try {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 10_000);
-    const r = await fetch(openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), archive), { signal: ctl.signal });
-    clearTimeout(timer);
-    if (r.ok) json = (await r.json()) as OpenMeteoResponse;
-  } catch {}
+    json = (await (opts.fetchJson ?? fetchOpenMeteo)(url)) as OpenMeteoResponse;
+  } catch (e) {
+    note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
+  }
   const offsetH = json?.utc_offset_seconds !== undefined ? json.utc_offset_seconds / 3600 : guessH;
   let time = now;
   if (when.kind === "local") {
@@ -267,9 +277,35 @@ export async function weatherFor(latDeg: number, lonDeg: number, when: WhenSpec,
   if (json) {
     try {
       return { weather: parseOpenMeteo(json, latDeg, lonDeg, time, archive ? "archive" : "forecast"), time };
-    } catch {}
+    } catch (e) {
+      note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
+    }
   }
-  return { weather: { ...estimateWeather(latDeg, lonDeg, time, elevationM), utcOffsetH: offsetH }, time };
+  return { weather: { ...estimateWeather(latDeg, lonDeg, time, elevationM), utcOffsetH: offsetH, note }, time };
+}
+
+/**
+ * GET an Open-Meteo URL: up to 3 tries 1 s / 3 s apart on rate limits (429) and server
+ * errors; throws with Open-Meteo's `reason` (e.g. "Daily API request limit exceeded").
+ */
+export async function fetchOpenMeteo(url: string): Promise<unknown> {
+  let last = "unreachable";
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise<void>((r) => setTimeout(r, i === 1 ? 1000 : 3000));
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 10_000);
+      const r = await fetch(url, { signal: ctl.signal });
+      clearTimeout(timer);
+      const body = (await r.json().catch(() => ({}))) as { reason?: string };
+      if (r.ok) return body;
+      last = body.reason ?? `HTTP ${r.status}`;
+      if (r.status !== 429 && r.status < 500) break;
+    } catch (e) {
+      last = e instanceof Error && e.name === "AbortError" ? "timed out" : "unreachable";
+    }
+  }
+  throw new Error(last);
 }
 
 /** One line for the HUD / menu: source, wind, cloud base or blue, thermal strength. */
@@ -277,7 +313,7 @@ export function describeWeather(w: Weather): string {
   const s = soaringFrom(w);
   const wind = w.windKt < 1 ? "calm" : `${String(Math.round(w.windFromDeg / 10) * 10).padStart(3, "0")}° ${Math.round(w.windKt)} kt`;
   const sky = s.wStarMs < 0.5 ? "no thermals" : `${s.cumulus ? `Cu base ${Math.round((w.elevationM + s.cloudBaseAglM) / 50) * 50} m` : `blue to ${Math.round((w.elevationM + s.thermalTopAglM) / 50) * 50} m`} · w* ${s.wStarMs.toFixed(1)} m/s`;
-  const src = { forecast: "Forecast", archive: "Historical", estimated: "Estimated (offline)" }[w.source];
+  const src = { forecast: "Forecast", archive: "Historical", estimated: `Estimated${w.note ? ` (${w.note})` : ""}` }[w.source];
   const day = new Date(Date.parse(w.timeUtc) + w.utcOffsetH * 3600_000).toISOString().slice(0, 16).replace("T", " ");
   return `${src} ${day}: ${wind} · ${Math.round(w.tempC)}°C · ${sky}`;
 }
