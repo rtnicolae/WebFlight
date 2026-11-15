@@ -29,7 +29,7 @@ pnpm bundle:ask21  # web bundle → apps/web/bundles/ASK21
 pnpm bundle:models # tow plane and winch models → apps/web/bundles/_models
 pnpm gym:bench landing 20   # gym speed and baseline score (see docs/milestone-6.md)
 python3 python/webflight_gym.py landing   # Python client (numpy; gymnasium optional)
-pnpm dev           # http://localhost:5173: title screen; or deep-link ?start=final|ridge|thermal|winch|aerotow&time=evening&quality=ultra (see docs/look.md)
+pnpm dev           # http://localhost:5173: title screen; or deep-link ?field=RO-0010&at=45.6994,25.5284&launch=winch|aerotow&time=2026-07-15T14:00 (see docs/world.md)
 ```
 
 The FGAddon cache location can be overridden with `WEBFLIGHT_FGADDON_CACHE`.
