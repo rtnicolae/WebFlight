@@ -93,6 +93,39 @@ export function classify(r: number, g: number, b: number): Cover {
   return "crop";
 }
 
+/** Canopy brightness at a point: crowns on a ~4 m jittered grid, lit toward the sun, shadows away. */
+function crownShade(wx: number, wy: number, o: SynthOptions): number {
+  const cs = 4.2;
+  const gx = Math.floor(wx / cs), gy = Math.floor(wy / cs);
+  let shade = 0.72;
+  for (let dj = -1; dj <= 1; dj++)
+    for (let di = -1; di <= 1; di++) {
+      const h = hash2(gx + di, gy + dj, 21);
+      const tx = (gx + di + 0.2 + 0.6 * u01(h)) * cs, ty = (gy + dj + 0.2 + 0.6 * u01(hash2(h, 1))) * cs;
+      const rad = cs * (0.45 + 0.3 * u01(hash2(h, 2)));
+      const dx = wx - tx, dy = wy - ty;
+      const d = Math.hypot(dx, dy) / rad;
+      if (d < 1) shade = Math.max(shade, 0.88 + 0.32 * ((dx * o.sunX + dy * o.sunY) / rad) * (1 - d) + 0.1 * (1 - d));
+      const sd = Math.hypot(dx + o.sunX * rad * o.sunLow, dy + o.sunY * rad * o.sunLow) / rad;
+      if (sd < 1 && d >= 1) shade = Math.min(shade, 0.62);
+    }
+  return shade;
+}
+
+const canopyMeans = new Map<string, number>();
+/** The canopy's average brightness for this sun (sampled once). */
+function canopyMean(o: SynthOptions): number {
+  const key = `${o.sunX.toFixed(2)},${o.sunY.toFixed(2)},${o.sunLow.toFixed(2)}`;
+  let m = canopyMeans.get(key);
+  if (m === undefined) {
+    let sum = 0;
+    for (let i = 0; i < 4096; i++) sum += crownShade((i % 64) * 0.73 + 0.31, Math.floor(i / 64) * 0.71 + 0.17, o);
+    m = sum / 4096;
+    canopyMeans.set(key, m);
+  }
+  return m;
+}
+
 export interface SynthOptions {
   /** Tile origin (north-west corner) and pixel size, in world metres (x east, y north). */
   x0: number;
@@ -110,10 +143,6 @@ export interface SynthOptions {
  * already in it. `cover` (optional, per pixel: 0 unknown, else index in COVERS) is the OSM
  * land cover rasterized for this tile.
  */
-/** Lift and stretch an 8-bit channel (gamma 0.85, contrast 1.12 around mid-grey). */
-const LIFT = Array.from({ length: 256 }, (_, v) => Math.max(0, Math.min(255, (255 * Math.pow(v / 255, 0.85) - 110) * 1.12 + 118)));
-const lift = (v: number) => LIFT[v]!;
-
 export const COVERS: Cover[] = ["crop", "forest", "grass", "water", "urban"];
 export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8Array): void {
   const { size, mPerPx } = o;
@@ -122,48 +151,26 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
     for (let i = 0; i < size; i++) {
       const k = (j * size + i) * 4;
       const wx = o.x0 + (i + 0.5) * mPerPx;
-      // Levels: Sentinel-2 cloudless is dark and flat next to aerial photos.
-      let r = lift(px[k]!), g = lift(px[k + 1]!), b = lift(px[k + 2]!);
+      // No recolouring: the detail tiles border plain Sentinel-2 tiles and must match them.
+      let r = px[k]!, g = px[k + 1]!, b = px[k + 2]!;
       const c = cover && cover[j * size + i] ? COVERS[cover[j * size + i]! - 1]! : classify(r, g, b);
       let f = 1, tr = 1, tg = 1, tb = 1;
       if (c === "crop") {
         // Fields: keep the real colours and boundaries (edge-aware upsampling); add only the
         // fine grain of crops and soil a 10 m pixel can't carry.
-        f = (0.95 + 0.1 * valueNoise(wx, wy, 1.2, 8) * (mPerPx < 1 ? 1 : 0.4)) * (0.97 + 0.06 * valueNoise(wx, wy, 7, 9));
+        // (value noise averages 0.5: every factor here averages 1, so tones match Sentinel-2.)
+        f = (1 + (valueNoise(wx, wy, 1.2, 8) - 0.5) * (mPerPx < 1 ? 0.1 : 0.04)) * (1 + (valueNoise(wx, wy, 7, 9) - 0.5) * 0.06);
       } else if (c === "forest") {
-        // Crowns on a ~4 m jittered grid: lit side brighter, shadow away from the sun.
-        const cs = 4.2;
-        const gx = Math.floor(wx / cs), gy = Math.floor(wy / cs);
-        let shade = 0.72;
-        for (let dj = -1; dj <= 1; dj++)
-          for (let di = -1; di <= 1; di++) {
-            const h = hash2(gx + di, gy + dj, 21);
-            const tx = (gx + di + 0.2 + 0.6 * u01(h)) * cs, ty = (gy + dj + 0.2 + 0.6 * u01(hash2(h, 1))) * cs;
-            const rad = cs * (0.45 + 0.3 * u01(hash2(h, 2)));
-            const dx = wx - tx, dy = wy - ty;
-            const d = Math.hypot(dx, dy) / rad;
-            if (d < 1) shade = Math.max(shade, 0.88 + 0.32 * ((dx * o.sunX + dy * o.sunY) / rad) * (1 - d) + 0.1 * (1 - d));
-            // Shadow cast away from the sun.
-            const sd = Math.hypot(dx + o.sunX * rad * o.sunLow, dy + o.sunY * rad * o.sunLow) / rad;
-            if (sd < 1 && d >= 1) shade = Math.min(shade, 0.62);
-          }
-        f = mPerPx < 2.5 ? shade : 0.9 + 0.1 * valueNoise(wx, wy, 6, 22);
-        tg = 1.03;
+        // Canopy (crowns, sun-side highlights, shadows), divided by its own average so the
+        // forest keeps its Sentinel-2 tone.
+        f = mPerPx < 2.5 ? crownShade(wx, wy, o) / canopyMean(o) : 1 + (valueNoise(wx, wy, 6, 22) - 0.5) * 0.1;
       } else if (c === "grass") {
-        // Grass: blades (sub-metre), tufts (metres), patches (tens of metres).
-        f = 0.86 + 0.16 * valueNoise(wx, wy, 0.7, 31) * (mPerPx < 0.8 ? 1 : 0.35) + 0.12 * (valueNoise(wx, wy, 4, 33) - 0.5) + 0.12 * (valueNoise(wx, wy, 35, 32) - 0.5);
+        // Grass: blades (sub-metre), tufts (metres), patches (tens of metres); mean 1.
+        f = 1 + (valueNoise(wx, wy, 0.7, 31) - 0.5) * (mPerPx < 0.8 ? 0.16 : 0.05) + (valueNoise(wx, wy, 4, 33) - 0.5) * 0.1 + (valueNoise(wx, wy, 35, 32) - 0.5) * 0.08;
       } else if (c === "urban") {
-        // Built-up ground between the drawn buildings: yards and lots, mostly paved. Pull the
-        // blurred bright roofs (halos in 10 m pixels) toward concrete/asphalt.
-        const lum = 0.3 * r + 0.59 * g + 0.11 * b;
-        const pave = lum > 130 ? 0.85 : 0.5;
-        const tone = 0.8 + 0.25 * valueNoise(wx, wy, 14, 42);
-        r = r * (1 - pave) + 116 * tone * pave;
-        g = g * (1 - pave) + 116 * tone * pave;
-        b = b * (1 - pave) + 112 * tone * pave;
-        f = 0.95 + 0.08 * valueNoise(wx, wy, 2, 41);
+        f = 1 + (valueNoise(wx, wy, 2, 41) - 0.5) * 0.08;
       } else {
-        f = 0.98 + 0.04 * valueNoise(wx, wy, 8, 51);
+        f = 1 + (valueNoise(wx, wy, 8, 51) - 0.5) * 0.04;
       }
       r *= f * tr;
       g *= f * tg;

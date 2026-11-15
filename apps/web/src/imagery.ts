@@ -145,10 +145,10 @@ export class PaintedImageryProvider {
 }
 
 /**
- * Synthesized detail (zoom 15–18) wherever the photos are only Sentinel-2: see
+ * Synthesized detail (zoom 14–18) wherever the photos are only Sentinel-2: see
  * detail/detail-worker.ts. Tiles inside a national orthophoto's coverage come back empty.
  */
-const DETAIL_MIN_LEVEL = 15;
+const DETAIL_MIN_LEVEL = 14;
 export class DetailImageryProvider {
   readonly tilingScheme = new WebMercatorTilingScheme();
   readonly rectangle = this.tilingScheme.rectangle;

@@ -1,4 +1,7 @@
-/** Dev preview of detail tiles (detail-preview.html): an n×n block around a point. */
+/**
+ * Dev preview of detail tiles (detail-preview.html): an n×n block around a point.
+ * side=detail | s2 (plain Sentinel-2) | mix (checkerboard of both: shows seams).
+ */
 import { lonLatToTile } from "@webflight/environment";
 import { openFreeMapTiles } from "../osm-source.ts";
 import type { DetailRequest } from "./detail-worker.ts";
@@ -31,7 +34,7 @@ w.onmessage = (ev: MessageEvent<{ id: number; bitmap?: ImageBitmap; error?: stri
 for (let j = 0; j < n; j++)
   for (let i = 0; i < n; i++) {
     const id = j * n + i, x = x0 + i, y = y0 + j;
-    if (side === "s2") {
+    if (side === "s2" || (side === "mix" && (i + j) % 2 === 0)) {
       const d = z - 14, s = 2 ** d;
       void fetch(S2.replace("{z}", "14").replace("{x}", String(x >> d)).replace("{y}", String(y >> d)))
         .then((r) => r.blob())

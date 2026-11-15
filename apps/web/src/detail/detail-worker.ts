@@ -53,6 +53,26 @@ async function s2(url: string, z: number, x: number, y: number): Promise<ImageBi
     return createImageBitmap(await r.blob());
   });
 }
+const mosaicCache = lru<Uint8ClampedArray>(10);
+/** A zoom-14 satellite tile with its 8 neighbours as one 768×768 RGBA image. */
+function mosaic(url: string, x: number, y: number): Promise<Uint8ClampedArray> {
+  return mosaicCache(`${x}/${y}`, async () => {
+    const c = new OffscreenCanvas(768, 768).getContext("2d", { willReadFrequently: true })!;
+    const n = 2 ** 14;
+    await Promise.all(
+      [-1, 0, 1].flatMap((dy) =>
+        [-1, 0, 1].map(async (dx) => {
+          const ty = y + dy;
+          if (ty < 0 || ty >= n) return;
+          const b = await s2(url, 14, (((x + dx) % n) + n) % n, ty).catch(() => undefined);
+          if (b) c.drawImage(b, (dx + 1) * 256, (dy + 1) * 256);
+        }),
+      ),
+    );
+    return c.getImageData(0, 0, 768, 768).data;
+  });
+}
+
 async function osm(url: string, x: number, y: number): Promise<MvtLayer[]> {
   return osmCache(`${x}/${y}`, async () => {
     const r = await fetch(fill(url, 14, x, y));
@@ -124,17 +144,14 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   const d = z - 14;
   const sub = 2 ** d;
   const ax = x >> d, ay = y >> d, ox = x - ax * sub, oy = y - ay * sub;
-  const [base, layers] = await Promise.all([s2(q.s2Url, 14, ax, ay), osm(q.osmUrl, ax, ay)]);
+  const [sat, layers] = await Promise.all([mosaic(q.s2Url, ax, ay), osm(q.osmUrl, ax, ay)]);
   const cv = new OffscreenCanvas(SIZE, SIZE);
   const ctx = cv.getContext("2d", { willReadFrequently: true })!;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   const src = 256 / sub;
-  // The whole zoom-14 satellite tile: source for the upsampling, and to judge features as a
-  // whole (the same answer in every tile).
-  const bc = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
-  bc.drawImage(base, 0, 0);
-  const sat = bc.getImageData(0, 0, 256, 256).data;
+  // `sat`: the zoom-14 satellite tile with its 8 neighbours (768×768), so the upsampling
+  // reads real neighbours at tile borders, and features can be judged as a whole.
 
   // MVT (zoom 14, extent e) → this tile's pixels.
   const toPx = (e: number) => (px: number, py: number): [number, number] => [((px / e) * sub - ox) * SIZE, ((py / e) * sub - oy) * SIZE];
@@ -181,7 +198,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   for (let i = 0; i < cover.length; i++) if (covPx[i * 4 + 3]! > 127) cover[i] = Math.max(0, Math.min(COVERS.length, Math.round(covPx[i * 4]! / 40)));
 
   const img = new ImageData(SIZE, SIZE);
-  edgeAwareUpsample(sat, 256, ox * src, oy * src, src, img.data, SIZE);
+  edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, img.data, SIZE);
   const az = (q.sun.azimuthDeg * Math.PI) / 180;
   const sunLow = Math.min(1.5, 1 / Math.tan((Math.max(8, q.sun.elevationDeg) * Math.PI) / 180));
   const n = 2 ** z;
@@ -197,12 +214,19 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   ctx.putImageData(img, 0, 0);
 
   // Crisp vectors on top.
-  const w = (m: number) => Math.max(0.6, m / mPerPx);
+  // Line width in pixels; lines thinner than a pixel are drawn one pixel wide and faded by
+  // their width (so a 5 m track at 10 m/pixel is a faint trace, not a hard line).
+  const w = (m: number) => {
+    const px = m / mPerPx;
+    ctx.globalAlpha = Math.min(1, Math.max(0.15, px));
+    return Math.max(1, px);
+  };
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const l of layers) {
     const f = toPx(l.extent);
     if (l.name === "water") {
+      ctx.globalAlpha = 1;
       ctx.fillStyle = "rgba(46, 66, 68, 0.78)";
       for (const feat of l.features) if (feat.type === 3) { path(ctx, feat.geometry, f); ctx.fill("evenodd"); }
     } else if (l.name === "waterway") {
@@ -221,9 +245,9 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     for (const line of geom)
       for (let i = 0; i + 1 < line.length; i++)
         for (const t of [0.2, 0.4, 0.6, 0.8]) {
-          const u = ((line[i]![0] + (line[i + 1]![0] - line[i]![0]) * t) / e) * 256, v = ((line[i]![1] + (line[i + 1]![1] - line[i]![1]) * t) / e) * 256;
-          if (u < 0 || v < 0 || u >= 256 || v >= 256) continue;
-          const k = (Math.floor(v) * 256 + Math.floor(u)) * 4;
+          const u = ((line[i]![0] + (line[i + 1]![0] - line[i]![0]) * t) / e) * 256 + 256, v = ((line[i]![1] + (line[i + 1]![1] - line[i]![1]) * t) / e) * 256 + 256;
+          if (u < 0 || v < 0 || u >= 768 || v >= 768) continue;
+          const k = (Math.floor(v) * 768 + Math.floor(u)) * 4;
           g += sat[k + 1]! - (sat[k]! + sat[k + 2]!) / 2;
           n++;
         }
@@ -248,6 +272,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       }
       path(ctx, ft.geometry, f);
       if (ft.type === 3) {
+        ctx.globalAlpha = 1;
         ctx.fillStyle = grass ? "rgba(150, 175, 100, 0.35)" : "rgb(92, 92, 90)";
         ctx.fill("evenodd");
         continue;
@@ -314,6 +339,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       if (ft.type !== 3) continue;
       const h = Number(ft.properties["render_height"] ?? 5);
       const off = Math.min(18, h * sunLow) / mPerPx;
+      ctx.globalAlpha = 1;
       ctx.fillStyle = "rgba(20, 22, 26, 0.42)";
       path(ctx, ft.geometry, (a, b) => { const [u, v] = f(a, b); return [u + sdx * off, v + sdy * off]; });
       ctx.fill("evenodd");
@@ -327,6 +353,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
         for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) area += (ring[j]![0] - ring[i]![0]) * (ring[j]![1] + ring[i]![1]);
         const areaM2 = Math.abs(area / 2) * ((mPerPx * SIZE) / (bld.extent / sub)) ** 2;
         const palette = areaM2 > 800 ? BIG_ROOFS : ROOFS;
+        ctx.globalAlpha = 1;
         ctx.fillStyle = palette[hash2(a + ax * 4096, b + ay * 4096, 61) % palette.length]!;
         path(ctx, [ring], f);
         ctx.fill();
