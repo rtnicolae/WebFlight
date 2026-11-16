@@ -7,7 +7,7 @@
  *    fallback when the photo servers can't be reached.
  *  - "grid" / "osm": the old debug looks.
  */
-import { ArcGisMapServerImageryProvider, IonImageryProvider, Cartesian2, Cartographic, Credit, DiscardMissingTileImagePolicy, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
+import { ArcGisMapServerImageryProvider, Ion, IonImageryProvider, Cartesian2, Cartographic, Credit, DiscardMissingTileImagePolicy, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
 import { sunFrom, type Sun } from "./paint/landcover.ts";
 import type { PaintRequest } from "./paint/paint-worker.ts";
 import type { DetailRequest } from "./detail/detail-worker.ts";
@@ -299,8 +299,12 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
   // Bing Maps aerial photos (sub-metre in much of Europe) via Cesium ion, asset 2, alone: it
   // covers everywhere the other layers do, and every extra layer is more textures per ground
   // tile (Cesium's ground shader has 16 texture units in all). Close-range detail is drawn in
-  // the ground shader (ground-detail.ts). Uses Cesium's evaluation token unless one is set.
-  if (mode === "photo" && new URLSearchParams(location.search).get("aerial") === "bing") {
+  // the ground shader (ground-detail.ts). The default; ?aerial=s2 for Sentinel-2 with the
+  // synthesized detail and the national orthophotos. The Cesium ion token comes from
+  // VITE_CESIUM_ION_TOKEN (apps/web/.env.local); without one, Cesium's evaluation token.
+  if (mode === "photo" && new URLSearchParams(location.search).get("aerial") !== "s2") {
+    const token = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
+    if (token) Ion.defaultAccessToken = token;
     layers.add(new ImageryLayer(await IonImageryProvider.fromAssetId(2)));
     if (new URLSearchParams(location.search).get("gdetail") !== "0") addGroundDetail(viewer, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href);
     return mode;

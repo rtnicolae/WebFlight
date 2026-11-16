@@ -7,3 +7,6 @@ out/
 apps/web/bundles/
 
 __pycache__/
+
+# Local secrets (Cesium ion token: VITE_CESIUM_ION_TOKEN)
+*.local

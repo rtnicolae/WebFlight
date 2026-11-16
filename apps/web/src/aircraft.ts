@@ -19,6 +19,14 @@ export class AircraftView {
   /** FG properties the animations need in the snapshot. */
   readonly snapshotProperties: string[];
   private readonly nodes = new Map<string, ModelNode>();
+  /**
+   * Cockpit-only submodels: instrument panels and consoles (FlightGear's ".../Panel/...",
+   * "Instruments", "...console....xml"). Hundreds of small meshes (ASK21: 242 of 372), most of
+   * the scene's draw calls with their shadow passes, and from outside hardly visible through
+   * the canopy: shown only in the cockpit view. Pilots, the cockpit tub and the canopy stay.
+   */
+  private readonly interior = new Set<string>();
+  private interiorShown = true;
   /** Animated tex node → texture readers of the textured primitives in its subtree. */
   private readonly texReaders = new Map<string, TexReader[]>();
   private readonly parents: Record<string, string>;
@@ -65,6 +73,8 @@ export class AircraftView {
       const node = this.model.getNode(name);
       if (node) this.nodes.set(name, node);
     }
+    const INTERIOR = /^model:.*(\/(panels?|instruments(-3d)?)\/|\/[^/]*(panel|console)[^/]*\.xml(#\d+)?$)/i;
+    for (const n of new Set([...Object.keys(this.parents), ...Object.values(this.parents)])) if (INTERIOR.test(n)) this.interior.add(n);
     // Texture-animated nodes: collect the base-colour texture readers in their subtrees. The
     // converter gave those primitives their own materials with KHR_texture_transform, which
     // Cesium reads through `textureReader.transform` on every draw (MaterialPipelineStage).
@@ -90,6 +100,17 @@ export class AircraftView {
 
   get loaded(): boolean {
     return !!this.model?.ready;
+  }
+
+  /** Show or hide the cockpit-only submodels (see `interior`). */
+  showInterior(show: boolean): void {
+    if (show === this.interiorShown || !this.model) return;
+    this.interiorShown = show;
+    for (const n of this.interior) {
+      if (this.nodes.has(n)) continue; // animated: set with its own visibility in update()
+      const node = this.model.getNode(n);
+      if (node) node.show = show;
+    }
   }
 
   /** Pick entries for a picked glTF node: the node's own, or its nearest ancestor's. */
@@ -131,7 +152,7 @@ export class AircraftView {
       for (const [name, node] of this.nodes) {
         const st = this.rig.state.get(name)!;
         node.matrix = Matrix4.fromArray(st.matrix as unknown as number[], 0, this.scratch);
-        node.show = st.show;
+        node.show = st.show && (this.interiorShown || !this.interior.has(name));
         if (st.uv) {
           const readers = this.texReaders.get(name);
           if (readers) for (const r of readers) r.transform = Matrix3.fromArray(st.uv as unknown as number[]);

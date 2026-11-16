@@ -30,6 +30,7 @@ Fetched at runtime by the browser, never stored in the repository:
 
 | Source | Use | License / terms |
 |---|---|---|
+| Bing Maps aerial imagery via Cesium ion (`api.cesium.com` asset 2; tiles from `*.virtualearth.net`) | aerial photos everywhere (the default; `?aerial=s2` for the free layers below) | Cesium ion Terms of Service and the Bing Maps terms Cesium ion passes on; needs a Cesium ion access token (`VITE_CESIUM_ION_TOKEN` in `apps/web/.env.local`; without one, Cesium's evaluation token, which is not meant for production). Attribution (Bing logo, data providers) is shown by Cesium in the credits. Check the ion plan's usage limits before deploying publicly |
 | swisstopo SWISSIMAGE (`wmts.geo.admin.ch`) | aerial photos over Switzerland | Free geodata (OGD) of the Swiss Confederation; attribution "© swisstopo" (shown in the credits) |
 | EOX Sentinel-2 cloudless 2016 (`tiles.maps.eox.at`, layer `s2cloudless_3857`) | imagery elsewhere | CC BY 4.0: "Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)". Later years are CC BY-NC-SA, so the 2016 layer is used deliberately |
 | swisstopo swissTLM3D 3D Tiles, vegetation 3D Tiles, base vector tiles (`vectortiles*.geo.admin.ch`) | buildings, trees, water, the Grenchen runway geometry | Free geodata (OGD) of the Swiss Confederation; attribution "© swisstopo" |
@@ -46,7 +47,7 @@ Fetched at runtime by the browser, never stored in the repository:
 | earcut (npm, already a Cesium dependency) | roof triangulation | ISC |
 | Poly Haven textures painted_plaster_wall, roof_09, bitumen, gravel_road (`apps/web/public/buildings/`, 512 px, normalized to mid-grey as detail maps), red_brick_03 (`brick.jpg`, 512 px, own colours) | building walls and roofs | CC0 (polyhaven.com/license) |
 | Poly Haven tree models (tree_small_02, island_tree_02, island_tree_01, jacaranda_tree, fir_tree_01, fir_sapling_medium, pine_tree_01), rendered offline into `apps/web/public/trees/atlas.png` by `tools/tree-atlas/pack.py` (side and top impostor views; the beech-, oak-, hornbeam-, birch- and lime-like crowns are composed there from the small models' foliage; the models are not in the repository) | tree impostors | CC0 (polyhaven.com/license) |
-| Poly Haven textures (`apps/web/public/textures/`: leafy_grass, grass_ground, farm_soil, dry_mud_field_001, aerial_mud_1, gravel_road, aerial_asphalt_01; 1K colour maps and 512 px height maps `*_h.jpg`, re-encoded) | HD detail for grass, soil, tracks, gravel and asphalt | CC0 (polyhaven.com/license) |
+| Poly Haven textures (`apps/web/public/textures/`: leafy_grass, grass_ground, farm_soil, dry_mud_field_001, aerial_mud_1, gravel_road, aerial_asphalt_01; 1K colour maps and 512 px height maps `*_h.jpg`, re-encoded) | HD detail for grass, soil, tracks, gravel and asphalt; the brightness of leafy_grass, grass_ground and farm_soil is also the close-range ground texture over the aerial photos (`ground-detail.ts`) | CC0 (polyhaven.com/license) |
 | Painted terrain | fallback when the photo servers can't be reached | generated in the browser from Terrarium heights (no third-party imagery) |
 
 ## Code ported from FlightGear (GPL-2.0-or-later)

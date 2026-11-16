@@ -35,6 +35,8 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   rwy=04: a runway other than the longest · wind=from@kt: override the weather's wind
  *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
+ *   aerial=bing (default: Bing aerial photos via Cesium ion) | s2 (Sentinel-2, synthesized detail)
+ *   gdetail=0         no close-range ground texture over the photos
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
  *   dynres=1          lower the resolution to keep ≥ 40 fps, down to 60% (default: fixed)
@@ -234,6 +236,7 @@ async function main(): Promise<void> {
     const d = reader.data;
     const g = (n: string) => d[layout!.at(n)]!;
 
+    aircraft.showInterior(cam.mode === "cockpit");
     const m = aircraft.update(d, layout, dt);
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
