@@ -1,5 +1,6 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { Cartographic } from "cesium";
+import { pinGroundToGlider } from "./ground-lod.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
 import { advance, TerrariumTerrain } from "@webflight/environment";
@@ -99,6 +100,7 @@ async function main(): Promise<void> {
   const hud = new Hud(document.getElementById("hud")!);
   const cam = new ChaseCamera(viewer.camera, manifest.views.cockpit);
   cam.groundAt = (lat, lon) => renderTerrain.heightAt(lat, lon);
+  const pinGround = params.get("pin") === "0" ? () => {} : pinGroundToGlider(viewer);
   if (params.get("view") === "cockpit") cam.toggle();
 
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });
@@ -219,6 +221,8 @@ async function main(): Promise<void> {
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
+    // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).
+    pinGround(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/geod-alt-ft") * M_PER_FT + 4);
     // Grass follows the glider, not the camera: looking around rebuilds nothing.
     if (grass) grass.update(Cartographic.fromDegrees(g("position/long-gc-deg"), g("position/lat-geod-deg"), g("position/h-agl-ft") * M_PER_FT), 0);
     let launchText: string | undefined;
