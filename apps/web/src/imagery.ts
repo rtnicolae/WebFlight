@@ -13,6 +13,7 @@ import type { PaintRequest } from "./paint/paint-worker.ts";
 import type { DetailRequest } from "./detail/detail-worker.ts";
 import { LOOK } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
+import { addGroundDetail } from "./ground-detail.ts";
 
 export type ImageryMode = "photo" | "painted" | "grid" | "osm";
 
@@ -295,6 +296,15 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     console.warn("photo imagery unreachable; using painted terrain");
     mode = "painted";
   }
+  // Bing Maps aerial photos (sub-metre in much of Europe) via Cesium ion, asset 2, alone: it
+  // covers everywhere the other layers do, and every extra layer is more textures per ground
+  // tile (Cesium's ground shader has 16 texture units in all). Close-range detail is drawn in
+  // the ground shader (ground-detail.ts). Uses Cesium's evaluation token unless one is set.
+  if (mode === "photo" && new URLSearchParams(location.search).get("aerial") === "bing") {
+    layers.add(new ImageryLayer(await IonImageryProvider.fromAssetId(2)));
+    if (new URLSearchParams(location.search).get("gdetail") !== "0") addGroundDetail(viewer, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href);
+    return mode;
+  }
   if (mode === "photo") {
     layers.add(
       new ImageryLayer(
@@ -308,14 +318,6 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     // National orthophotos where they are free, Switzerland on top (sharpest, and where the
     // 3D scenery is). Elsewhere Sentinel-2 (10 m) shows through.
     // Where photos are only 10 m: detail synthesized from them and OpenStreetMap (visual only).
-    // Trial: Bing Maps aerial photos (sub-metre in much of Europe) via Cesium ion, asset 2,
-    // in place of the synthesized detail. Uses Cesium's evaluation token unless one is set.
-    if (new URLSearchParams(location.search).get("aerial") === "bing") {
-      layers.add(new ImageryLayer(await IonImageryProvider.fromAssetId(2)));
-      for (const o of ORTHOS) layers.add(orthoLayer(o));
-      layers.add(new ImageryLayer(swissImageProvider()));
-      return mode;
-    }
     const osmUrl = await openFreeMapTiles();
     if (osmUrl && new URLSearchParams(location.search).get("detail") !== "0") layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun, viewer.shadows) as unknown as ImageryProvider, { minimumTerrainLevel: 10 }));
     for (const o of ORTHOS) layers.add(orthoLayer(o));
