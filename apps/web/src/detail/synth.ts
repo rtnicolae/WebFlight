@@ -159,6 +159,13 @@ export interface GroundTextures {
 /** Near-ground colours: summer grass, dry grass, bare soil; and how far they replace the satellite's. */
 export const LUSH = [98, 128, 56], DRY = [142, 136, 78], SOIL = [124, 100, 74];
 export const NEAR_COLOUR = 0.6;
+/**
+ * How far a tile's colours leave the satellite's for the near-ground ones: half at zoom 14 (which
+ * borders plain Sentinel-2 far away), 1 from zoom 15 on. Two half steps, far from the camera: every
+ * closer level has the same colours, so the ground does not change as the camera moves and
+ * Cesium swaps levels.
+ */
+const ZOOMED = (mPerPx: number) => Math.min(1, Math.max(0, (8.5 - mPerPx) / 3.6));
 
 /** Lush/dry blend of two textures at the sampler's current point into out. */
 function mixInto(ts: TileSampler, lush: DetailTexture, dryT: DetailTexture, dry: number, a: Float32Array, b: Float32Array, out: Float32Array): void {
@@ -210,7 +217,7 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
         // Close to the ground the satellite's dark, hazy average gives way to the colours
         // grass and soil have at arm's length (eases in below 2 m per pixel, so zoom levels
         // blend into each other); the satellite still modulates it.
-        const near = NEAR_COLOUR * Math.min(1, Math.max(0, (2 - mPerPx) / 1.7));
+        const near = NEAR_COLOUR * ZOOMED(mPerPx);
         if (near > 0) {
           const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 70; // relative to a typical field
           const k = Math.min(1.25, Math.max(0.75, lum));
@@ -238,7 +245,7 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
         // at arm's length, and the edge between them is crisp and irregular (a metre-scale
         // noise moves it), not a 10 m blur.
         const green = g - (r + b) / 2;
-        const near = Math.min(1, Math.max(0, (5.5 - mPerPx) / 3));
+        const near = ZOOMED(mPerPx);
         const edge = (valueNoise(wx, wy, 3.5, 91) - 0.5) * 10 + (valueNoise(wx, wy, 0.9, 92) - 0.5) * 3;
         const soft = Math.min(1, Math.max(0, (green - 2) / 10));
         const hard = green + edge > 1 ? 1 : 0;
@@ -258,7 +265,7 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
         // with trodden soil showing through.
         const pave = Math.min(150, Math.max(70, lum)) * (0.9 + 0.2 * valueNoise(wx, wy, 23, 94)) / k; // keeps the local tone (k is applied below)
         const worn = Math.max(0, valueNoise(wx, wy, 6, 95) - 0.55) * 1.6;
-        const pull = 0.7 * Math.min(1, Math.max(0, (6 - mPerPx) / 3)); // eases in with zoom (none where tiles meet plain Sentinel-2)
+        const pull = 0.7 * ZOOMED(mPerPx); // eases in with zoom (none where tiles meet plain Sentinel-2)
         for (let ch = 0; ch < 3; ch++) {
           const grassC = (LUSH[ch]! + (DRY[ch]! - LUSH[ch]!) * dry * 0.7) * (1 - worn) + SOIL[ch]! * worn;
           const target = (pave * (ch === 2 ? 0.97 : 1) + (grassC - pave * (ch === 2 ? 0.97 : 1)) * t) * k;

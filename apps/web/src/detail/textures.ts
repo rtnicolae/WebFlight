@@ -112,7 +112,7 @@ const MACRO = 16;
  * glider heights, so the averaged levels vary by only 2–5 %; the gains make it 10–15 %.
  * Applied to brightness, with a little of the photo's colour, so the satellite hue stays.
  */
-const MICRO_GAIN = 2.5, MACRO_GAIN = 3, CHROMA = 0.6;
+const MICRO_GAIN = 2.5, MACRO_GAIN = 2.2, CHROMA = 0.6;
 /** Relief strength: the true-scale bumps, and the ×16 layer (gentle undulation of fields). */
 const RELIEF_MICRO = 1.6, RELIEF_MACRO = 0.6;
 
@@ -169,7 +169,7 @@ export class TileSampler {
   ) {
     // Sample i reads the texture at (u, v) = (x', −y') with (x', y') = R_i(world).
     this.sunT = R.map(([c, s]) => (sun ? [(sun.x * c - sun.y * s) * sun.low, -(sun.x * s + sun.y * c) * sun.low] : [0, 0]));
-    this.macroGain = 1.2 + (MACRO_GAIN - 1.2) * Math.min(1, Math.max(0, (mPerPx - 0.1) / 0.3));
+    this.macroGain = MACRO_GAIN; // the same at every zoom: levels must look alike
   }
 
   private levels(t: DetailTexture) {
