@@ -116,7 +116,7 @@ function crownShade(wx: number, wy: number, o: SynthOptions): number {
 
 const canopyMeans = new Map<string, number>();
 /** The canopy's average brightness for this sun (sampled once). */
-function canopyMean(o: SynthOptions): number {
+export function canopyMean(o: SynthOptions): number {
   const key = `${o.sunX.toFixed(2)},${o.sunY.toFixed(2)},${o.sunLow.toFixed(2)}`;
   let m = canopyMeans.get(key);
   if (m === undefined) {
@@ -166,6 +166,7 @@ export const NEAR_COLOUR = 0.6;
  * Cesium swaps levels.
  */
 const ZOOMED = (mPerPx: number) => Math.min(1, Math.max(0, (8.5 - mPerPx) / 3.6));
+export const zoomed = ZOOMED;
 
 /** Lush/dry blend of two textures at the sampler's current point into out. */
 function mixInto(ts: TileSampler, lush: DetailTexture, dryT: DetailTexture, dry: number, a: Float32Array, b: Float32Array, out: Float32Array): void {

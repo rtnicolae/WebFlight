@@ -106,15 +106,15 @@ export function sampleRatio(t: DetailTexture, wx: number, wy: number, mPerPx: nu
  * so its clumps read as meadow patches and crop texture from a glider's height; the micro
  * layer, at about true scale, shows on low passes and on the ground.
  */
-const MACRO = 16;
+export const MACRO = 16;
 /**
  * Contrast gains around 1 (mean-preserving): the photos' grain lives mostly below a pixel at
  * glider heights, so the averaged levels vary by only 2–5 %; the gains make it 10–15 %.
  * Applied to brightness, with a little of the photo's colour, so the satellite hue stays.
  */
-const MICRO_GAIN = 2.5, MACRO_GAIN = 2.2, CHROMA = 0.6;
+export const MICRO_GAIN = 2.5, MACRO_GAIN = 2.2, CHROMA = 0.6;
 /** Relief strength: the true-scale bumps, and the ×16 layer (gentle undulation of fields). */
-const RELIEF_MICRO = 1.6, RELIEF_MACRO = 0.6;
+export const RELIEF_MICRO = 1.6, RELIEF_MACRO = 0.6;
 
 /** Smooth value noise in [0, 1) (cell s) for blending the texture samples. */
 function noise(x: number, y: number, s: number, salt: number): number {
@@ -138,6 +138,8 @@ function lookup(lv: Float32Array, s: number, u: number, v: number, out: Float32A
 }
 
 const R = [0.31, 1.97, 1.31, 2.97].map((a) => [Math.cos(a), Math.sin(a)] as const);
+/** The four sample rotations (cos, sin): micro 1, micro 2, macro 1, macro 2. */
+export const ROTATIONS = R;
 
 /**
  * Samples detail textures for one tile (one pixel size): the mip levels are chosen once per

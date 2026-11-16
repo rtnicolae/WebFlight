@@ -237,7 +237,7 @@ export class DetailImageryProvider {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { key, resolve, reject });
       const dbg = new URLSearchParams(location.search);
-      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: this.sun, realShadows: this.realShadows, look: { ground: LOOK.ground, night: 1 - LOOK.day }, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
+      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: this.sun, realShadows: this.realShadows, look: { ground: LOOK.ground, night: 1 - LOOK.day }, gpu: dbg.get("detailgpu") !== "0", synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
     });
   }
 }

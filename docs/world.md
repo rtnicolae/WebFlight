@@ -120,6 +120,13 @@ From the glider at 220 m:
   (asphalt at half contrast, in the local satellite tone), split by a crisp, irregular edge
   where the satellite is green; streets in town get sidewalks (slab joints up close) and a
   curb, buildings a concrete apron. Zoom 14 stays plain so tiles still meet Sentinel-2.
+- **Detail tiles on the GPU**: the per-pixel work of a detail tile (edge-aware upsampling,
+  HD textures, relief, town ground, canopy) runs as a fragment shader in the tile worker's
+  own WebGL 2 context (`detail/gpu-synth.ts`); the 2D canvas then draws roads, buildings and
+  the night look on top as before. The CPU code (`synth.ts`) is the reference and the
+  fallback (`?detailgpu=0`, no WebGL 2 in workers, lost context). Both give the same tile:
+  mean difference 0.003–0.05 of 255 over fields, town, forest and zooms 15–20; at most 0.03%
+  of pixels differ by more than 8 (hard lawn/paving edges that fall the other way).
 - **Facades** are generated in the shader from each wall's coordinates, its building's wall
   height and a style seed: houses get a plinth, floor bands, recessed windows with frames and
   sills, shutters on some, doors on the ground floor and an eave shadow; blocks get precast

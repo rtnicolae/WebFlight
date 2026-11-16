@@ -8,6 +8,7 @@
 import { airfieldsAround, bearingDeg, designatorDeg } from "@webflight/environment";
 import { decodeMvt, streetLamps, type MvtLayer } from "@webflight/scenery";
 import { edgeAwareUpsample, synthesize, hash2, COVERS, type Cover, type GroundTextures } from "./synth.ts";
+import { GpuSynth } from "./gpu-synth.ts";
 import { addRelief, buildDetailTexture, TEXTURES, type DetailTexture, type TextureRole } from "./textures.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -19,6 +20,8 @@ export interface DetailRequest {
    * paints the street lamps' light pools (the layer is then drawn at full brightness).
    */
   look?: { ground: number; night: number };
+  /** false: per-pixel work on the CPU even where the GPU could do it (comparison, debugging). */
+  gpu?: boolean;
   /** 3D building shadows are drawn: don't also paint them into tiles within their reach (zoom ≥ 15). */
   realShadows?: boolean;
   x: number;
@@ -55,6 +58,8 @@ function lru<V>(max: number) {
     return v;
   };
 }
+/** GPU synthesis for this worker: undefined = not tried yet, null = unavailable. */
+let gpu: GpuSynth | null | undefined;
 const s2Cache = lru<ImageBitmap>(48);
 const osmCache = lru<MvtLayer[]>(24);
 const fill = (u: string, z: number, x: number, y: number) => u.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
@@ -415,28 +420,36 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
   const cover = new Uint8Array(SIZE * SIZE);
   for (let i = 0; i < cover.length; i++) if (covPx[i * 4 + 3]! > 127) cover[i] = Math.max(0, Math.min(COVERS.length, Math.round(covPx[i * 4]! / 40)));
 
-  const img = new ImageData(SIZE, SIZE);
-  edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, img.data, SIZE, q.snap === false ? 0 : 0.8);
-  // Plain upsampling for built-up ground (only when the tile has any).
-  let smooth: Uint8ClampedArray | undefined;
-  if (cover.includes(COVERS.indexOf("urban") + 1)) {
-    smooth = new Uint8ClampedArray(SIZE * SIZE * 4);
-    edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, smooth, SIZE, 0);
-  }
   const az = (q.sun.azimuthDeg * Math.PI) / 180;
   const sunLow = Math.min(1.5, 1 / Math.tan((Math.max(8, q.sun.elevationDeg) * Math.PI) / 180));
   const n = 2 ** z;
   const world = { x0: ((x / n) * C - C / 2) * K, y0: (C / 2 - (y / n) * C) * K, mPerPx: (C / n / SIZE) * K };
-  if (q.synth !== false) synthesize(img.data, {
-    x0: ((x / n) * C - C / 2) * K,
-    y0: (C / 2 - (y / n) * C) * K,
-    mPerPx: (C / n / SIZE) * K,
-    size: SIZE,
-    sunX: Math.sin(az),
-    sunY: Math.cos(az),
-    sunLow,
-  }, cover, tex, smooth);
-  ctx.putImageData(img, 0, 0);
+  const synthOptions = { ...world, size: SIZE, sunX: Math.sin(az), sunY: Math.cos(az), sunLow };
+  const snap = q.snap === false ? 0 : 0.8;
+  const urbanCover = cover.includes(COVERS.indexOf("urban") + 1);
+  // The per-pixel work on the GPU when the worker has WebGL 2 (gpu-synth.ts); else, or if it
+  // fails, the same on the CPU.
+  let done = false;
+  if (q.synth !== false && q.gpu !== false) {
+    if (gpu === undefined) gpu = GpuSynth.create(SIZE) ?? null;
+    const out = gpu && !gpu.broken ? gpu.run({ sat, satN: 768, satKey: `${ax}/${ay}`, sx0: 256 + ox * src, sy0: 256 + oy * src, span: src, snap, urbanCover, cover, o: synthOptions, tex }) : undefined;
+    if (out) {
+      ctx.drawImage(out, 0, 0);
+      done = true;
+    }
+  }
+  if (!done) {
+    const img = new ImageData(SIZE, SIZE);
+    edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, img.data, SIZE, snap);
+    // Plain upsampling for built-up ground (only when the tile has any).
+    let smooth: Uint8ClampedArray | undefined;
+    if (urbanCover) {
+      smooth = new Uint8ClampedArray(SIZE * SIZE * 4);
+      edgeAwareUpsample(sat, 768, 256 + ox * src, 256 + oy * src, src, smooth, SIZE, 0);
+    }
+    if (q.synth !== false) synthesize(img.data, synthOptions, cover, tex, smooth);
+    ctx.putImageData(img, 0, 0);
+  }
 
   // Crisp vectors on top.
   // Line width in pixels; lines thinner than a pixel are drawn one pixel wide and faded by
