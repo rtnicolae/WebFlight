@@ -38,6 +38,7 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
  *   dynres=1          lower the resolution to keep ≥ 40 fps, down to 60% (default: fixed)
+ *   pin=<metres>      keep the ground within that radius of the glider loaded (default: off)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
  */
 const AIR_START = params.has("lat") && params.has("lon");
@@ -111,8 +112,12 @@ async function main(): Promise<void> {
   const hud = new Hud(document.getElementById("hud")!);
   const cam = new ChaseCamera(viewer.camera, manifest.views.cockpit);
   cam.groundAt = (lat, lon) => renderTerrain.heightAt(lat, lon);
-  // ?pin=0 off, ?pin=<metres> radius (default 3 km: 30 km took minutes to load and left coarse ground near the glider).
-  const pinGround = params.get("pin") === "0" ? () => {} : pinGroundToGlider(viewer, Number(params.get("pin")) || 3000);
+  // ?pin=<metres>: ground tiles within that radius of the glider chosen by the glider's position.
+  // Off by default: measured in Brave on an M1 Pro at the Ghimbav ground start, 3 km pinned
+  // 2,542 ground tiles at 12.8 fps, 400 m still 1,908 tiles at ~40 fps, off 570 tiles at
+  // 60+ fps (the finest tiles under a glider on the ground are many even in a small circle).
+  const pinM = Number(params.get("pin")) || 0;
+  const pinGround = pinM > 0 ? pinGroundToGlider(viewer, pinM) : () => {};
   if (params.get("view") === "cockpit") cam.toggle();
 
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });
