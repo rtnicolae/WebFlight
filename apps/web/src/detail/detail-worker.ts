@@ -103,7 +103,7 @@ function texture(base: string, role: TextureRole): Promise<LoadedTexture> {
 }
 async function groundTextures(base: string): Promise<GroundTextures> {
   const [grass, dryGrass, soil, drySoil] = await Promise.all((["grass", "dryGrass", "soil", "drySoil"] as const).map((k) => texture(base, k)));
-  return { grass: grass!.detail, dryGrass: dryGrass!.detail, soil: soil!.detail, drySoil: drySoil!.detail, paved: (await texture(base, "gravel")).detail };
+  return { grass: grass!.detail, dryGrass: dryGrass!.detail, soil: soil!.detail, drySoil: drySoil!.detail, paved: (await texture(base, "asphalt")).detail };
 }
 
 /** fetch with backoff on rate limits and server errors (1 s, 2 s, 4 s). */
@@ -211,7 +211,10 @@ interface RoadPatterns {
   asphalt: CanvasPattern;
 }
 
-function drawRoads(ctx: Ctx, roads: MvtLayer, f: ToPx, w: (m: number) => number, mPerPx: number, pats?: RoadPatterns): void {
+/** Streets that get sidewalks in town. */
+const SIDEWALK = new Set(["primary", "secondary", "tertiary", "minor"]);
+
+function drawRoads(ctx: Ctx, roads: MvtLayer, f: ToPx, w: (m: number) => number, mPerPx: number, pats?: RoadPatterns, urban?: (geom: [number, number][][]) => boolean): void {
   const path = (_c: Ctx, rings: [number, number][][], g: ToPx) => trace(ctx, rings, g);
     // Verges/edges first, then surfaces, wider roads last so junctions read right.
     const list = roads.features.filter((ft) => ft.type === 2).map((ft) => {
@@ -230,9 +233,35 @@ function drawRoads(ctx: Ctx, roads: MvtLayer, f: ToPx, w: (m: number) => number,
         ctx.stroke();
         continue;
       }
-      ctx.strokeStyle = r.paved ? "rgba(70, 70, 68, 0.55)" : "rgba(120, 104, 82, 0.4)";
-      ctx.lineWidth = w(r.width + 1.6);
-      ctx.stroke();
+      // In town, up close: sidewalks (light concrete slabs) and a curb.
+      if (r.paved && mPerPx < 4 && SIDEWALK.has(r.cls) && urban?.(r.ft.geometry)) {
+        const sw = r.width + 2 * (r.cls === "minor" ? 2 : 3);
+        ctx.strokeStyle = "rgb(136, 134, 128)";
+        ctx.lineWidth = w(sw);
+        ctx.stroke();
+        if (pats && mPerPx < 1) {
+          const op = ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation = "soft-light";
+          ctx.strokeStyle = pats.gravel;
+          ctx.stroke();
+          ctx.globalCompositeOperation = op;
+        }
+        if (mPerPx < 0.5) {
+          // Slab joints across the walk every 1.5 m (dashes of a thin wide stroke).
+          ctx.setLineDash([w(0.06), w(1.44)]);
+          ctx.strokeStyle = "rgba(90, 88, 84, 0.5)";
+          ctx.lineWidth = w(sw - 0.4);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.strokeStyle = "rgb(168, 166, 160)";
+        ctx.lineWidth = w(r.width + 0.5);
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = r.paved ? "rgba(70, 70, 68, 0.55)" : "rgba(120, 104, 82, 0.4)";
+        ctx.lineWidth = w(r.width + 1.6);
+        ctx.stroke();
+      }
       ctx.strokeStyle = r.paved ? "rgb(108, 107, 104)" : "rgb(166, 148, 120)";
       ctx.lineWidth = w(r.width);
       ctx.stroke();
@@ -485,10 +514,38 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     return p;
   };
   const [trackT, gravelT, asphaltT] = roadTex;
-  if (roads) drawRoads(ctx, roads, toPx(roads.extent), w, mPerPx, { track: pattern(trackT!), gravel: pattern(gravelT!), asphalt: pattern(asphaltT!) });
+  // Whether a line runs mostly through built-up land (the cover raster, sampled along it).
+  const urbanIdx = COVERS.indexOf("urban") + 1;
+  const isUrban = (e: number) => (geom: [number, number][][]): boolean => {
+    let u = 0, n = 0;
+    const f = toPx(e);
+    for (const line of geom)
+      for (let i = 0; i + 1 < line.length; i++)
+        for (const t of [0.25, 0.5, 0.75]) {
+          const [px, py] = f(line[i]![0] + (line[i + 1]![0] - line[i]![0]) * t, line[i]![1] + (line[i + 1]![1] - line[i]![1]) * t);
+          if (px < 0 || py < 0 || px >= SIZE || py >= SIZE) continue;
+          n++;
+          const k = Math.floor(py) * SIZE + Math.floor(px);
+          if (cover[k] === urbanIdx) u++;
+        }
+    return n === 0 ? false : u / n > 0.5;
+  };
+  if (roads) drawRoads(ctx, roads, toPx(roads.extent), w, mPerPx, { track: pattern(trackT!), gravel: pattern(gravelT!), asphalt: pattern(asphaltT!) }, isUrban(roads.extent));
   const bld = layers.find((l) => l.name === "building");
   if (bld) {
     const f = toPx(bld.extent);
+    // Concrete aprons (paved walks) round town buildings, up close.
+    if (mPerPx < 4) {
+      ctx.lineJoin = "miter";
+      for (const ft of bld.features) {
+        if (ft.type !== 3) continue;
+        ctx.strokeStyle = "rgb(128, 126, 120)";
+        ctx.lineWidth = w(2.4);
+        path(ctx, ft.geometry, f);
+        ctx.stroke();
+      }
+      ctx.lineJoin = "round";
+    }
     const sdx = -Math.sin(az), sdy = Math.cos(az); // shadow direction in pixels (y down)
     for (const ft of bld.features) {
       if (ft.type !== 3) continue;

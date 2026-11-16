@@ -232,21 +232,40 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
         // Grass: blades (sub-metre), tufts (metres), patches (tens of metres); mean 1.
         f = 1 + (valueNoise(wx, wy, 0.7, 31) - 0.5) * (mPerPx < 0.8 ? 0.16 : 0.05) + (valueNoise(wx, wy, 4, 33) - 0.5) * 0.1 + (valueNoise(wx, wy, 35, 32) - 0.5) * 0.08;
       } else if (c === "urban" && tex) {
-        // Built-up ground between the buildings: lawns and gardens where the satellite is
-        // green, paved yards and lots elsewhere (pulled toward a concrete grey: the 10 m
-        // pixels there are a smear of roofs, walls and shadows).
+        // Built-up ground between the buildings: lawns where the satellite is green, paved
+        // yards and lots elsewhere. The 10 m pixels there are a smear of roofs, walls and
+        // shadows: up close (below ~3 m per pixel) lawn and paving get the colours they have
+        // at arm's length, and the edge between them is crisp and irregular (a metre-scale
+        // noise moves it), not a 10 m blur.
         const green = g - (r + b) / 2;
-        const t = Math.min(1, Math.max(0, (green - 2) / 10));
+        const near = Math.min(1, Math.max(0, (5.5 - mPerPx) / 3));
+        const edge = (valueNoise(wx, wy, 3.5, 91) - 0.5) * 10 + (valueNoise(wx, wy, 0.9, 92) - 0.5) * 3;
+        const soft = Math.min(1, Math.max(0, (green - 2) / 10));
+        const hard = green + edge > 1 ? 1 : 0;
+        const t = soft + (hard - soft) * near;
+        const dry = valueNoise(wx, wy, 60, 93);
         ts.at(wx, wy);
-        if (t > 0.02) ts.sample(tex.grass, gr);
+        if (t > 0.02) mixInto(ts, tex.grass, tex.dryGrass, dry * 0.7, ra, rb, gr);
         else gr[0] = gr[1] = gr[2] = 1;
-        if (t < 0.98) ts.sample(tex.paved, so);
-        else so[0] = so[1] = so[2] = 1;
+        if (t < 0.98) {
+          ts.sample(tex.paved, so);
+          // The asphalt photo has dark cracks and patches: half its contrast for yards.
+          for (let ch = 0; ch < 3; ch++) so[ch] = 1 + (so[ch]! - 1) * 0.45;
+        } else so[0] = so[1] = so[2] = 1;
         const lum = 0.3 * r + 0.59 * g + 0.11 * b;
-        const grey = Math.min(150, Math.max(92, lum)), pull = 0.55 * (1 - t) * Math.min(1, Math.max(0, (5 - mPerPx) / 3.5)); // eases in with zoom
-        r += (grey - r) * pull;
-        g += (grey - g) * pull;
-        b += (grey * 0.97 - b) * pull;
+        const k = Math.min(1.2, Math.max(0.8, lum / 105));
+        // Paving: concrete to asphalt grey in patches of tens of metres; worn lawn: grass
+        // with trodden soil showing through.
+        const pave = Math.min(150, Math.max(70, lum)) * (0.9 + 0.2 * valueNoise(wx, wy, 23, 94)) / k; // keeps the local tone (k is applied below)
+        const worn = Math.max(0, valueNoise(wx, wy, 6, 95) - 0.55) * 1.6;
+        const pull = 0.7 * Math.min(1, Math.max(0, (6 - mPerPx) / 3)); // eases in with zoom (none where tiles meet plain Sentinel-2)
+        for (let ch = 0; ch < 3; ch++) {
+          const grassC = (LUSH[ch]! + (DRY[ch]! - LUSH[ch]!) * dry * 0.7) * (1 - worn) + SOIL[ch]! * worn;
+          const target = (pave * (ch === 2 ? 0.97 : 1) + (grassC - pave * (ch === 2 ? 0.97 : 1)) * t) * k;
+          if (ch === 0) r += (target - r) * pull;
+          else if (ch === 1) g += (target - g) * pull;
+          else b += (target - b) * pull;
+        }
         tr = so[0]! + (gr[0]! - so[0]!) * t;
         tg = so[1]! + (gr[1]! - so[1]!) * t;
         tb = so[2]! + (gr[2]! - so[2]!) * t;
