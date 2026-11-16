@@ -87,6 +87,11 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   const scene = viewer.scene;
   // Ground colour while imagery streams in.
   scene.globe.baseColor = Color.fromCssColorString("#56703c");
+  // The ground hides what is below or behind it. Off (Cesium's default), the globe's depth is
+  // cleared before everything else is drawn, so buildings' walls below the ground (they reach
+  // 10 m down for slopes) showed as dark bands under every building, and hills did not hide
+  // what was behind them.
+  scene.globe.depthTestAgainstTerrain = true;
   // Sun-lit globe with atmosphere: haze towards the horizon, warm light at low sun.
   scene.highDynamicRange = opts.quality === "ultra";
   scene.globe.enableLighting = true;
