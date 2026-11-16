@@ -143,6 +143,17 @@ export class CloudLayer {
   private readonly layouts = new Map<string, { radiusM: number; puffs: Puff[] }>();
   private slots: Billboard[] = [];
   private lastSort = 0;
+  /**
+   * Every visible puff with its world position, kept between updates by "cloud id:puff
+   * index", so a sprite is rewritten only when what it shows changed (Cesium rewrites the
+   * vertex data of every billboard touched; rewriting all ~10k twice a second stalled frames).
+   */
+  private items: { key: string; pos: Cartesian3; size: number; opacity: number; puff: Puff; version: number }[] = [];
+  private readonly itemByKey = new Map<string, CloudLayer["items"][number]>();
+  private readonly slotItem: (CloudLayer["items"][number] | undefined)[] = [];
+  private readonly slotVersion: number[] = [];
+  private lookStamp = "";
+  private readonly lastCam = new Cartesian3();
 
   constructor(
     private readonly scene: Scene,
@@ -179,7 +190,33 @@ export class CloudLayer {
           show: false,
         }),
       );
-    this.lastSort = 0;
+    const next: CloudLayer["items"] = [];
+    const local = new Cartesian3();
+    for (const c of this.clouds) {
+      if (c.spec.size <= 0 || c.spec.opacity <= 0) continue;
+      c.puffs.forEach((p, k) => {
+        const key = `${c.spec.id}:${k}`;
+        Cartesian3.fromElements(p.e * c.spec.size, p.n * c.spec.size, p.u * c.spec.size, local);
+        const size = p.sizeM * c.spec.size;
+        let it = this.itemByKey.get(key);
+        if (!it) {
+          it = { key, pos: new Cartesian3(), size: -1, opacity: -1, puff: p, version: 0 };
+          this.itemByKey.set(key, it);
+        }
+        const pos = Matrix4.multiplyByPoint(c.enu, local, new Cartesian3());
+        if (it.puff !== p || it.size !== size || it.opacity !== c.spec.opacity || !Cartesian3.equalsEpsilon(it.pos, pos, 0, 0.01)) {
+          it.puff = p;
+          it.size = size;
+          it.opacity = c.spec.opacity;
+          Cartesian3.clone(pos, it.pos);
+          it.version++;
+        }
+        next.push(it);
+      });
+    }
+    const live = new Set(next.map((i) => i.key));
+    for (const k of this.itemByKey.keys()) if (!live.has(k)) this.itemByKey.delete(k);
+    this.items = next;
     this.sort(true);
   }
 
@@ -223,29 +260,36 @@ export class CloudLayer {
     return puffs;
   }
 
-  /** Back-to-front order relative to the camera (re-done at most twice a second). */
+  /**
+   * Back-to-front order relative to the camera: re-done at most twice a second and only when
+   * the camera has moved 20 m or more (or the clouds changed); a sprite is rewritten only if
+   * its puff, or that puff's position, size or opacity, or the light changed.
+   */
   private sort(force = false): void {
     const now = performance.now();
     if (!force && now - this.lastSort < 500) return;
-    this.lastSort = now;
     const cam = this.scene.camera.positionWC;
-    const items: { pos: Cartesian3; d: number; puff: Puff; size: number; opacity: number }[] = [];
-    for (const c of this.clouds) {
-      if (c.spec.size <= 0 || c.spec.opacity <= 0) continue;
-      for (const p of c.puffs) {
-        const local = new Cartesian3(p.e * c.spec.size, p.n * c.spec.size, p.u * c.spec.size);
-        const pos = Matrix4.multiplyByPoint(c.enu, local, new Cartesian3());
-        items.push({ pos, d: Cartesian3.distanceSquared(pos, cam), puff: p, size: p.sizeM * c.spec.size, opacity: c.spec.opacity });
-      }
-    }
-    items.sort((a, b) => b.d - a.d);
+    if (!force && Cartesian3.distanceSquared(cam, this.lastCam) < 400) return;
+    this.lastSort = now;
+    Cartesian3.clone(cam, this.lastCam);
+    const items = this.items;
+    const d = new Float64Array(items.length);
+    for (let i = 0; i < items.length; i++) d[i] = Cartesian3.distanceSquared(items[i]!.pos, cam);
+    const order = Array.from({ length: items.length }, (_, i) => i).sort((a, b) => d[b]! - d[a]!);
+    const look = LOOK.cloud.join(",");
+    const lookChanged = look !== this.lookStamp;
+    this.lookStamp = look;
     for (let i = 0; i < this.slots.length; i++) {
       const b = this.slots[i]!;
-      const it = items[i];
+      const it = i < order.length ? items[order[i]!] : undefined;
       if (!it) {
-        b.show = false;
+        if (this.slotItem[i] !== undefined) b.show = false;
+        this.slotItem[i] = undefined;
         continue;
       }
+      if (!lookChanged && this.slotItem[i] === it && this.slotVersion[i] === it.version) continue;
+      this.slotItem[i] = it;
+      this.slotVersion[i] = it.version;
       b.show = true;
       b.position = it.pos;
       if (this.slotTex[i] !== it.puff.tex) {
@@ -255,10 +299,10 @@ export class CloudLayer {
       const aspect = it.puff.aspect ?? 1.25;
       b.width = it.size * 2;
       b.height = (it.size * 2) / aspect;
-      b.color = Color.fromAlpha(it.puff.shade, 0.92 * it.opacity, b.color);
-      b.color.red *= LOOK.cloud[0]!;
-      b.color.green *= LOOK.cloud[1]!;
-      b.color.blue *= LOOK.cloud[2]!;
+      // A new value through the setter: changing `b.color` in place is never seen by Cesium
+      // (its setter compares against the same object), so the light's tint never reached it.
+      const sh = it.puff.shade;
+      b.color = new Color(sh.red * LOOK.cloud[0]!, sh.green * LOOK.cloud[1]!, sh.blue * LOOK.cloud[2]!, 0.92 * it.opacity);
     }
   }
 }

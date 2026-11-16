@@ -140,6 +140,10 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   viewer.clock.shouldAnimate = false;
   // The app drives the camera; keep Cesium's mouse handlers out of the way.
   scene.screenSpaceCameraController.enableInputs = false;
+  // Nor its terrain collision check: a height query on the ground tile every frame (a linear
+  // search over its triangles, ~3% of the main thread in a profile); camera.ts keeps the chase
+  // camera above the ground itself.
+  scene.screenSpaceCameraController.enableCollisionDetection = false;
   viewer.cesiumWidget.creditContainer.setAttribute("style", "opacity:0.55;font-size:10px");
   return viewer;
 }
