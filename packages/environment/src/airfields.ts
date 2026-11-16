@@ -154,7 +154,10 @@ export const HOME_AIRFIELD = { ident: "RO-0010", latDeg: 45.699386, lonDeg: 25.5
 
 /** Airfield data tiles (zoom-7 Web Mercator, ~200–300 km in Europe). */
 export const AIRFIELD_TILE_ZOOM = 7;
-const DATA = new URL("../data/airfields/", import.meta.url);
+// Next to the code (Node, Vite dev) or the bundle (built site: assets/ → data/airfields/, copied
+// there by the web app's build). Not a string literal, or Vite would rewrite it as an asset.
+const DATA_DIR = "../data/airfields/";
+const DATA = new URL(DATA_DIR, import.meta.url);
 
 async function readJson(path: string): Promise<unknown> {
   const u = new URL(path, DATA);

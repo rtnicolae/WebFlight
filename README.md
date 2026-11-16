@@ -34,6 +34,17 @@ pnpm dev           # http://localhost:5173: title screen; or deep-link ?field=RO
 
 The FGAddon cache location can be overridden with `WEBFLIGHT_FGADDON_CACHE`.
 
+## Hosting (GitHub Pages)
+
+`.github/workflows/pages.yml` builds the site on every push to the default branch and
+publishes it at `https://<owner>.github.io/<repo>/` (here: https://rtnicolae.github.io/WebFlight/).
+It downloads and converts the FlightGear aircraft at build time (GPL data, never committed).
+One-time setup: make the repository public (Pages on private repositories needs a paid plan),
+then Settings → Pages → Source: **GitHub Actions**, and re-run the workflow (Actions → Pages →
+Run workflow). Locally: `BASE_PATH=/WebFlight/ pnpm build` builds for that sub-path.
+Pages cannot send cross-origin isolation headers, so the flight model hands its state to the
+page by message instead of shared memory (same behaviour, slightly more overhead).
+
 See `docs/glider-inventory.md` for the gliders available, `docs/milestone-1.md`,
 `docs/milestone-2.md`, `docs/milestone-3.md`, `docs/milestone-4.md`, `docs/milestone-5.md`, `docs/milestone-6.md` and `docs/look.md` for results and findings, and `LICENSES.md`
 for licensing.

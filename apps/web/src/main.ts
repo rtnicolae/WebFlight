@@ -169,8 +169,8 @@ async function main(): Promise<void> {
   send({
     type: "init",
     bundleUrl: BUNDLE,
-    jsbsimModuleUrl: new URL("/jsbsim/jsbsim_wasm.mjs", location.href).href,
-    jsbsimWasmUrl: new URL("/jsbsim/jsbsim_wasm.wasm", location.href).href,
+    jsbsimModuleUrl: new URL(`${import.meta.env.BASE_URL}jsbsim/jsbsim_wasm.mjs`, location.href).href,
+    jsbsimWasmUrl: new URL(`${import.meta.env.BASE_URL}jsbsim/jsbsim_wasm.wasm`, location.href).href,
     rateHz: 120,
     // FG properties for the animations plus what the HUD shows.
     extraProperties: [...aircraft.snapshotProperties, "fcs/speedbrake-pos-norm", "/controls/flight/elevator-trim", "/instrumentation/ilec-sc7/te-reading-mps", ...(LAUNCH ? LAUNCH_PROPERTIES : [])],

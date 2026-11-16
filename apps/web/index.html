@@ -6,7 +6,7 @@
     <title>WebFlight</title>
     <script>
       // Cesium loads its workers and assets from here (served raw by vite.config.ts).
-      window.CESIUM_BASE_URL = "/cesium/";
+      window.CESIUM_BASE_URL = new URL("cesium/", location.href).href; // relative: works under a sub-path (GitHub Pages)
     </script>
   </head>
   <body>

@@ -51,5 +51,5 @@ for (let j = 0; j < n; j++)
           ctx.drawImage(b, (x - (x >> d) * s) * src, (y - (y >> d) * s) * src, src, src, 0, 0, 256, 256);
           if (++done === n * n) document.title = "done";
         });
-    } else w.postMessage({ id, x, y, z, s2Url: S2, osmUrl, texUrl: new URL("/textures/", location.href).href, sun: { azimuthDeg: 220, elevationDeg: 45 } } satisfies DetailRequest);
+    } else w.postMessage({ id, x, y, z, s2Url: S2, osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: { azimuthDeg: 220, elevationDeg: 45 } } satisfies DetailRequest);
   }

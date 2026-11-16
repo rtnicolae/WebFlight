@@ -54,7 +54,17 @@ function rawStatic(mounts: Record<string, string>): Plugin {
 export default defineConfig({
   // Aircraft bundles (pnpm bundle:ask21) are generated, GPL-licensed data: served from
 // apps/web/bundles, never committed.
-  plugins: [rawStatic({ "/cesium": cesiumDir, "/jsbsim": jsbsimWasmDir, "/bundles": path.resolve(path.dirname(new URL(import.meta.url).pathname), "bundles") })],
+  // Served from a sub-path on GitHub Pages (BASE_PATH=/<repo>/); "/" in development.
+  base: process.env.BASE_PATH ?? "/",
+  plugins: [
+    rawStatic({
+      "/cesium": cesiumDir,
+      "/jsbsim": jsbsimWasmDir,
+      "/bundles": path.resolve(path.dirname(new URL(import.meta.url).pathname), "bundles"),
+      // Airfield data: read relative to the bundled code (assets/ → ../data/airfields/).
+      "/data/airfields": path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../packages/environment/data/airfields"),
+    }),
+  ],
   server: { headers: isolation, port: 5173 },
   preview: { headers: isolation, port: 4173 },
   worker: { format: "es" },
