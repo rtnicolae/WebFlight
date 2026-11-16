@@ -159,7 +159,7 @@ export class DetailImageryProvider {
   // layer only applies on detailed terrain (minimumTerrainLevel).
   readonly minimumLevel = 0;
   // Down to ~5 cm per pixel under a glider standing on the field.
-  readonly maximumLevel = 21;
+  readonly maximumLevel = 20;
   readonly tileDiscardPolicy = undefined;
   readonly errorEvent = new Event();
   readonly credit = new Credit("Ground detail synthesized from Sentinel-2 and © OpenStreetMap contributors");
@@ -192,9 +192,8 @@ export class DetailImageryProvider {
           // not composed again.
           this.cache.set(p.key, ev.data.bitmap);
           if (this.cache.size > 500) {
-            const k = this.cache.keys().next().value!;
-            this.cache.get(k)?.close();
-            this.cache.delete(k);
+            // Not closed: Cesium may not have made its texture from it yet.
+            this.cache.delete(this.cache.keys().next().value!);
           }
           p.resolve(ev.data.bitmap);
         } else p.reject(new Error(ev.data.error ?? "detail failed"));

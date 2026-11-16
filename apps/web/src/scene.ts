@@ -112,8 +112,7 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   if ((opts.sharpen ?? 0) > 0) scene.postProcessStages.add(new PostProcessStage({ fragmentShader: SHARPEN_FS, uniforms: { sharpness: Math.min(1, opts.sharpen!) } }));
   if (opts.shadows) {
     const sm = scene.shadowMap;
-    // Soft (PCF) shadows filter every shadow lookup on every lit pixel, ground included: Ultra only.
-    sm.softShadows = opts.quality === "ultra";
+    sm.softShadows = true;
     sm.size = 2048;
     sm.maximumDistance = 800;
     sm.darkness = 0.35;
@@ -198,8 +197,8 @@ export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProv
   p.getTileDataAvailable = (_x: number, _y: number, level: number) => level <= MAX_TERRAIN_LEVEL;
   return p;
 }
-/** Deepest terrain level (~10 m tiles at 45° N; the imagery stops at 21). */
-export const MAX_TERRAIN_LEVEL = 22;
+/** Deepest terrain level (~55 m tiles at 45° N, a vertex every 0.8 m). Each level deeper quadruples the tiles to load near the camera. */
+export const MAX_TERRAIN_LEVEL = 19;
 
 /**
  * A cumulus over each thermal (sprite clouds, clouds.ts): flat base at the thermal's cloud

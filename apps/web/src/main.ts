@@ -34,14 +34,15 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
- *   sharpen=0..1      contrast-adaptive sharpening (default 0.7; 0 on low)
- *   dynres=0          fixed resolution (default: lowered to keep ≥ 40 fps, down to 60%)
+ *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
+ *   dynres=1          lower the resolution to keep ≥ 40 fps, down to 60% (default: fixed)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
  */
 const AIR_START = params.has("lat") && params.has("lon");
 const LAUNCH = AIR_START ? undefined : params.get("launch") === "winch" ? "winch" : "aerotow";
 const SEED = Number(params.get("seed") ?? 1);
-const DYNRES = params.get("dynres") !== "0";
+// Off by default: every change of scale makes Cesium re-pick ground tiles (popping, reloads).
+const DYNRES = params.get("dynres") === "1";
 const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
 const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
 
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
 
   // The renderer draws the same Terrarium heights the worker flies on.
   const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
-  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: params.has("sharpen") ? Number(params.get("sharpen")) : QUALITY === "low" ? 0 : 0.7 });
+  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: params.has("sharpen") ? Number(params.get("sharpen")) : 0 });
   const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
   // 30 m strip is a smudge) draw ours.
