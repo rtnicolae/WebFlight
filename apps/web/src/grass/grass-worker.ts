@@ -182,7 +182,8 @@ async function build(q: GrassRequest): Promise<GrassResult> {
     // Blade colours from the satellite colour, brought up to the textured ground's tone (the
     // 10 m pixel averages in soil and shadow): base about the ground, tips lighter.
     const v = 0.9 + 0.2 * r();
-    const gR = Math.min(255, R * 1.15 * v), gG = Math.min(255, G * 1.25 * v), gB = Math.min(255, B * 0.95 * v);
+    // Towards the near-ground grass colour of the textured ground (detail/synth.ts LUSH).
+    const gR = (R * 1.15 * 0.4 + 98 * 0.6) * v, gG = (G * 1.25 * 0.4 + 128 * 0.6) * v, gB = (B * 0.95 * 0.4 + 56 * 0.6) * v;
     const BL = short ? 4 : 5;
     for (let b = 0; b < BL; b++) {
       const a = rot + (b * Math.PI * 2) / BL + (r() - 0.5) * 0.8;

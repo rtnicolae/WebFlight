@@ -109,3 +109,9 @@ From the glider at 220 m:
   shader multiplies each building's own colour by a photo detail map (plaster, clay tiles,
   bitumen; fading out by 260 m, as they have no mipmaps) and draws windows from the wall
   coordinates (2.8 m apart, 2.7 m floors, frames, mullion, sky-tinted glass with a sun glint).
+- **Relief and colour up close**: the ground textures' height maps give each sample a slope;
+  the detail tiles shade it by the sun (a slope rising towards the sun is darker), at true
+  scale and in the ×16 layer, so grass and soil have lit and shaded sides instead of a flat
+  print. Below 2 m per pixel the satellite's dark average eases towards the colours grass
+  and soil have at arm's length (the 3D blades use the same). Building walls and roofs are
+  embossed from their photos, and windows are recessed (lintel and reveal shadow, sill).

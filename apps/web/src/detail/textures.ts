@@ -14,6 +14,39 @@ export interface DetailTexture {
   size: number;
   /** Per level: RGB ratios to the mean, size>>level squared. */
   levels: Float32Array[];
+  /**
+   * Per level: the surface slope (dh/du, dh/dv, dimensionless: metres of height per metre
+   * of ground) from the texture's height map, for relief shading by the sun.
+   */
+  slopes?: Float32Array[];
+}
+
+/**
+ * Add relief from a height map (values 0–255, any square size, covering the same repeat;
+ * `heightM` = real height of the full range).
+ */
+export function addRelief(t: DetailTexture, height: Uint8ClampedArray, hSize: number, heightM: number): void {
+  // Height at level-0 resolution of the pyramid (nearest from the height map), then box-filtered.
+  let s = t.size;
+  let h = new Float32Array(s * s);
+  for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) h[y * s + x] = (height[(Math.floor((y * hSize) / s) * hSize + Math.floor((x * hSize) / s)) * 4]! / 255) * heightM;
+  t.slopes = [];
+  for (let level = 0; level < t.levels.length; level++) {
+    const texel = t.meters / s;
+    const g = new Float32Array(s * s * 2);
+    for (let y = 0; y < s; y++)
+      for (let x = 0; x < s; x++) {
+        const xm = (x + s - 1) % s, xp = (x + 1) % s, ym = (y + s - 1) % s, yp = (y + 1) % s;
+        g[(y * s + x) * 2] = (h[y * s + xp]! - h[y * s + xm]!) / (2 * texel);
+        g[(y * s + x) * 2 + 1] = (h[yp * s + x]! - h[ym * s + x]!) / (2 * texel);
+      }
+    t.slopes.push(g);
+    if (s === 1) break;
+    const n = s >> 1, nh = new Float32Array(n * n);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) nh[y * n + x] = (h[2 * y * s + 2 * x]! + h[2 * y * s + 2 * x + 1]! + h[(2 * y + 1) * s + 2 * x]! + h[(2 * y + 1) * s + 2 * x + 1]!) / 4;
+    h = nh;
+    s = n;
+  }
 }
 
 export function buildDetailTexture(rgba: Uint8ClampedArray, size: number, meters: number): DetailTexture {
@@ -79,7 +112,9 @@ const MACRO = 16;
  * glider heights, so the averaged levels vary by only 2–5 %; the gains make it 10–15 %.
  * Applied to brightness, with a little of the photo's colour, so the satellite hue stays.
  */
-const MICRO_GAIN = 2.5, MACRO_GAIN = 3, CHROMA = 0.3;
+const MICRO_GAIN = 2.5, MACRO_GAIN = 3, CHROMA = 0.6;
+/** Relief strength: the true-scale bumps, and the ×16 layer (gentle undulation of fields). */
+const RELIEF_MICRO = 1.6, RELIEF_MACRO = 0.6;
 
 /** Smooth value noise in [0, 1) (cell s) for blending the texture samples. */
 function noise(x: number, y: number, s: number, salt: number): number {
@@ -124,7 +159,16 @@ export class TileSampler {
 
   /** Macro gain: full from altitude, gentle close up where the true-scale grain shows. */
   private readonly macroGain: number;
-  constructor(private readonly mPerPx: number) {
+  /** Sun for relief: horizontal direction towards it in each sample's texture space, × cot(elevation). */
+  private readonly sunT: [number, number][];
+  private relief = 0;
+  /** sun: unit horizontal direction towards the sun (east, north) and cot(elevation) (≤ ~1.5). */
+  constructor(
+    private readonly mPerPx: number,
+    sun?: { x: number; y: number; low: number },
+  ) {
+    // Sample i reads the texture at (u, v) = (x', −y') with (x', y') = R_i(world).
+    this.sunT = R.map(([c, s]) => (sun ? [(sun.x * c - sun.y * s) * sun.low, -(sun.x * s + sun.y * c) * sun.low] : [0, 0]));
     this.macroGain = 1.2 + (MACRO_GAIN - 1.2) * Math.min(1, Math.max(0, (mPerPx - 0.1) / 0.3));
   }
 
@@ -162,20 +206,33 @@ export class TileSampler {
   /** The detail ratio of texture t at the current point, into out. */
   sample(t: DetailTexture, out: Float32Array): void {
     const e = this.levels(t);
-    const one = (lev: [Float32Array, number] | undefined, meters: number, x1: number, y1: number, x2: number, y2: number, w: number, k: number, dst: Float32Array) => {
+    const lvIndex = (lev: [Float32Array, number]) => Math.round(Math.log2(t.size / lev[1]));
+    const one = (lev: [Float32Array, number] | undefined, meters: number, x1: number, y1: number, x2: number, y2: number, w: number, k: number, dst: Float32Array, r1: number, r2: number): number => {
       if (!lev) {
         dst[0] = dst[1] = dst[2] = 1;
-        return;
+        return 0;
       }
       // Texture v grows southwards (image rows), world y northwards.
-      lookup(lev[0], lev[1], x1 / meters, -y1 / meters, this.a);
-      lookup(lev[0], lev[1], x2 / meters, -y2 / meters, this.b);
+      const u1 = x1 / meters, v1 = -y1 / meters, u2 = x2 / meters, v2 = -y2 / meters;
+      lookup(lev[0], lev[1], u1, v1, this.a);
+      lookup(lev[0], lev[1], u2, v2, this.b);
       for (let c = 0; c < 3; c++) dst[c] = 1 + ((this.a[c]! - 1) * (1 - w) + (this.b[c]! - 1) * w) * k;
+      // Relief: a slope rising towards the sun faces away from it (n·L ≈ 1 − ∇h·s·cot el).
+      const sl = t.slopes?.[lvIndex(lev)];
+      if (!sl) return 0;
+      const s = lev[1];
+      const at = (u: number, v: number, sun: [number, number]) => {
+        const i = ((Math.floor((v - Math.floor(v)) * s) % s) * s + (Math.floor((u - Math.floor(u)) * s) % s)) * 2;
+        return sl[i]! * sun[0] + sl[i + 1]! * sun[1];
+      };
+      return -(at(u1, v1, this.sunT[r1]!) * (1 - w) + at(u2, v2, this.sunT[r2]!) * w);
     };
-    one(e.micro, t.meters, this.m1x, this.m1y, this.m2x, this.m2y, this.wm, this.km, this.mic);
-    one(e.macro, t.meters * MACRO, this.M1x, this.M1y, this.M2x, this.M2y, this.wM, this.kM, this.mac);
+    const rm = one(e.micro, t.meters, this.m1x, this.m1y, this.m2x, this.m2y, this.wm, this.km, this.mic, 0, 1);
+    const rM = one(e.macro, t.meters * MACRO, this.M1x, this.M1y, this.M2x, this.M2y, this.wM, this.kM, this.mac, 2, 3);
+    // Sunlit and shaded sides of the bumps (clamped: no black holes, no blown highlights).
+    this.relief = Math.max(-0.45, Math.min(0.6, rm * RELIEF_MICRO)) + Math.max(-0.3, Math.min(0.35, rM * RELIEF_MACRO));
     const lm = (this.mic[0]! + this.mic[1]! + this.mic[2]!) / 3, lM = (this.mac[0]! + this.mac[1]! + this.mac[2]!) / 3;
-    const L = (1 + (lm - 1) * MICRO_GAIN) * (1 + (lM - 1) * this.macroGain);
+    const L = (1 + (lm - 1) * MICRO_GAIN) * (1 + (lM - 1) * this.macroGain) * (1 + this.relief);
     for (let c = 0; c < 3; c++) out[c] = Math.max(0.3, L * (1 + (this.mic[c]! - lm) * CHROMA));
   }
 }
@@ -184,12 +241,13 @@ export class TileSampler {
 export const TEXTURES = {
   // About true scale (the photos cover ~2–3 m), for the ground under the wheels; the ×16
   // macro layer (~40 m) carries the look from altitude.
-  grass: { file: "leafy_grass.jpg", meters: 2.4 },
-  dryGrass: { file: "grass_ground.jpg", meters: 2.8 },
-  soil: { file: "farm_soil.jpg", meters: 2.2 },
-  drySoil: { file: "dry_mud_field_001.jpg", meters: 3 },
-  track: { file: "aerial_mud_1.jpg", meters: 8 },
-  gravel: { file: "gravel_road.jpg", meters: 4 },
-  asphalt: { file: "aerial_asphalt_01.jpg", meters: 30 },
+  // height: the height map (…_h.jpg) and the real height of its full range [m].
+  grass: { file: "leafy_grass.jpg", meters: 2.4, height: { file: "leafy_grass_h.jpg", m: 0.07 } },
+  dryGrass: { file: "grass_ground.jpg", meters: 2.8, height: { file: "grass_ground_h.jpg", m: 0.05 } },
+  soil: { file: "farm_soil.jpg", meters: 2.2, height: { file: "farm_soil_h.jpg", m: 0.09 } },
+  drySoil: { file: "dry_mud_field_001.jpg", meters: 3, height: { file: "dry_mud_field_001_h.jpg", m: 0.05 } },
+  track: { file: "aerial_mud_1.jpg", meters: 8, height: undefined },
+  gravel: { file: "gravel_road.jpg", meters: 4, height: { file: "gravel_road_h.jpg", m: 0.03 } },
+  asphalt: { file: "aerial_asphalt_01.jpg", meters: 30, height: undefined },
 } as const;
 export type TextureRole = keyof typeof TEXTURES;

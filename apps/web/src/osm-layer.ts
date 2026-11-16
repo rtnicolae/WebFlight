@@ -77,8 +77,8 @@ void main() {
   czm_materialInput mi;
   mi.str = v_uvm;
   mi.positionToEyeEC = -v_positionEC;
-  vec3 detail = czm_getMaterial(mi).diffuse;
-  vec3 base = v_color.rgb * detail;
+  czm_material mat = czm_getMaterial(mi);
+  vec3 base = v_color.rgb * mat.diffuse * (1.0 + clamp(mat.shininess, -0.35, 0.45));
   float spec = 0.0;
   if (v_uvm.z < 0.5 && v_uvm.y > 0.0) {
     vec2 w = vec2(fract(v_uvm.x / 2.8), fract(v_uvm.y / 2.7));
@@ -88,7 +88,12 @@ void main() {
       float far = smoothstep(500.0, 1500.0, d);
       // Glass: dark interior under a reflection of the sky.
       vec3 glass = vec3(0.20, 0.25, 0.31) + 0.10 * vec3(0.6, 0.75, 0.95) * fract(sin(dot(floor(v_uvm.xy / vec2(2.8, 2.7)), vec2(12.9898, 78.233))) * 43758.5453);
+      // Recessed: the lintel shades the top of the pane, the reveal one side.
+      float topDist = (hi.y - w.y) * 2.7, sideDist = (w.x - lo.x) * 2.8;
+      glass *= 0.55 + 0.45 * smoothstep(0.07, 0.30, topDist) * smoothstep(0.07, 0.16, sideDist);
       vec3 win = min(e.x, e.y) < 0.07 ? vec3(0.86, 0.85, 0.82) : glass;
+      // A sill catching the light under the window.
+      if ((w.y - lo.y) * 2.7 < 0.05) win = vec3(0.93, 0.92, 0.9);
       // A mullion down the middle.
       if (abs(w.x - 0.5) < 0.012) win = vec3(0.86, 0.85, 0.82);
       base = mix(win, base, far);
@@ -123,6 +128,11 @@ function material(): Material {
         vec3 dtl = t * (255.0 / 128.0);
         if (k < 1.5) dtl = mix(vec3(1.0), dtl, 0.6);
         m.diffuse = mix(dtl, vec3(1.0), far);
+        // Relief: emboss from the photo's brightness a few centimetres further up (light
+        // comes from above: the upper edges of tiles and bumps catch it). In m.shininess.
+        vec2 up = mi.str.xy + vec2(0.0, k < 1.5 ? 0.02 : 0.05);
+        vec3 t2 = k < 1.5 ? texture(wall, fract(up / 2.0)).rgb : k < 2.5 ? texture(tiles, fract(up / 4.0)).rgb : texture(flat, fract(up / 12.0)).rgb;
+        m.shininess = (dot(t - t2, vec3(0.333)) * (k < 1.5 ? 1.5 : 3.0)) * (1.0 - far);
         return m;
       }`,
     },

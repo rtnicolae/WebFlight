@@ -156,6 +156,10 @@ export interface GroundTextures {
   paved: DetailTexture;
 }
 
+/** Near-ground colours: summer grass, dry grass, bare soil; and how far they replace the satellite's. */
+export const LUSH = [98, 128, 56], DRY = [142, 136, 78], SOIL = [124, 100, 74];
+export const NEAR_COLOUR = 0.6;
+
 /** Lush/dry blend of two textures at the sampler's current point into out. */
 function mixInto(ts: TileSampler, lush: DetailTexture, dryT: DetailTexture, dry: number, a: Float32Array, b: Float32Array, out: Float32Array): void {
   if (dry < 0.08) return ts.sample(lush, out);
@@ -167,7 +171,7 @@ function mixInto(ts: TileSampler, lush: DetailTexture, dryT: DetailTexture, dry:
 
 export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8Array, tex?: GroundTextures, smooth?: Uint8ClampedArray): void {
   const ra = new Float32Array(3), rb = new Float32Array(3);
-  const ts = new TileSampler(o.mPerPx);
+  const ts = new TileSampler(o.mPerPx, { x: o.sunX, y: o.sunY, low: o.sunLow });
   const gr = new Float32Array(3), so = new Float32Array(3);
   const { size, mPerPx } = o;
   for (let j = 0; j < size; j++) {
@@ -203,6 +207,20 @@ export function synthesize(px: Uint8ClampedArray, o: SynthOptions, cover?: Uint8
         tr = so[0]! + (gr[0]! - so[0]!) * t;
         tg = so[1]! + (gr[1]! - so[1]!) * t;
         tb = so[2]! + (gr[2]! - so[2]!) * t;
+        // Close to the ground the satellite's dark, hazy average gives way to the colours
+        // grass and soil have at arm's length (eases in below 2 m per pixel, so zoom levels
+        // blend into each other); the satellite still modulates it.
+        const near = NEAR_COLOUR * Math.min(1, Math.max(0, (2 - mPerPx) / 1.7));
+        if (near > 0) {
+          const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 70; // relative to a typical field
+          const k = Math.min(1.25, Math.max(0.75, lum));
+          for (let ch = 0; ch < 3; ch++) {
+            const grassC = LUSH[ch]! + (DRY[ch]! - LUSH[ch]!) * dry, target = (SOIL[ch]! + (grassC - SOIL[ch]!) * t) * k;
+            if (ch === 0) r += (target - r) * near;
+            else if (ch === 1) g += (target - g) * near;
+            else b += (target - b) * near;
+          }
+        }
       } else if (c === "crop") {
         // (value noise averages 0.5: every factor here averages 1, so tones match Sentinel-2.)
         f = (1 + (valueNoise(wx, wy, 1.2, 8) - 0.5) * (mPerPx < 1 ? 0.1 : 0.04)) * (1 + (valueNoise(wx, wy, 7, 9) - 0.5) * 0.06);

@@ -8,7 +8,7 @@
 import { airfieldsAround, bearingDeg, designatorDeg } from "@webflight/environment";
 import { decodeMvt, type MvtLayer } from "@webflight/scenery";
 import { edgeAwareUpsample, synthesize, hash2, COVERS, type Cover, type GroundTextures } from "./synth.ts";
-import { buildDetailTexture, TEXTURES, type DetailTexture, type TextureRole } from "./textures.ts";
+import { addRelief, buildDetailTexture, TEXTURES, type DetailTexture, type TextureRole } from "./textures.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -78,6 +78,16 @@ function texture(base: string, role: TextureRole): Promise<LoadedTexture> {
       const c = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
       c.drawImage(bitmap, 0, 0);
       const detail = buildDetailTexture(c.getImageData(0, 0, bitmap.width, bitmap.height).data, bitmap.width, TEXTURES[role].meters);
+      const hm = TEXTURES[role].height;
+      if (hm) {
+        const hr = await fetch(base + hm.file);
+        if (hr.ok) {
+          const hb = await createImageBitmap(await hr.blob());
+          const hc = new OffscreenCanvas(hb.width, hb.height).getContext("2d")!;
+          hc.drawImage(hb, 0, 0);
+          addRelief(detail, hc.getImageData(0, 0, hb.width, hb.height).data, hb.width, hm.m);
+        }
+      }
       const img = new ImageData(detail.size, detail.size);
       const l0 = detail.levels[0]!;
       for (let i = 0; i < detail.size * detail.size; i++) {
