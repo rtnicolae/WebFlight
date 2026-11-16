@@ -4,8 +4,9 @@
  * Cesium picks each ground tile's level of detail from its distance to the camera and loads
  * only what the camera sees, so orbiting or zooming the view reloads and re-levels the ground.
  * Here the distance is measured from the glider instead, and tiles within `radiusM` of it
- * count as visible whichever way the camera points: the ground near the glider is loaded once
- * and stays as it is while the camera moves.
+ * count as visible whichever way the camera points (selected and loaded, but only drawn when
+ * the camera really sees them): the ground near the glider is loaded once and stays as it is
+ * while the camera moves.
  *
  * This wraps two methods of Cesium's (private) globe tile provider; if a Cesium update
  * removes them, the globe falls back to its normal camera-based behaviour.
@@ -19,6 +20,7 @@ interface Provider {
   computeDistanceToTile(tile: TileLike, frameState: object): number;
   computeTileVisibility(tile: TileLike, frameState: object, occluders: unknown): number;
   computeTileLoadPriority?(tile: TileLike, frameState: object): number;
+  showTileThisFrame?(tile: TileLike, frameState: object): void;
 }
 
 /** Ground detail is as Cesium would choose it up to here [m]; beyond, distances count this many times. */
@@ -54,13 +56,24 @@ export function pinGroundToGlider(viewer: Viewer, radiusM = 30_000): (latDeg: nu
   const visibility = provider.computeTileVisibility.bind(provider);
   provider.computeTileVisibility = (tile, fs, occluders) => {
     const v = visibility(tile, fs, occluders);
+    hidden.delete(tile);
     if (v !== VISIBILITY_NONE || !set) return v;
     // Outside the view: still wanted if any part of it is within the radius of the glider.
     const r = tile.rectangle;
     const lat = Math.min(r.north, Math.max(r.south, carto.latitude)), lon = Math.min(r.east, Math.max(r.west, carto.longitude));
     const dy = (lat - carto.latitude) * R_EARTH, dx = (lon - carto.longitude) * R_EARTH * Math.cos(carto.latitude);
-    return dx * dx + dy * dy < radiusM * radiusM ? VISIBILITY_PARTIAL : v;
+    if (dx * dx + dy * dy >= radiusM * radiusM) return v;
+    hidden.add(tile);
+    return VISIBILITY_PARTIAL;
   };
+  // Tiles kept only because they are near the glider are selected and loaded like any other,
+  // but not drawn: the camera does not see them, and drawing them cost frames.
+  const hidden = new WeakSet<object>();
+  const show = provider.showTileThisFrame?.bind(provider);
+  if (show)
+    provider.showTileThisFrame = (tile, fs) => {
+      if (!hidden.has(tile)) show(tile, fs);
+    };
   // Load order: nearest to the glider first (Cesium's order favours what the camera faces,
   // and with everything around the glider wanted, far tiles would hold up the ground under it).
   // Tiles in view go a little ahead of those behind the camera at the same distance.
