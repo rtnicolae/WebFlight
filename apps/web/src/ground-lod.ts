@@ -24,7 +24,7 @@ interface Provider {
 }
 
 /** Ground detail is as Cesium would choose it up to here [m]; beyond, distances count this many times. */
-const FULL_DETAIL_M = 2500, FAR_COARSENING = 3;
+const FULL_DETAIL_M = Infinity, FAR_COARSENING = 1; // no coarsening: it kept near ground coarse
 const VISIBILITY_NONE = -1, VISIBILITY_PARTIAL = 0;
 const R_EARTH = 6_371_000;
 

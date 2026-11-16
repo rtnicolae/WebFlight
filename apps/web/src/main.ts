@@ -105,8 +105,8 @@ async function main(): Promise<void> {
   const hud = new Hud(document.getElementById("hud")!);
   const cam = new ChaseCamera(viewer.camera, manifest.views.cockpit);
   cam.groundAt = (lat, lon) => renderTerrain.heightAt(lat, lon);
-  // ?pin=0 off, ?pin=<metres> radius (default 30 km).
-  const pinGround = params.get("pin") === "0" ? () => {} : pinGroundToGlider(viewer, Number(params.get("pin")) || 30_000);
+  // ?pin=0 off, ?pin=<metres> radius (default 3 km: 30 km took minutes to load and left coarse ground near the glider).
+  const pinGround = params.get("pin") === "0" ? () => {} : pinGroundToGlider(viewer, Number(params.get("pin")) || 3000);
   if (params.get("view") === "cockpit") cam.toggle();
 
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });

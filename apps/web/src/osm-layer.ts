@@ -138,7 +138,9 @@ void main() {
     base *= mix(1.0, 0.86 + 0.14 * smoothstep(0.0, 2.5, v), detail);
     base *= 1.0 - (brick ? 0.05 : 0.10) * detail * smoothstep(0.55, 0.95, streak);
     // Plinth: a stone/render base course.
-    if (v < 0.55) base = mix(base, vec3(0.42, 0.41, 0.39) * (0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), detail * 0.85);
+    // Below the ground (the walls go 10 m down for slopes): earth, if coarse terrain shows it.
+    if (v < -0.05) base = vec3(0.22, 0.2, 0.16);
+    else if (v < 0.55) base = mix(base, vec3(0.42, 0.41, 0.39) * (0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), detail * 0.85);
     // Contact shadow at the foot, eave shadow under the roof (houses).
     base *= mix(1.0, 0.72 + 0.28 * smoothstep(0.0, 0.9, v), detail);
     if (!block) base *= mix(1.0, 0.68 + 0.32 * smoothstep(0.0, 0.7, wallH - v), detail);
