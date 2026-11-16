@@ -115,3 +115,9 @@ From the glider at 220 m:
   print. Below 2 m per pixel the satellite's dark average eases towards the colours grass
   and soil have at arm's length (the 3D blades use the same). Building walls and roofs are
   embossed from their photos, and windows are recessed (lintel and reveal shadow, sill).
+- **Facades** are generated in the shader from each wall's coordinates, its building's wall
+  height and a style seed: houses get a plinth, floor bands, recessed windows with frames and
+  sills, shutters on some, doors on the ground floor and an eave shadow; blocks get precast
+  panel joints or banded plaster and shop fronts; all get a contact shadow, grime under the
+  sills and rain streaks. Flat roofs: bitumen membrane (with seams) or gravel, two rotated
+  samples mixed by noise and large stains, a parapet with coping, and metal rooftop units.

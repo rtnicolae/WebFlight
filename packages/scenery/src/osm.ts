@@ -135,8 +135,10 @@ export interface Mesh {
   colors: Uint8Array;
   indices: Uint32Array;
   /**
-   * Per vertex: texture u, v [m] and a material: 0 wall with windows, 1 plain wall,
-   * 2 tiled roof, 3 flat roof (buildings; zero elsewhere).
+   * Per vertex (4 floats): texture u, v [m]; material + style seed (integer part: 0 wall with
+   * windows, 1 plain wall, 2 tiled roof, 3 bitumen roof, 4 gravel roof, 5 concrete coping,
+   * 6 metal rooftop unit; fraction: the building's style seed in [0, 0.99)); and the
+   * building's wall height [m] (facade details need to know where the wall ends).
    */
   uvm: Float32Array;
 }
@@ -151,6 +153,9 @@ class MeshBuilder {
   u = 0;
   v = 0;
   mat = 0;
+  /** Style seed of the current building [0, 0.99) and its wall height [m]. */
+  seed = 0;
+  wallH = 0;
   get count() {
     return this.p.length / 3;
   }
@@ -158,7 +163,7 @@ class MeshBuilder {
     this.p.push(x, y, z);
     this.nrm.push(nx, ny, nz);
     this.c.push(col[0]!, col[1]!, col[2]!, 255);
-    this.t.push(this.u, this.v, this.mat);
+    this.t.push(this.u, this.v, this.mat + this.seed, this.wallH);
     return this.count - 1;
   }
   tri(a: number, b: number, c: number) {
@@ -211,7 +216,7 @@ const WALLS = [[236, 230, 216], [228, 218, 196], [240, 236, 228], [222, 204, 176
 /** Pitched roofs: clay tiles, weathered tiles, slate/metal. */
 const PITCHED = [[150, 86, 66], [136, 80, 64], [118, 74, 60], [156, 104, 80], [96, 92, 90], [82, 84, 90]];
 /** Flat roofs: gravel, bitumen, metal. */
-const FLAT = [[150, 148, 142], [124, 122, 118], [168, 166, 160], [110, 112, 116]];
+const FLAT = [[112, 110, 104], [96, 94, 90], [126, 122, 114], [88, 90, 94], [104, 98, 88]];
 
 /**
  * The minimum-area rectangle around a footprint (rotating calipers over the ring's edge
@@ -259,9 +264,11 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     const tall = Number(poly.properties["render_height"] ?? 5);
     const r = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]));
     const wall = WALLS[Math.floor(r() * WALLS.length)]!;
+    m.seed = Math.min(0.99, r());
     // Walls reach 1 m below the ground so slopes and terrain smoothing hide no gap.
     const h0 = base - 1;
     const h1 = base + Math.max(2.5, tall) - Number(poly.properties["render_min_height"] ?? 0);
+    m.wallH = h1 - base;
     const ccw = ringArea(outer) > 0; // positive = counter-clockwise with y up (north)
     for (const ring of rings) {
       for (let k = 0; k < ring.length - 1; k++) {
@@ -287,12 +294,71 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     }
     const rect = rings.length === 1 && outer.length <= 14 && tall <= 14 ? footprintRect(outer) : undefined;
     if (rect && rect.fill > 0.82 && rect.short <= 24 && rect.short >= 4) pitchedRoof(m, frame, rect, h1, r);
-    else flatRoof(m, frame, rings, h1, FLAT[Math.floor(r() * FLAT.length)]!);
+    else {
+      flatRoof(m, frame, rings, h1, FLAT[Math.floor(r() * FLAT.length)]!, r() < 0.35 ? 4 : 3);
+      if (h1 - base >= 4) parapet(m, frame, rings, ccw, base, h1, wall);
+      if (areaM2 > 180 && rings.length === 1) rooftopUnits(m, frame, outer, h1, areaM2, r);
+    }
   }
   return m.build();
 }
 
-function flatRoof(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][], h: number, col: readonly number[]) {
+/** A 0.6 m parapet around a flat roof (wall material, no windows) with a light coping on top. */
+function parapet(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][], ccw: boolean, base: number, h: number, wall: readonly number[]) {
+  const top = h + 0.6, cope = [196, 194, 188];
+  for (const ring of rings)
+    for (let k = 0; k < ring.length - 1; k++) {
+      const [ax, ay] = ring[k]!, [bx, by] = ring[k + 1]!;
+      const l = Math.hypot(bx - ax, by - ay);
+      if (l < 0.05) continue;
+      let nx = (by - ay) / l, ny = -(bx - ax) / l;
+      if (!ccw) { nx = -nx; ny = -ny; }
+      m.mat = 1;
+      const v = (x: number, y: number, hh: number, u: number) => ((m.u = u), (m.v = hh - base), m.vertex(x, y, frame.up(x, y, hh), nx, ny, 0, wall));
+      const a0 = v(ax, ay, h, 0), b0 = v(bx, by, h, l), b1 = v(bx, by, top, l), a1 = v(ax, ay, top, 0);
+      m.tri(a0, b0, b1);
+      m.tri(a0, b1, a1);
+      // Coping: a 0.3 m strip on top, inwards.
+      m.mat = 5;
+      const ix = -nx * 0.3, iy = -ny * 0.3;
+      const c = (x: number, y: number, u: number, w: number) => ((m.u = u), (m.v = w), m.vertex(x, y, frame.up(x, y, top), 0, 0, 1, cope));
+      const c0 = c(ax, ay, 0, 0), c1 = c(bx, by, l, 0), c2 = c(bx + ix, by + iy, l, 0.3), c3 = c(ax + ix, ay + iy, 0, 0.3);
+      m.tri(c0, c1, c2);
+      m.tri(c0, c2, c3);
+    }
+}
+
+/** A few boxes on large flat roofs: vents, air handlers, lift rooms. */
+function rooftopUnits(m: MeshBuilder, frame: LocalFrame, outer: [number, number][], h: number, area: number, r: () => number) {
+  const n = Math.min(7, Math.floor(area / 220));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of outer) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const metal = [[150, 152, 154], [128, 130, 132], [172, 172, 168]];
+  for (let i = 0, tries = 0; i < n && tries < 40; tries++) {
+    const w = 1.2 + r() * 2.8, d = 1.2 + r() * 2.2, hh = 0.9 + r() * 1.6, a = r() * Math.PI;
+    const cx = x0 + r() * (x1 - x0), cy = y0 + r() * (y1 - y0);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const pts: [number, number][] = [[-w, -d], [w, -d], [w, d], [-w, d]].map(([px, py]) => [cx + (px! * ca - py! * sa) / 2, cy + (px! * sa + py! * ca) / 2]);
+    // Fully inside the roof, with a margin.
+    if (!pts.every(([px, py]) => point(outer, px, py) && point(outer, px + 1.5, py) && point(outer, px - 1.5, py) && point(outer, px, py + 1.5) && point(outer, px, py - 1.5))) continue;
+    i++;
+    const col = metal[Math.floor(r() * metal.length)]!;
+    m.mat = 6;
+    for (let k = 0; k < 4; k++) {
+      const [ax, ay] = pts[k]!, [bx, by] = pts[(k + 1) % 4]!;
+      const l = Math.hypot(bx - ax, by - ay), nx = (by - ay) / l, ny = -(bx - ax) / l;
+      const v = (x: number, y: number, z: number, u: number) => ((m.u = u), (m.v = z), m.vertex(x, y, frame.up(x, y, h + z), nx, ny, 0, col));
+      const a0 = v(ax, ay, 0, 0), b0 = v(bx, by, 0, l), b1 = v(bx, by, hh, l), a1 = v(ax, ay, hh, 0);
+      m.tri(a0, b0, b1);
+      m.tri(a0, b1, a1);
+    }
+    const t = pts.map(([x, y]) => ((m.u = x), (m.v = y), m.vertex(x, y, frame.up(x, y, h + hh), 0, 0, 1, col)));
+    m.tri(t[0]!, t[1]!, t[2]!);
+    m.tri(t[0]!, t[2]!, t[3]!);
+  }
+}
+
+function flatRoof(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][], h: number, col: readonly number[], mat = 3) {
   const flat: number[] = [];
   const holes: number[] = [];
   for (const [k, ring] of rings.entries()) {
@@ -301,7 +367,7 @@ function flatRoof(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][]
   }
   const idx = earcut(flat, holes);
   const first = m.count;
-  m.mat = 3;
+  m.mat = mat;
   for (let v = 0; v < flat.length / 2; v++) ((m.u = flat[2 * v]!), (m.v = flat[2 * v + 1]!)), m.vertex(flat[2 * v]!, flat[2 * v + 1]!, frame.up(flat[2 * v]!, flat[2 * v + 1]!, h), 0, 0, 1, col);
   for (let t = 0; t < idx.length; t += 3) m.tri(first + idx[t]!, first + idx[t + 1]!, first + idx[t + 2]!);
 }

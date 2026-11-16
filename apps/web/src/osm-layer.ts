@@ -47,12 +47,12 @@ in vec3 position3DHigh;
 in vec3 position3DLow;
 in vec3 normal;
 in vec4 color;
-in vec3 uvm;
+in vec4 uvm;
 in float batchId;
 out vec3 v_positionEC;
 out vec3 v_normalEC;
 out vec4 v_color;
-out vec3 v_uvm;
+out vec4 v_uvm;
 void main() {
   vec4 p = czm_computePosition();
   v_positionEC = (czm_modelViewRelativeToEye * p).xyz;
@@ -62,50 +62,122 @@ void main() {
   gl_Position = czm_modelViewProjectionRelativeToEye * p;
 }`;
 
-// Walls: plaster photo, and windows drawn from the wall coordinates (2.8 m apart, 2.7 m
-// floors; glass with a sky tint and a sun glint, light frames). Roofs: clay tiles or bitumen.
-// The photos are detail maps (mean = mid-grey), so each building keeps its own colour.
+/**
+ * Buildings. Facades are generated from each wall's coordinates (u along the wall, v up from
+ * the ground [m]), its building's wall height and a style seed:
+ *  - houses (≤ 13 m): plinth, floor bands, windows with frames/sills/recess, shutters on some,
+ *    doors on the ground floor, eave shadow under the roof;
+ *  - blocks (> 13 m): precast panels (joints every 3.6 m × 2.8 m) or banded plaster, ribbon of
+ *    windows, shop fronts on the ground floor;
+ *  - everywhere: contact shadow at the foot, grime under the sills, rain streaks.
+ * Roofs: clay tiles, bitumen membrane or gravel, sampled twice at different rotations and
+ * mixed by noise (no repeat), with large-scale stains; parapet copings; metal rooftop units.
+ */
 const FS = `
 in vec3 v_positionEC;
 in vec3 v_normalEC;
 in vec4 v_color;
-in vec3 v_uvm;
+in vec4 v_uvm;
+
+float hash1(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash1(i), hash1(i + vec2(1.0, 0.0)), f.x), mix(hash1(i + vec2(0.0, 1.0)), hash1(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
 void main() {
   vec3 n = normalize(v_normalEC);
   if (!gl_FrontFacing) n = -n;
   float d = length(v_positionEC);
+  float mat = floor(v_uvm.z + 0.001), seed = fract(v_uvm.z);
+  float u = v_uvm.x, v = v_uvm.y, wallH = v_uvm.w;
   czm_materialInput mi;
-  mi.str = v_uvm;
+  mi.str = v_uvm.xyz;
   mi.positionToEyeEC = -v_positionEC;
-  czm_material mat = czm_getMaterial(mi);
-  vec3 base = v_color.rgb * mat.diffuse * (1.0 + clamp(mat.shininess, -0.35, 0.45));
+  czm_material tex = czm_getMaterial(mi);
+  vec3 base = v_color.rgb * tex.diffuse * (1.0 + clamp(tex.shininess, -0.35, 0.45));
+  float detail = 1.0 - smoothstep(350.0, 1400.0, d); // facade detail fades with distance
   float spec = 0.0;
-  if (v_uvm.z < 0.5 && v_uvm.y > 0.0) {
-    vec2 w = vec2(fract(v_uvm.x / 2.8), fract(v_uvm.y / 2.7));
-    vec2 lo = vec2(0.32, 0.33), hi = vec2(0.68, 0.74);
-    if (all(greaterThan(w, lo)) && all(lessThan(w, hi))) {
-      vec2 e = min(w - lo, hi - w) * vec2(2.8, 2.7);
-      float far = smoothstep(500.0, 1500.0, d);
-      // Glass: dark interior under a reflection of the sky.
-      vec3 glass = vec3(0.20, 0.25, 0.31) + 0.10 * vec3(0.6, 0.75, 0.95) * fract(sin(dot(floor(v_uvm.xy / vec2(2.8, 2.7)), vec2(12.9898, 78.233))) * 43758.5453);
-      // Recessed: the lintel shades the top of the pane, the reveal one side.
-      float topDist = (hi.y - w.y) * 2.7, sideDist = (w.x - lo.x) * 2.8;
-      glass *= 0.55 + 0.45 * smoothstep(0.07, 0.30, topDist) * smoothstep(0.07, 0.16, sideDist);
-      vec3 win = min(e.x, e.y) < 0.07 ? vec3(0.86, 0.85, 0.82) : glass;
-      // A sill catching the light under the window.
-      if ((w.y - lo.y) * 2.7 < 0.05) win = vec3(0.93, 0.92, 0.9);
-      // A mullion down the middle.
-      if (abs(w.x - 0.5) < 0.012) win = vec3(0.86, 0.85, 0.82);
-      base = mix(win, base, far);
-      vec3 r = reflect(normalize(v_positionEC), n);
-      spec = (1.0 - far) * (min(e.x, e.y) < 0.07 ? 0.0 : pow(max(dot(r, czm_lightDirectionEC), 0.0), 60.0));
+
+  if (mat < 1.5) {
+    bool block = wallH > 13.0;
+    float floorH = block ? 2.8 : 2.7;
+    float fl = floor(v / floorH), fy = fract(v / floorH);
+    // Dirt and weathering: darker towards the foot, soft vertical rain streaks.
+    float streak = vnoise(vec2(u * 0.9, v * 0.08 + seed * 31.0));
+    base *= mix(1.0, 0.86 + 0.14 * smoothstep(0.0, 2.5, v), detail);
+    base *= 1.0 - 0.10 * detail * smoothstep(0.55, 0.95, streak);
+    // Plinth: a stone/render base course.
+    if (v < 0.55) base = mix(base, vec3(0.42, 0.41, 0.39) * (0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), detail * 0.85);
+    // Contact shadow at the foot, eave shadow under the roof (houses).
+    base *= mix(1.0, 0.72 + 0.28 * smoothstep(0.0, 0.9, v), detail);
+    if (!block) base *= mix(1.0, 0.68 + 0.32 * smoothstep(0.0, 0.7, wallH - v), detail);
+    // Facade style by seed: houses get floor bands; blocks are panels (seed < 0.6) or banded.
+    bool panels = block && seed < 0.6;
+    if (panels) {
+      vec2 pj = vec2(abs(fract(u / 3.6 + 0.5) - 0.5) * 3.6, abs(fract(v / 2.8 + 0.5) - 0.5) * 2.8);
+      if (min(pj.x, pj.y) < 0.025 && v > 0.55) base *= mix(1.0, 0.72, detail);
+    } else if (fl >= 1.0 && v < wallH - 0.3) {
+      float band = fy * floorH;
+      if (band < 0.12) base *= mix(1.0, 1.14, detail);            // cornice catching light
+      else if (band < 0.26) base *= mix(1.0, 0.84, detail);       // its shadow
     }
+    if (mat < 0.5 && v > 0.55 && v < wallH - 0.4) {
+      float pitch = 2.8;
+      float col = floor(u / pitch);
+      vec2 w = vec2(fract(u / pitch), fy);
+      float cell = hash1(vec2(col, fl) + seed * 17.0);
+      bool ground = fl < 0.5;
+      // Ground floor: doors on houses, shop fronts on blocks.
+      bool door = ground && !block && cell < 0.22;
+      bool shop = ground && block && seed > 0.35;
+      vec2 lo = door ? vec2(0.36, 0.0) : shop ? vec2(0.06, 0.12) : vec2(0.32, 0.33);
+      vec2 hi = door ? vec2(0.64, 0.78) : shop ? vec2(0.94, 0.86) : block ? vec2(0.68, 0.78) : vec2(0.68, 0.74);
+      vec2 sz = vec2(pitch, floorH);
+      // Shutters on some houses.
+      bool shutters = !block && !ground && seed > 0.55;
+      if (shutters && w.y > lo.y && w.y < hi.y && ((w.x > lo.x - 0.13 && w.x < lo.x) || (w.x > hi.x && w.x < hi.x + 0.13))) {
+        vec3 sc = seed > 0.8 ? vec3(0.22, 0.32, 0.22) : seed > 0.68 ? vec3(0.36, 0.24, 0.16) : vec3(0.55, 0.55, 0.52);
+        float louvre = 0.85 + 0.15 * step(0.5, fract(w.y * sz.y * 14.0));
+        base = mix(base, sc * louvre, detail);
+      }
+      if (all(greaterThan(w, lo)) && all(lessThan(w, hi))) {
+        vec2 e = min(w - lo, hi - w) * sz;
+        float frame = door ? 0.05 : 0.07;
+        vec3 fill;
+        if (door) {
+          fill = vec3(0.30, 0.20, 0.13) * (0.9 + 0.1 * step(0.5, fract(w.x * sz.x * 3.0)));
+        } else {
+          // Glass: dark interior with a sky reflection that varies per pane; recessed (the
+          // lintel shades the top, the reveal one side).
+          vec3 glass = vec3(0.17, 0.21, 0.26) + vec3(0.07, 0.09, 0.12) * hash1(vec2(col, fl) + 3.1);
+          float topDist = (hi.y - w.y) * sz.y, sideDist = (w.x - lo.x) * sz.x;
+          glass *= 0.55 + 0.45 * smoothstep(0.06, 0.30, topDist) * smoothstep(0.06, 0.16, sideDist);
+          fill = glass;
+          if (!shop && abs(w.x - 0.5) < 0.012) fill = vec3(0.86, 0.85, 0.82);   // mullion
+          vec3 r = reflect(normalize(v_positionEC), n);
+          spec = detail * pow(max(dot(r, czm_lightDirectionEC), 0.0), 60.0) * step(frame, min(e.x, e.y));
+        }
+        if (min(e.x, e.y) < frame) fill = block ? vec3(0.62, 0.63, 0.64) : vec3(0.86, 0.85, 0.82);
+        base = mix(base, fill, detail);
+      }
+      // Sill below windows, and grime washing down from it.
+      if (!ground && w.x > lo.x - 0.02 && w.x < hi.x + 0.02) {
+        float below = (lo.y - w.y) * sz.y;
+        if (below >= 0.0 && below < 0.06) base = mix(base, vec3(0.9, 0.89, 0.86), detail);
+        else if (below >= 0.06 && below < 0.9) base *= mix(1.0, 0.9 + 0.1 * smoothstep(0.06, 0.9, below) + 0.05 * vnoise(vec2(u * 12.0, 0.0)), detail);
+      }
+    }
+  } else if (mat > 4.5 && mat < 5.5) {
+    base = v_color.rgb * (0.95 + 0.1 * vnoise(vec2(u * 2.0, v * 2.0)));
+  } else if (mat > 5.5) {
+    // Rooftop units: ribbed metal sides, a darker base line.
+    base = v_color.rgb * (abs(n.z) < 0.5 ? 0.9 + 0.1 * step(0.5, fract(u * 6.0)) : 1.0) * (abs(n.z) < 0.5 && v < 0.1 ? 0.7 : 1.0);
   }
   float sun = max(dot(n, czm_lightDirectionEC), 0.0);
-  // Sky light from above, a little bounce from below.
   float sky = 0.56 + 0.14 * dot(n, normalize(czm_normal * vec3(0.0, 0.0, 1.0)));
   vec3 c = base * (sky + 0.75 * sun * czm_lightColor) + spec * czm_lightColor;
-  // Aerial perspective: fade to the haze with distance.
   c = mix(c, vec3(0.70, 0.78, 0.86), clamp((d - 1500.0) / 9000.0, 0.0, 0.45));
   out_FragColor = vec4(c, 1.0);
 }`;
@@ -116,25 +188,49 @@ function material(): Material {
   buildingMaterial ??= new Material({
     fabric: {
       type: "BuildingDetail",
-      uniforms: { wall: `${base}wall.jpg`, tiles: `${base}tiles.jpg`, flat: `${base}flat.jpg` },
-      // str = (u, v [m], material). Detail = photo / mid-grey, fading to 1 with distance
-      // (the photos have no mipmaps: far away they would shimmer).
-      source: `czm_material czm_getMaterial(czm_materialInput mi) {
-        czm_material m = czm_getDefaultMaterial(mi);
-        float k = mi.str.z;
-        vec3 t = k < 1.5 ? texture(wall, fract(mi.str.xy / 2.0)).rgb : k < 2.5 ? texture(tiles, fract(mi.str.xy / 4.0)).rgb : texture(flat, fract(mi.str.xy / 12.0)).rgb;
-        float far = smoothstep(60.0, 260.0, length(mi.positionToEyeEC));
-        // Walls: gentle plaster grain; roofs: the full tile pattern.
-        vec3 dtl = t * (255.0 / 128.0);
-        if (k < 1.5) dtl = mix(vec3(1.0), dtl, 0.6);
-        m.diffuse = mix(dtl, vec3(1.0), far);
-        // Relief: emboss from the photo's brightness a few centimetres further up (light
-        // comes from above: the upper edges of tiles and bumps catch it). In m.shininess.
-        vec2 up = mi.str.xy + vec2(0.0, k < 1.5 ? 0.02 : 0.05);
-        vec3 t2 = k < 1.5 ? texture(wall, fract(up / 2.0)).rgb : k < 2.5 ? texture(tiles, fract(up / 4.0)).rgb : texture(flat, fract(up / 12.0)).rgb;
-        m.shininess = (dot(t - t2, vec3(0.333)) * (k < 1.5 ? 1.5 : 3.0)) * (1.0 - far);
-        return m;
-      }`,
+      uniforms: { wall: `${base}wall.jpg`, tiles: `${base}tiles.jpg`, flat: `${base}flat.jpg`, gravel: `${base}gravel.jpg` },
+      // str = (u, v [m], material + seed). Detail = photo / mid-grey. Roofs: two rotated
+      // samples mixed by noise (no visible repeat) and large stains; emboss in shininess.
+      source: `
+float bh(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float bn(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(bh(i), bh(i + vec2(1.0, 0.0)), f.x), mix(bh(i + vec2(0.0, 1.0)), bh(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+vec3 roofTex(float k, vec2 p) {
+  return k < 2.5 ? texture(tiles, fract(p / 4.0)).rgb : k < 3.5 ? texture(flat, fract(p / 9.0)).rgb : texture(gravel, fract(p / 3.0)).rgb;
+}
+czm_material czm_getMaterial(czm_materialInput mi) {
+  czm_material m = czm_getDefaultMaterial(mi);
+  float k = floor(mi.str.z + 0.001);
+  vec2 p = mi.str.xy;
+  float far = smoothstep(60.0, 260.0, length(mi.positionToEyeEC));
+  if (k > 4.5) { m.diffuse = vec3(1.0); return m; }
+  vec3 t, t2;
+  if (k < 1.5) {
+    t = texture(wall, fract(p / 2.0)).rgb;
+    t2 = texture(wall, fract((p + vec2(0.0, 0.02)) / 2.0)).rgb;
+    t = mix(vec3(128.0 / 255.0), t, 0.6);
+  } else if (k < 2.5) {
+    t = roofTex(k, p);
+    t2 = roofTex(k, p + vec2(0.0, 0.05));
+  } else {
+    // Flat roofs: no repeat (two rotated samples mixed by noise), membrane seams, stains.
+    vec2 q = mat2(0.866, 0.5, -0.5, 0.866) * p + 7.3;
+    float w = bn(p / 7.0);
+    t = mix(roofTex(k, p), roofTex(k, q), w);
+    t2 = mix(roofTex(k, p + vec2(0.0, 0.05)), roofTex(k, q + vec2(0.0, 0.05)), w);
+    float stains = 0.82 + 0.3 * bn(p / 23.0) + 0.1 * bn(p / 5.0);
+    if (k < 3.5) stains *= 0.93 + 0.07 * step(0.04, fract(p.x / 1.0));
+    t *= stains;
+    t2 *= stains;
+  }
+  vec3 dtl = t * (255.0 / 128.0);
+  m.diffuse = k < 2.5 ? mix(dtl, vec3(1.0), far) : mix(dtl, vec3(1.0), far * 0.6);
+  m.shininess = dot(t - t2, vec3(0.333)) * (k < 1.5 ? 1.5 : 3.0) * (1.0 - far);
+  return m;
+}`,
     },
     translucent: false,
   });
@@ -150,7 +246,7 @@ function primitive(r: OsmResult, shadows: boolean): Primitive | undefined {
       position: new GeometryAttribute({ componentDatatype: ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
       normal: new GeometryAttribute({ componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: m.normals }),
       color: new GeometryAttribute({ componentDatatype: ComponentDatatype.UNSIGNED_BYTE, componentsPerAttribute: 4, normalize: true, values: m.colors }),
-      uvm: new GeometryAttribute({ componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: m.uvm }),
+      uvm: new GeometryAttribute({ componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 4, values: m.uvm }),
     }),
     indices: m.indices,
     primitiveType: PrimitiveType.TRIANGLES,

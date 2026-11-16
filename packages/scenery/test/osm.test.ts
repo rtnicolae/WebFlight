@@ -39,17 +39,24 @@ describe("osm buildings", () => {
     }
   });
 
-  it("gives large or irregular buildings a flat roof with courtyards left open", () => {
+  it("gives large or irregular buildings a flat roof with courtyards left open, a parapet and rooftop units", () => {
     const block: OsmPolygon = { rings: [rect(0, 0, 60, 60), rect(20, 20, 20, 20).reverse()], properties: { render_height: 18 } };
     const m = buildingMesh([block], frame, ground);
     const n = m.positions.length / 3;
     let roofArea = 0;
     for (let t = 0; t < m.indices.length; t += 3) {
       const [a, b, c] = [m.indices[t]!, m.indices[t + 1]!, m.indices[t + 2]!].map((i) => [m.positions[3 * i]!, m.positions[3 * i + 1]!, m.positions[3 * i + 2]!]);
-      if (a![2]! > 30 && b![2]! > 30 && c![2]! > 30) roofArea += Math.abs((b![0]! - a![0]!) * (c![1]! - a![1]!) - (c![0]! - a![0]!) * (b![1]! - a![1]!)) / 2;
+      const mat = Math.floor(m.uvm[m.indices[t]! * 4 + 2]!);
+      if (a![2]! > 30 && b![2]! > 30 && c![2]! > 30 && (mat === 3 || mat === 4)) roofArea += Math.abs((b![0]! - a![0]!) * (c![1]! - a![1]!) - (c![0]! - a![0]!) * (b![1]! - a![1]!)) / 2;
     }
     expect(n).toBeGreaterThan(0);
     expect(roofArea).toBeCloseTo(3600 - 400, -1);
+    // Parapet 0.6 m above the roof, coping, and wall heights carried for the facade shader.
+    const zs = Array.from({ length: n }, (_, i) => m.positions[3 * i + 2]!);
+    expect(Math.max(...zs)).toBeGreaterThan(20 + 18 + 0.5);
+    const mats = new Set(Array.from({ length: n }, (_, i) => Math.floor(m.uvm[i * 4 + 2]!)));
+    expect(mats.has(5)).toBe(true);
+    expect(m.uvm[3]).toBeCloseTo(18, 5);
   });
 });
 
