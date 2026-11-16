@@ -45,7 +45,7 @@ Fetched at runtime by the browser, never stored in the repository:
 | Open-Meteo forecast and historical APIs (`api.open-meteo.com`, `archive-api.open-meteo.com`), fetched live | the weather of the chosen hour | Free API, no key; data CC BY 4.0, attribution "Weather data by Open-Meteo.com" |
 | earcut (npm, already a Cesium dependency) | roof triangulation | ISC |
 | Poly Haven textures painted_plaster_wall, roof_09, bitumen, gravel_road (`apps/web/public/buildings/`, 512 px, normalized to mid-grey as detail maps), red_brick_03 (`brick.jpg`, 512 px, own colours) | building walls and roofs | CC0 (polyhaven.com/license) |
-| Poly Haven tree models (tree_small_02, island_tree_02, fir_tree_01), rendered offline into `apps/web/public/trees/atlas.png` (side and top impostor views; the models are not in the repository) | tree impostors | CC0 (polyhaven.com/license) |
+| Poly Haven tree models (tree_small_02, island_tree_02, island_tree_01, jacaranda_tree, fir_tree_01, fir_sapling_medium, pine_tree_01), rendered offline into `apps/web/public/trees/atlas.png` by `tools/tree-atlas/pack.py` (side and top impostor views; the beech-, oak-, hornbeam-, birch- and lime-like crowns are composed there from the small models' foliage; the models are not in the repository) | tree impostors | CC0 (polyhaven.com/license) |
 | Poly Haven textures (`apps/web/public/textures/`: leafy_grass, grass_ground, farm_soil, dry_mud_field_001, aerial_mud_1, gravel_road, aerial_asphalt_01; 1K colour maps and 512 px height maps `*_h.jpg`, re-encoded) | HD detail for grass, soil, tracks, gravel and asphalt | CC0 (polyhaven.com/license) |
 | Painted terrain | fallback when the photo servers can't be reached | generated in the browser from Terrarium heights (no third-party imagery) |
 

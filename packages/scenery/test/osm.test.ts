@@ -148,13 +148,21 @@ describe("tree instances (impostors)", () => {
     const a = treeInstances([wood], frame, ground, { spacingM: 10 });
     expect(Array.from(a)).toEqual(Array.from(treeInstances([wood], frame, ground, { spacingM: 10 })));
     const n = a.length / 5;
-    expect(n).toBeGreaterThan(150);
+    // Clearings and thin patches leave gaps; a 2 ha wood still has well over 100 trees.
+    expect(n).toBeGreaterThan(100);
+    expect(n).toBeLessThanOrEqual(200);
+    const hs: number[] = [];
     for (let i = 0; i < n; i++) {
       expect(a[i * 5]!).toBeGreaterThan(-12);
       expect(a[i * 5]!).toBeLessThan(212);
-      expect(a[i * 5 + 3]!).toBeGreaterThan(10);
+      hs.push(a[i * 5 + 3]!);
+      expect(hs[i]!).toBeGreaterThan(1.9);
+      expect(hs[i]!).toBeLessThan(42);
       expect(Math.floor(a[i * 5 + 4]!)).toBeLessThanOrEqual(1);
     }
+    // Varied: shrubs and young trees under tall ones.
+    expect(Math.min(...hs)).toBeLessThan(8);
+    expect(Math.max(...hs)).toBeGreaterThan(15);
   });
 });
 

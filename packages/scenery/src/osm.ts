@@ -656,14 +656,38 @@ export function treeInstances(forests: OsmPolygon[], frame: LocalFrame, ground: 
         if (o.bounds && (x < o.bounds.e0 || x >= o.bounds.e1 || y < o.bounds.n0 || y >= o.bounds.n1)) continue;
         if (!point(rings[0]!, x, y) || rings.slice(1).some((h) => point(h, x, y))) continue;
         const [lon, lat] = frame.lonLat(x, y);
+        // World-anchored noise [m] (the same in neighbouring cells and tiles).
+        const wx = lon * 77_000, wy = lat * 111_000;
+        // Clearings and thin patches.
+        const open = smoothNoise(wx, wy, 90, 11);
+        if (open < 0.2 || r() < (0.36 - open) * 1.2) continue;
         const g = ground(lon, lat);
-        const conifer = r() < 0.25 + Math.max(0, Math.min(0.6, (g - 700) / 800));
-        const H = (conifer ? 16 : 11) + r() * (conifer ? 10 : 9);
+        // Stands: conifers take over with height (beech below, spruce above ~1100 m in the
+        // Carpathians and Alps) and in patches (plantations); the boundary is mixed.
+        const stand = smoothNoise(wx, wy, 320, 23) - 0.5 + 0.5 * (smoothNoise(wx, wy, 70, 29) - 0.5);
+        const pCon = Math.min(0.97, Math.max(0.03, 0.22 + (g - 850) / 500 + stand * 1.3));
+        const conifer = r() < pCon;
+        // Age classes by stand (10–30 m), each tree its own; the odd young tree and shrub
+        // underneath; lower towards a clearing.
+        const age = smoothNoise(wx, wy, 210, 37);
+        let H = (conifer ? 12 + 16 * age : 10 + 17 * age) * (0.75 + 0.5 * r()) * (0.6 + 0.4 * Math.min(1, (open - 0.2) / 0.25));
+        const u = r();
+        if (u < 0.1) H = 2 + 5 * r();
+        else if (u < 0.2) H *= 0.5;
         out.push(x, y, frame.up(x, y, g - 0.3), H, (conifer ? 1 : 0) + Math.min(0.999, r()));
       }
     }
   }
   return new Float32Array(out);
+}
+
+/** Smooth value noise in [0, 1] with features of about `scaleM` metres. */
+function smoothNoise(x: number, y: number, scaleM: number, salt: number): number {
+  const fx = x / scaleM, fy = y / scaleM, x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const h = (a: number, b: number) => ((Math.imul(a + salt * 7919, 73856093) ^ Math.imul(b - salt * 104729, 19349663)) >>> 0) / 4294967296;
+  const sx = fx - x0, sy = fy - y0, tx = sx * sx * (3 - 2 * sx), ty = sy * sy * (3 - 2 * sy);
+  const a = h(x0, y0), b = h(x0 + 1, y0), c = h(x0, y0 + 1), d = h(x0 + 1, y0 + 1);
+  return a + (b - a) * tx + (c - a) * ty + (a - b - c + d) * tx * ty;
 }
 
 /**

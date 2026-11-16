@@ -18,8 +18,11 @@ interface TileLike {
 interface Provider {
   computeDistanceToTile(tile: TileLike, frameState: object): number;
   computeTileVisibility(tile: TileLike, frameState: object, occluders: unknown): number;
+  computeTileLoadPriority?(tile: TileLike, frameState: object): number;
 }
 
+/** Ground detail is as Cesium would choose it up to here [m]; beyond, distances count this many times. */
+const FULL_DETAIL_M = 2500, FAR_COARSENING = 3;
 const VISIBILITY_NONE = -1, VISIBILITY_PARTIAL = 0;
 const R_EARTH = 6_371_000;
 
@@ -40,7 +43,14 @@ export function pinGroundToGlider(viewer: Viewer, radiusM = 30_000): (latDeg: nu
     return proxy!;
   };
   const distance = provider.computeDistanceToTile.bind(provider);
-  provider.computeDistanceToTile = (tile, fs) => distance(tile, set ? atGlider(fs) : fs);
+  // Beyond FULL_DETAIL_M the ground is counted as farther than it is, so it is drawn a level or
+  // two coarser: with the whole surroundings kept loaded (not just the view), full detail out
+  // to the horizon would be several times the tiles. It depends on the glider's position only.
+  provider.computeDistanceToTile = (tile, fs) => {
+    if (!set) return distance(tile, fs);
+    const d = distance(tile, atGlider(fs));
+    return d < FULL_DETAIL_M ? d : FULL_DETAIL_M + (d - FULL_DETAIL_M) * FAR_COARSENING;
+  };
   const visibility = provider.computeTileVisibility.bind(provider);
   provider.computeTileVisibility = (tile, fs, occluders) => {
     const v = visibility(tile, fs, occluders);
@@ -51,6 +61,17 @@ export function pinGroundToGlider(viewer: Viewer, radiusM = 30_000): (latDeg: nu
     const dy = (lat - carto.latitude) * R_EARTH, dx = (lon - carto.longitude) * R_EARTH * Math.cos(carto.latitude);
     return dx * dx + dy * dy < radiusM * radiusM ? VISIBILITY_PARTIAL : v;
   };
+  // Load order: nearest to the glider first (Cesium's order favours what the camera faces,
+  // and with everything around the glider wanted, far tiles would hold up the ground under it).
+  // Tiles in view go a little ahead of those behind the camera at the same distance.
+  const priority = provider.computeTileLoadPriority?.bind(provider);
+  if (priority)
+    provider.computeTileLoadPriority = (tile, fs) => {
+      if (!set) return priority(tile, fs);
+      const d = (tile as unknown as { _distance?: number })._distance ?? 0;
+      const facing = d > 0 ? Math.min(2, priority(tile, fs) / d) : 0; // 0 ahead … 2 behind
+      return d * (1 + 0.25 * facing);
+    };
   return (latDeg, lonDeg, altM) => {
     Cartographic.fromDegrees(lonDeg, latDeg, altM, carto);
     Cartesian3.fromRadians(carto.longitude, carto.latitude, altM, undefined, eye.positionWC);
