@@ -222,13 +222,14 @@ czm_material czm_getMaterial(czm_materialInput mi) {
     t = mix(roofTex(k, p), roofTex(k, q), w);
     t2 = mix(roofTex(k, p + vec2(0.0, 0.05)), roofTex(k, q + vec2(0.0, 0.05)), w);
     float stains = 0.82 + 0.3 * bn(p / 23.0) + 0.1 * bn(p / 5.0);
-    if (k < 3.5) stains *= 0.93 + 0.07 * step(0.04, fract(p.x / 1.0));
+    // Membrane seams, only where a pixel resolves them (else they alias into moiré).
+    if (k < 3.5) stains *= 1.0 - 0.07 * (1.0 - step(0.04, fract(p.x / 1.0))) * (1.0 - smoothstep(25.0, 70.0, length(mi.positionToEyeEC)));
     t *= stains;
     t2 *= stains;
   }
   vec3 dtl = t * (255.0 / 128.0);
   m.diffuse = k < 2.5 ? mix(dtl, vec3(1.0), far) : mix(dtl, vec3(1.0), far * 0.6);
-  m.shininess = dot(t - t2, vec3(0.333)) * (k < 1.5 ? 1.5 : 3.0) * (1.0 - far);
+  m.shininess = dot(t - t2, vec3(0.333)) * (k < 1.5 ? 1.5 : 1.8) * (1.0 - far);
   return m;
 }`,
     },
