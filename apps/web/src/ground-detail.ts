@@ -33,14 +33,14 @@ const MARKER = "czm_material material = czm_getMaterial(materialInput);";
 // Must not contain the words "slope" or "normalEC", not even in a comment: Cesium then
 // applies the material only on terrain with vertex normals (Globe.js), and ours has none.
 const SOURCE = /* glsl */ `
-// One texture holds the brightness of three ground photos: grass (red), dry grass (green),
-// soil (blue). Each channel divided by its mean (the smallest mip), contrast × gain: these
+// One texture holds the brightness of four ground photos: grass (red), dry grass (green),
+// soil (blue), gravel/concrete (alpha: grey ground, roads, yards, the photo's roofs and cars). Each channel divided by its mean (the smallest mip), contrast × gain: these
 // tileable photos are nearly uniform once mipmapped (15% spread at full size, 5% at 64 px,
 // 2.5% at 16 px), so the coarser layers need their contrast restored.
-vec3 wfRatio(vec2 w, float s1, float s2, float gain) {
-  vec3 mean = textureLod(wfTex, vec2(0.5), 12.0).rgb + 1e-3;
-  vec3 a = texture(wfTex, w / s1).rgb;
-  vec3 b = texture(wfTex, w.yx / s2 + vec2(0.37, 0.71)).rgb;
+vec4 wfRatio(vec2 w, float s1, float s2, float gain) {
+  vec4 mean = textureLod(wfTex, vec2(0.5), 12.0) + 1e-3;
+  vec4 a = texture(wfTex, w / s1);
+  vec4 b = texture(wfTex, w.yx / s2 + vec2(0.37, 0.71));
   // Narrow range: brightening a saturated green much past 1.25 turns it neon.
   return clamp(1.0 + (0.5 * (a + b) / mean - 1.0) * gain, 0.7, 1.25);
 }
@@ -61,17 +61,19 @@ vec3 wfDetail(vec3 c, czm_materialInput mi, vec3 posMC) {
 
   vec3 hsb = czm_RGBToHSB(c);
   float h = hsb.x * 360.0;
-  float on = smoothstep(0.06, 0.16, hsb.y) * smoothstep(0.06, 0.16, hsb.z);
-  vec3 wt = vec3(
-    smoothstep(58.0, 72.0, h) * (1.0 - smoothstep(165.0, 185.0, h)),   // grass
-    smoothstep(36.0, 46.0, h) * (1.0 - smoothstep(58.0, 72.0, h)),     // dry grass
-    h < 180.0 ? 1.0 - smoothstep(36.0, 46.0, h) : smoothstep(330.0, 345.0, h)); // soil
-  float wsum = wt.x + wt.y + wt.z;
-  vec3 wn = wt / max(wsum, 1e-3);
+  float coloured = smoothstep(0.06, 0.16, hsb.y);
+  float lit = smoothstep(0.06, 0.16, hsb.z);
+  vec4 wt = vec4(
+    vec3(smoothstep(58.0, 72.0, h) * (1.0 - smoothstep(165.0, 185.0, h)),   // grass
+         smoothstep(36.0, 46.0, h) * (1.0 - smoothstep(58.0, 72.0, h)),     // dry grass
+         h < 180.0 ? 1.0 - smoothstep(36.0, 46.0, h) : smoothstep(330.0, 345.0, h)) * coloured, // soil
+    (1.0 - coloured) * smoothstep(0.12, 0.25, hsb.z)) * lit;             // grey: gravel/concrete
+  float wsum = wt.x + wt.y + wt.z + wt.w;
+  vec4 wn = wt / max(wsum, 1e-3);
   float fine = dot(wfRatio(w, 2.4, 3.2, wfGain.x), wn);
   float mid = dot(wfRatio(w, 9.6, 12.8, wfGain.y), wn);
   float coarse = dot(wfRatio(w, 38.4, 51.2, wfGain.z), wn);
-  float k = on * min(1.0, wsum);
+  float k = min(1.0, wsum);
   if (wfDebug > 0.5) return vec3(fineF, midF, k);
   float g = mix(1.0, fine, k * fineF * wfStrength.x)
           * mix(1.0, mid, k * midF * wfStrength.y)
@@ -88,8 +90,8 @@ czm_material czm_getMaterial(czm_materialInput materialInput) {
 interface Internals {
   _surfaceShaderSet?: { baseFragmentShaderSource?: { sources: string[] } };
 }
-/** Brightness of these three photos goes into the red, green and blue channels of one texture. */
-const TEXTURES = ["leafy_grass.jpg", "grass_ground.jpg", "farm_soil.jpg"] as const;
+/** Brightness of these photos goes into the red, green, blue and alpha channels of one texture. */
+const TEXTURES = ["leafy_grass.jpg", "grass_ground.jpg", "farm_soil.jpg", "gravel_road.jpg"] as const;
 const TEX_SIZE = 1024;
 
 /** Patch GlobeFS (once per rebuild of Cesium's ground shader source) to call wfDetail. */
@@ -157,17 +159,15 @@ export function addGroundDetail(viewer: Viewer, texBase: string): void {
       const out = new ImageData(TEX_SIZE, TEX_SIZE);
       const cv = new OffscreenCanvas(TEX_SIZE, TEX_SIZE);
       const cx = cv.getContext("2d", { willReadFrequently: true })!;
-      for (let ch = 0; ch < 3; ch++) {
+      for (let ch = 0; ch < TEXTURES.length; ch++) {
         const r = await fetch(texBase + TEXTURES[ch]);
         const bmp = await createImageBitmap(await r.blob());
         cx.drawImage(bmp, 0, 0, TEX_SIZE, TEX_SIZE);
         const px = cx.getImageData(0, 0, TEX_SIZE, TEX_SIZE).data;
         for (let i = 0; i < px.length; i += 4) {
           out.data[i + ch] = Math.round(0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]!);
-          out.data[i + 3] = 255;
         }
       }
-      const bmp = await createImageBitmap(out);
       const sampler = new C.Sampler({
         wrapS: C.TextureWrap.REPEAT,
         wrapT: C.TextureWrap.REPEAT,
@@ -175,7 +175,8 @@ export function addGroundDetail(viewer: Viewer, texBase: string): void {
         magnificationFilter: C.TextureMagnificationFilter.LINEAR,
         maximumAnisotropy: 8,
       });
-      const tex = new C.Texture({ context, source: bmp, sampler, flipY: false });
+      // Raw bytes, not an image: an image's alpha would be premultiplied into the other channels.
+      const tex = new C.Texture({ context, width: TEX_SIZE, height: TEX_SIZE, source: { arrayBufferView: new Uint8Array(out.data.buffer) }, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, sampler, flipY: false });
       tex.generateMipmap(C.MipmapHint.NICEST);
       (material.uniforms as Record<string, unknown>).wfTex = tex;
     } catch (e) {
