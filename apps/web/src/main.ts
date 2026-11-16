@@ -33,6 +33,7 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
+ *   sharpen=0..1      contrast-adaptive sharpening (default 0.7; 0 on low)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
  */
 const AIR_START = params.has("lat") && params.has("lon");
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
 
   // The renderer draws the same Terrarium heights the worker flies on.
   const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
-  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain });
+  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: params.has("sharpen") ? Number(params.get("sharpen")) : QUALITY === "low" ? 0 : 0.7 });
   const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
   // 30 m strip is a smudge) draw ours.

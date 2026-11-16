@@ -1,5 +1,6 @@
 /** Cesium viewer: real terrain (Terrarium) or the plain ellipsoid, light and atmosphere, runways, cumulus. */
 import {
+  PostProcessStage,
   Cartesian3,
   Color,
   CustomHeightmapTerrainProvider,
@@ -29,7 +30,38 @@ export interface LookOptions {
    * HDR together with shadows, broke the globe).
    */
   quality?: "low" | "high" | "ultra";
+  /** Contrast-adaptive sharpening, 0 (off) to 1. */
+  sharpen?: number;
 }
+
+/**
+ * Contrast-adaptive sharpening (after AMD FidelityFX CAS): each pixel is pushed away from its
+ * four neighbours by an amount that shrinks where local contrast is already high, so texture
+ * detail softened by mip filtering at grazing angles comes back without halos at edges.
+ */
+const SHARPEN_FS = `
+uniform sampler2D colorTexture;
+uniform float sharpness;
+in vec2 v_textureCoordinates;
+void main() {
+  vec2 px = 1.0 / czm_viewport.zw;
+  vec2 uv = v_textureCoordinates;
+  vec4 c4 = texture(colorTexture, uv);
+  vec3 c = c4.rgb;
+  vec3 a = texture(colorTexture, uv - vec2(0.0, px.y)).rgb;
+  vec3 b = texture(colorTexture, uv - vec2(px.x, 0.0)).rgb;
+  vec3 d = texture(colorTexture, uv + vec2(px.x, 0.0)).rgb;
+  vec3 e = texture(colorTexture, uv + vec2(0.0, px.y)).rgb;
+  // Work in a 0..1 range (HDR values are scaled down by the local maximum).
+  vec3 mx = max(max(max(a, b), max(c, d)), e);
+  vec3 mn = min(min(min(a, b), min(c, d)), e);
+  float scale = max(1.0, max(mx.r, max(mx.g, mx.b)));
+  mx /= scale; mn /= scale;
+  vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+  vec3 w = amp * (-1.0 / mix(8.0, 4.5, sharpness));
+  vec3 o = (c + (a + b + d + e) * w) / (1.0 + 4.0 * w);
+  out_FragColor = vec4(max(o, vec3(0.0)), c4.a);
+}`;
 
 export function createViewer(container: HTMLElement, opts: LookOptions): Viewer {
   const viewer = new Viewer(container, {
@@ -74,6 +106,8 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
     scene.skyAtmosphere.brightnessShift = 0.04;
   }
   scene.postProcessStages.fxaa.enabled = true;
+  // Sharpening runs before FXAA (Cesium applies FXAA last), so FXAA only smooths the edges.
+  if ((opts.sharpen ?? 0) > 0) scene.postProcessStages.add(new PostProcessStage({ fragmentShader: SHARPEN_FS, uniforms: { sharpness: Math.min(1, opts.sharpen!) } }));
   if (opts.shadows) {
     const sm = scene.shadowMap;
     sm.softShadows = true;
