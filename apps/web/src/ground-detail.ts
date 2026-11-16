@@ -41,7 +41,8 @@ vec3 wfRatio(vec2 w, float s1, float s2, float gain) {
   vec3 mean = textureLod(wfTex, vec2(0.5), 12.0).rgb + 1e-3;
   vec3 a = texture(wfTex, w / s1).rgb;
   vec3 b = texture(wfTex, w.yx / s2 + vec2(0.37, 0.71)).rgb;
-  return clamp(1.0 + (0.5 * (a + b) / mean - 1.0) * gain, 0.45, 1.7);
+  // Narrow range: brightening a saturated green much past 1.25 turns it neon.
+  return clamp(1.0 + (0.5 * (a + b) / mean - 1.0) * gain, 0.7, 1.25);
 }
 vec3 wfDetail(vec3 c, czm_materialInput mi, vec3 posMC) {
   vec3 rel = -mi.positionToEyeEC;
@@ -116,13 +117,20 @@ export function addGroundDetail(viewer: Viewer, texBase: string): void {
     wfFine: { x: 15, y: 80 },
     wfMid: { x: 60, y: 400 },
     wfMacro: { x: 300, y: 1500 },
-    // Strength of the fine, mid and coarse layers.
-    wfStrength: { x: 0.9, y: 0.7, z: 0.5 },
-    // Contrast gain of each layer (restores what mipmapping averages away).
-    wfGain: { x: 2, y: 5, z: 7 },
+    // Strength of the fine, mid and coarse layers (chosen from full-resolution comparisons at
+    // the Ghimbav ground start: stronger read as noisy camouflage with neon highlights).
+    wfStrength: { x: 0.6, y: 0.35, z: 0.25 },
+    // Contrast gain of each layer (restores some of what mipmapping averages away).
+    wfGain: { x: 1, y: 2, z: 2.5 },
     // 1: draw the fine and mid fade (red, green) and how much texture applies (blue).
     wfDebug: 0,
   };
+  // ?gd=fine,mid,coarse strengths[,fine,mid,coarse gains]: for tuning.
+  const gd = new URLSearchParams(location.search).get("gd")?.split(",").map(Number);
+  if (gd?.length && gd.every(Number.isFinite)) {
+    uniforms["wfStrength"] = { x: gd[0] ?? 0, y: gd[1] ?? 0, z: gd[2] ?? 0 };
+    if (gd.length >= 6) uniforms["wfGain"] = { x: gd[3]!, y: gd[4]!, z: gd[5]! };
+  }
   const material = new Material({ fabric: { type: "WebFlightGroundDetail", uniforms, source: SOURCE }, translucent: false });
   globe.material = material;
   if (!patch(globe)) {

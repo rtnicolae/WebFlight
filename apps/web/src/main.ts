@@ -12,7 +12,7 @@ import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, ThermalLayer } from "./scene.ts";
 import { resolveFlight, type Flight } from "./world.ts";
-import { addImagery, highResPhotoAt, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
+import { addImagery, highResPhotoAt, photoQuadkeyUrl, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import { soaringFrom, sunPosition } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import { Scenery } from "./scenery.ts";
@@ -106,7 +106,7 @@ async function main(): Promise<void> {
   const osmTiles = await openFreeMapTiles();
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
-      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { cellM: 20, radiusM: QUALITY === "ultra" ? 55 : 38, density: QUALITY === "ultra" ? 20 : 11, maxHeightM: 60 })
+      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { ...(photoQuadkeyUrl ? { photoUrl: photoQuadkeyUrl } : {}), cellM: 20, radiusM: QUALITY === "ultra" ? 55 : 38, density: QUALITY === "ultra" ? 20 : 11, maxHeightM: 60 })
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;

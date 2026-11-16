@@ -75,6 +75,8 @@ void main() {
 }`;
 
 export interface GrassOptions {
+  /** Aerial photo tiles ({quadkey} URL): tufts take the colour of the photo under them. */
+  photoUrl?: string;
   cellM: number;
   radiusM: number;
   /** Tufts per m² on full grass. */
@@ -165,7 +167,7 @@ export class GrassLayer {
         // Densest at the camera, thinning outwards (the fade takes the rest).
         const dist = Math.hypot(x - cx, y - cy) * c;
         const density = this.o.density * Math.max(0.25, 1 - dist / this.o.radiusM);
-        const req: GrassRequest = { id, lat: ((y + 0.5) * c) / ky, lon: ((x + 0.5) * c) / kx, cellM: c, density, osmUrl: this.osmUrl, s2Url: this.s2Url, seed: (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)) >>> 0 };
+        const req: GrassRequest = { id, lat: ((y + 0.5) * c) / ky, lon: ((x + 0.5) * c) / kx, cellM: c, density, osmUrl: this.osmUrl, s2Url: this.s2Url, ...(this.o.photoUrl ? { photoUrl: this.o.photoUrl } : {}), seed: (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)) >>> 0 };
         this.worker.postMessage(req);
       }
     }

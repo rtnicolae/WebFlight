@@ -290,6 +290,9 @@ async function addAncpi(viewer: Viewer): Promise<void> {
   }
 }
 
+/** Bing tile URL with a {quadkey} placeholder, once the photo layer is up (else undefined). */
+export let photoQuadkeyUrl: string | undefined;
+
 export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimuthDeg: number; elevationDeg: number }): Promise<ImageryMode> {
   const layers = viewer.imageryLayers;
   if (mode === "photo" && !(await photoAvailable())) {
@@ -305,7 +308,11 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
   if (mode === "photo" && new URLSearchParams(location.search).get("aerial") !== "s2") {
     const token = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
     if (token) Ion.defaultAccessToken = token;
-    layers.add(new ImageryLayer(await IonImageryProvider.fromAssetId(2)));
+    const bing = await IonImageryProvider.fromAssetId(2);
+    layers.add(new ImageryLayer(bing));
+    // The tile URL template (quadkey addressed) for workers that need the photo's colours.
+    const inner = (bing as unknown as { _imageryProvider?: { _imageUrlTemplate?: string; _imageUrlSubdomains?: string[] } })._imageryProvider;
+    if (inner?._imageUrlTemplate) photoQuadkeyUrl = inner._imageUrlTemplate.replace("{subdomain}", inner._imageUrlSubdomains?.[0] ?? "t0").replace("{culture}", "").replace(/^http:/, "https:");
     if (new URLSearchParams(location.search).get("gdetail") !== "0") addGroundDetail(viewer, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href);
     return mode;
   }

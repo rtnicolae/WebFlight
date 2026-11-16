@@ -22,6 +22,8 @@ export interface GrassRequest {
   density: number;
   osmUrl: string;
   s2Url: string;
+  /** Aerial photo tiles ({quadkey} URL, Web Mercator): colour and grass test from the photo. */
+  photoUrl?: string;
   seed: number;
 }
 
@@ -56,6 +58,36 @@ function osm(url: string, x: number, y: number): Promise<MvtLayer[]> {
   }
   return p;
 }
+/** Photo tiles at this zoom (~1.2 m pixels at 45° N) for the tuft colours. */
+const PHOTO_Z = 17;
+const photoCache = new Map<string, Promise<Uint8ClampedArray | undefined>>();
+function quadkey(x: number, y: number, z: number): string {
+  let k = "";
+  for (let i = z; i > 0; i--) {
+    const m = 1 << (i - 1);
+    k += String((x & m ? 1 : 0) + (y & m ? 2 : 0));
+  }
+  return k;
+}
+function photoTile(url: string, x: number, y: number): Promise<Uint8ClampedArray | undefined> {
+  const k = `${x}/${y}`;
+  let p = photoCache.get(k);
+  if (!p) {
+    p = fetch(url.replace("{quadkey}", quadkey(x, y, PHOTO_Z)))
+      .then(async (r) => {
+        if (!r.ok) return undefined;
+        const b = await createImageBitmap(await r.blob());
+        const c = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
+        c.drawImage(b, 0, 0, 256, 256);
+        return c.getImageData(0, 0, 256, 256).data;
+      })
+      .catch(() => undefined);
+    photoCache.set(k, p);
+    if (photoCache.size > 32) photoCache.delete(photoCache.keys().next().value!);
+  }
+  return p;
+}
+
 function s2(url: string, x: number, y: number): Promise<Uint8ClampedArray> {
   const k = `${x}/${y}`;
   let p = s2Cache.get(k);
@@ -106,6 +138,28 @@ async function build(q: GrassRequest): Promise<GrassResult> {
   const [layers, sat] = await Promise.all([osm(q.osmUrl, tx, ty), s2(q.s2Url, tx, ty)]);
   const ground = (lon: number, lat: number) => terrain.heightAt(lat, lon) ?? 0;
   const frame = new LocalFrame(q.lon, q.lat, ground(q.lon, q.lat));
+  // The aerial photo under the cell (the tiles its corners fall in), when there is one.
+  const photo = new Map<string, Uint8ClampedArray | undefined>();
+  if (q.photoUrl) {
+    const keys = new Set<string>();
+    for (const [de, dn] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+      const [lon, lat] = frame.lonLat((de * q.cellM) / 2, (dn * q.cellM) / 2);
+      const [px, py] = lonLatToTile(lon, lat, PHOTO_Z);
+      keys.add(`${Math.floor(px)}/${Math.floor(py)}`);
+    }
+    await Promise.all([...keys].map(async (k) => {
+      const [x, y] = k.split("/").map(Number) as [number, number];
+      photo.set(k, await photoTile(q.photoUrl!, x, y));
+    }));
+  }
+  const photoAt = (lon: number, lat: number): [number, number, number] | undefined => {
+    if (!photo.size) return undefined;
+    const [px, py] = lonLatToTile(lon, lat, PHOTO_Z);
+    const d = photo.get(`${Math.floor(px)}/${Math.floor(py)}`);
+    if (!d) return undefined;
+    const i = (Math.min(255, Math.floor((py % 1) * 256)) * 256 + Math.min(255, Math.floor((px % 1) * 256))) * 4;
+    return [d[i]!, d[i + 1]!, d[i + 2]!];
+  };
   // Tile pixel (MVT extent e) → local metres.
   const tileLL = (px: number, py: number, e: number): [number, number] => {
     const X = tx + px / e, Y = ty + py / e, n = 2 ** 14;
@@ -170,22 +224,24 @@ async function build(q: GrassRequest): Promise<GrassResult> {
     if (lines.some((L) => L.pts.some((_, k) => k > 0 && segDist(e, nn, L.pts[k - 1]![0], L.pts[k - 1]![1], L.pts[k]![0], L.pts[k]![1]) < L.hw))) continue;
     if (polys.some((p) => inPoly(p, e, nn))) continue;
     const [lon, lat] = frame.lonLat(e, nn);
-    // Satellite colour under the tuft: only green ground gets grass.
+    // Colour under the tuft: the aerial photo's where there is one (the blades then match the
+    // ground they stand on), else Sentinel-2's. Only green ground gets grass.
     const [sx, sy] = lonLatToTile(lon, lat, 14);
     const px = Math.min(255, Math.max(0, Math.floor((sx - tx) * 256))), py = Math.min(255, Math.max(0, Math.floor((sy - ty) * 256)));
     const k = (py * 256 + px) * 4;
-    const R = sat[k]!, G = sat[k + 1]!, B = sat[k + 2]!;
+    const ph = photoAt(lon, lat);
+    const [R, G, B] = ph ?? [sat[k]!, sat[k + 1]!, sat[k + 2]!];
     const green = G - (R + B) / 2;
     if (green < 2 + jitter * 6) continue;
     const onLine = (L: { pts: [number, number][]; hw: number }) => L.pts.some((_, k) => k > 0 && segDist(e, nn, L.pts[k - 1]![0], L.pts[k - 1]![1], L.pts[k]![0], L.pts[k]![1]) < L.hw);
     const short = mownLines.some(onLine) || mown.some((p) => inPoly(p, e, nn));
     const h = short ? 0.04 + 0.05 * r() : 0.12 + 0.24 * r();
     const z = frame.up(e, nn, ground(lon, lat)) - 0.01;
-    // Blade colours from the satellite colour, brought up to the textured ground's tone (the
-    // 10 m pixel averages in soil and shadow): base about the ground, tips lighter.
     const v = 0.9 + 0.2 * r();
-    // Towards the near-ground grass colour of the textured ground (detail/synth.ts LUSH).
-    const gR = (R * 1.15 * 0.4 + 98 * 0.6) * v, gG = (G * 1.25 * 0.4 + 128 * 0.6) * v, gB = (B * 0.95 * 0.4 + 56 * 0.6) * v;
+    // On the photo: its colour, roots a little darker, tips a little lighter (they catch the
+    // light). Sentinel-2's 10 m pixels average in soil and shadow, so without a photo they are
+    // brought towards a lush grass tone as before.
+    const gR = ph ? R * v : (R * 1.15 * 0.4 + 98 * 0.6) * v, gG = ph ? G * v : (G * 1.25 * 0.4 + 128 * 0.6) * v, gB = ph ? B * v : (B * 0.95 * 0.4 + 56 * 0.6) * v;
     const BL = 3;
     // Per tuft: a random byte in the colour's alpha, so the renderer thins grass out with
     // distance tuft by tuft (stable as the camera moves) rather than pixel by pixel.
@@ -202,8 +258,9 @@ async function build(q: GrassRequest): Promise<GrassResult> {
       pos.push(e + ox - sa * w, nn + oy + ca * w, z, e + ox + sa * w, nn + oy - ca * w, z, e + ox + ca * lean, nn + oy + sa * lean, z + bh);
       sway.push(0, 0, 1);
       roots.push(e, nn, z, e, nn, z, e, nn, z);
-      const tipK = 1.18 + 0.12 * r();
-      col.push(gR * 0.85, gG * 0.85, gB * 0.8, keep, gR * 0.85, gG * 0.85, gB * 0.8, keep, Math.min(255, gR * tipK + 8), Math.min(255, gG * tipK + 6), Math.min(255, gB * 1.05), keep);
+      const tipK = ph ? 1.04 + 0.08 * r() : 1.18 + 0.12 * r();
+      const lift = ph ? 0 : 1;
+      col.push(gR * 0.85, gG * 0.85, gB * 0.8, keep, gR * 0.85, gG * 0.85, gB * 0.8, keep, Math.min(255, gR * tipK + 8 * lift), Math.min(255, gG * tipK + 6 * lift), Math.min(255, gB * (ph ? tipK : 1.05)), keep);
     }
     count++;
   }
