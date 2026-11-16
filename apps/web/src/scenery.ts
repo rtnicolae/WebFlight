@@ -9,7 +9,9 @@
  * swisstopo's 3D Tiles use the same sea-level heights we use for terrain (checked: building
  * bases sit within ~2 m of our ground, trees ~1 m), so no datum shift is applied.
  */
+import { LOOK } from "./lighting.ts";
 import {
+  Cartesian2,
   buildModuleUrl,
   Cartesian3,
   Cesium3DTileset,
@@ -61,14 +63,16 @@ export interface SceneryOptions {
  * of times over a large lake aliases into glitter from altitude.
  */
 function waterMaterial(overPhoto: boolean): Material {
+  const g = LOOK.ground;
   return Material.fromType("Water", {
-    baseWaterColor: overPhoto ? new Color(0.16, 0.3, 0.36, 0.35) : new Color(0.17, 0.33, 0.4, 0.95),
-    blendColor: new Color(0.12, 0.28, 0.32, 1.0),
+    // Unlit material: the time of day comes from LOOK (dark water at night).
+    baseWaterColor: overPhoto ? new Color(0.16 * g, 0.3 * g, 0.36 * g, 0.35) : new Color(0.17 * g, 0.33 * g, 0.4 * g, 0.95),
+    blendColor: new Color(0.12 * g, 0.28 * g, 0.32 * g, 1.0),
     normalMap: buildModuleUrl("Assets/Textures/waterNormals.jpg"),
     frequency: 1200.0,
     animationSpeed: 0.004,
     amplitude: 1.2,
-    specularIntensity: overPhoto ? 0.25 : 0.4,
+    specularIntensity: (overPhoto ? 0.25 : 0.4) * g,
     fadeFactor: 1.0,
   });
 }
@@ -124,6 +128,7 @@ export class Scenery {
           // walls the colours at their footprint, instead of the tiles' flat pastel materials.
           if (o.drape) ts.imageryLayers.add(new ImageryLayer(swissImageProvider()));
           else ts.style = new Cesium3DTileStyle({ color: "color('#ddd5c9')" });
+          ts.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(LOOK.ground, LOOK.ground); // time of day
           viewer.scene.primitives.add(ts);
         })
         .catch((e: unknown) => console.warn("buildings:", e));
@@ -132,6 +137,7 @@ export class Scenery {
       void Cesium3DTileset.fromUrl(VEGETATION, { maximumScreenSpaceError: o.treeDetail, shadows, dynamicScreenSpaceError: true })
         .then((ts) => {
           ts.style = new Cesium3DTileStyle({ color: "color('#5f7c47')" });
+          ts.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(LOOK.ground, LOOK.ground); // time of day
           viewer.scene.primitives.add(ts);
         })
         .catch((e: unknown) => console.warn("trees:", e));

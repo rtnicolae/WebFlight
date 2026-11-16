@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BLOCK_FLOOR_M, buildingMesh, footprintRect, LocalFrame, MAT, parseColour, treeMesh, windowPitch, type Mesh, type OsmPolygon } from "../src/index.ts";
+import { SKIRT_M, LAMP_HEIGHT_M, BLOCK_FLOOR_M, buildingMesh, footprintRect, LocalFrame, MAT, parseColour, treeMesh, windowPitch, type Mesh, type OsmPolygon } from "../src/index.ts";
 
 const mats = (m: Mesh) => new Set(Array.from({ length: m.uvm.length / 4 }, (_, i) => Math.floor(m.uvm[i * 4 + 2]! + 0.001)));
 
@@ -27,7 +27,7 @@ describe("osm buildings", () => {
     const m = buildingMesh([house], frame, ground);
     const z = Array.from({ length: m.positions.length / 3 }, (_, i) => m.positions[3 * i + 2]!);
     // Local up at ~20 m from the origin: 520 − 500 m, minus a negligible curvature drop.
-    expect(Math.min(...z)).toBeCloseTo(19, 1); // 1 m below ground
+    expect(Math.min(...z)).toBeCloseTo(20 - SKIRT_M, 1); // walls continue below the ground
     expect(Math.max(...z)).toBeGreaterThan(25 + 2); // ridge above the 5 m walls
     expect(Math.max(...z)).toBeLessThan(25 + 6.1);
     expect(m.indices.length % 3).toBe(0);
@@ -102,6 +102,23 @@ describe("osm wall finishes and balconies", () => {
     expect(Math.min(...ps)).toBeGreaterThanOrEqual(2.3);
     expect(Math.max(...ps)).toBeLessThanOrEqual(3.6);
     expect(new Set(ps.map((p) => p.toFixed(1))).size).toBeGreaterThan(5);
+  });
+});
+
+describe("street lamps", () => {
+  it("builds a pole at the roadside with a head towards the street", () => {
+    const pole = frame.lonLat(5, 0), street = frame.lonLat(0, 0);
+    const m = buildingMesh([], frame, ground, [{ pole, street }]);
+    const n = m.positions.length / 3;
+    const z = Array.from({ length: n }, (_, i) => m.positions[3 * i + 2]!);
+    expect(Math.max(...z)).toBeCloseTo(20 + LAMP_HEIGHT_M, 1);
+    // The head (its own material) hangs between the pole and the street.
+    const heads = Array.from({ length: n }, (_, i) => i).filter((i) => Math.floor(m.uvm[i * 4 + 2]! + 0.001) === MAT.lampHead);
+    expect(heads.length).toBeGreaterThan(0);
+    for (const i of heads) {
+      expect(m.positions[3 * i]!).toBeGreaterThan(2.9);
+      expect(m.positions[3 * i]!).toBeLessThan(4);
+    }
   });
 });
 

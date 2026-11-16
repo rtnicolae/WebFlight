@@ -255,6 +255,12 @@ void main() {
       spec = fr ? 0.0 : gs;
       if (!fr && hb > 0.55) emis = LOOK_NIGHT * vec3(1.0, 0.74, 0.42) * (0.3 + 0.5 * hb);
     }
+  } else if (mat > 11.5) {
+    // Lamp head: glows at night.
+    base = v_color.rgb;
+    emis = LOOK_NIGHT * vec3(1.0, 0.8, 0.5) * 1.3;
+  } else if (mat > 10.5) {
+    base = v_color.rgb; // steel pole
   } else if (mat > 9.5) {
     // Glass curtain wall: mullions every 1.5 m, opaque spandrels at the floor slabs.
     float gs;
@@ -415,7 +421,7 @@ export class OsmLayer {
       const key = this.pending.get(e.data.id);
       this.pending.delete(e.data.id);
       if (!key || !this.tiles.has(key)) return; // dropped meanwhile
-      const p = e.data.trees ? (this.atlas ? treeImpostors(this.atlas, e.data.origin, e.data.trees) : undefined) : this.textures ? primitive(e.data, this.o.shadows, this.textures) : undefined;
+      const p = e.data.trees ? (this.atlas ? treeImpostors(this.atlas, e.data.origin, e.data.trees, this.o.shadows) : undefined) : this.textures ? primitive(e.data, this.o.shadows, this.textures) : undefined;
       if (p) this.viewer.scene.primitives.add(p);
       this.tiles.set(key, p ?? null);
       // Street lamps at night: warm points, small in the distance.

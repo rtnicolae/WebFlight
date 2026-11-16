@@ -4,7 +4,7 @@
  * set buildings and trees on the same ground the renderer draws.
  */
 import { TerrariumTerrain, tileToLonLat } from "@webflight/environment";
-import { buildingMesh, fetchOsm, LocalFrame, townTreeInstances, treeInstances, type Mesh, type OsmTile } from "@webflight/scenery";
+import { buildingMesh, fetchOsm, LAMP_HEIGHT_M, LocalFrame, townTreeInstances, treeInstances, type Mesh, type OsmTile } from "@webflight/scenery";
 
 export type OsmRequest =
   | { id: number; kind: "buildings"; url: string; x: number; y: number }
@@ -23,8 +23,6 @@ export interface OsmResult {
   trees?: Float32Array;
 }
 
-/** Lamp heads above the street [m]. */
-const LAMP_HEIGHT_M = 7;
 const terrain = new TerrariumTerrain({ zoom: 13, maxTiles: 256 });
 const tiles = new Map<string, Promise<OsmTile>>();
 const tile = (url: string, x: number, y: number): Promise<OsmTile> => {
@@ -56,9 +54,14 @@ async function build(req: OsmRequest): Promise<void> {
   const ground = (lon: number, lat: number) => terrain.heightAt(lat, lon) ?? 0;
   const frame = new LocalFrame(clon, clat, ground(clon, clat));
   if (req.kind === "buildings") {
-    const mesh = buildingMesh(osm.buildings, frame, ground);
+    const mesh = buildingMesh(osm.buildings, frame, ground, osm.lamps);
     const lamps = new Float64Array(osm.lamps.length * 3);
-    osm.lamps.forEach(([lon, lat], i) => lamps.set([lon, lat, ground(lon, lat) + LAMP_HEIGHT_M], i * 3));
+    // The glow sits at the lamp head: 1.55 m from the pole towards the street.
+    osm.lamps.forEach((l, i) => {
+      const [px, py] = frame.en(...l.pole), [sx, sy] = frame.en(...l.street), d = Math.hypot(sx - px, sy - py) || 1;
+      const [lon, lat] = frame.lonLat(px + ((sx - px) / d) * 1.55, py + ((sy - py) / d) * 1.55);
+      lamps.set([lon, lat, ground(...l.pole) + LAMP_HEIGHT_M - 0.25], i * 3);
+    });
     const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], mesh, lamps };
     (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer, mesh.uvm.buffer]);
   } else {

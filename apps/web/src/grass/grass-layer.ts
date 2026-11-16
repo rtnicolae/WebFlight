@@ -17,6 +17,7 @@ import {
   GeometryInstance,
   Primitive,
   PrimitiveType,
+  ShadowMode,
   Transforms,
   type Cartographic,
   type Viewer,
@@ -131,6 +132,8 @@ export class GrassLayer {
       asynchronous: false,
       compressVertices: false,
       allowPicking: false,
+      // Grass under the glider's or a building's shadow is in shadow.
+      shadows: this.viewer.shadows ? ShadowMode.RECEIVE_ONLY : ShadowMode.DISABLED,
     });
   }
 

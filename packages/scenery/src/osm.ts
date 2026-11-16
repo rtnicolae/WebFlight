@@ -68,8 +68,8 @@ export interface OsmTile {
   greens: OsmPolygon[];
   /** Road and rail centrelines with half-widths [m], [lon, lat] points. */
   roads: { pts: LonLat[]; halfM: number }[];
-  /** Street lamps (see lamps.ts). */
-  lamps: LonLat[];
+  /** Street lamps (see lamps.ts): the pole's foot and the point on the street it lights. */
+  lamps: { pole: LonLat; street: LonLat }[];
 }
 
 const ROAD_HALF_M: Record<string, number> = { motorway: 12, trunk: 9, primary: 7, secondary: 5.5, tertiary: 4.5, minor: 3.5, service: 2.5, track: 2, rail: 3, transit: 3 };
@@ -78,7 +78,8 @@ export function osmFromTile(data: Uint8Array, z: number, x: number, y: number): 
   const t: OsmTile = { buildings: [], forests: [], greens: [], roads: [], lamps: [] };
   const layers = decodeMvt(data);
   const lamps = streetLamps(layers, z, y);
-  t.lamps = lamps.pts.map(([u, v]) => tileToLonLat(x + u / lamps.extent, y + v / lamps.extent, z));
+  const ll = (u: number, v: number) => tileToLonLat(x + u / lamps.extent, y + v / lamps.extent, z);
+  t.lamps = lamps.pts.map((l) => ({ pole: ll(l.pu, l.pv), street: ll(l.u, l.v) }));
   for (const layer of layers) {
     if (layer.name === "building") t.buildings = polygonsFromLayer(layer, z, x, y, () => true, true);
     else if (layer.name === "landcover") {
@@ -215,7 +216,12 @@ const hash = (a: number, b: number) => (Math.imul(Math.round(a * 1e6), 73856093)
 // --- buildings -------------------------------------------------------------------------
 
 /** Surface materials (the integer part of uvm.z); the renderer draws each from u, v. */
-export const MAT = { wall: 0, plainWall: 1, tiles: 2, bitumen: 3, gravel: 4, coping: 5, unit: 6, balcony: 7, brick: 8, plainBrick: 9, glass: 10 } as const;
+export const MAT = { wall: 0, plainWall: 1, tiles: 2, bitumen: 3, gravel: 4, coping: 5, unit: 6, balcony: 7, brick: 8, plainBrick: 9, glass: 10, pole: 11, lampHead: 12 } as const;
+
+/** How far walls continue below the lowest ground under a building [m]. */
+export const SKIRT_M = 10;
+/** Lamp head height above the street [m]. */
+export const LAMP_HEIGHT_M = 7;
 
 /** Buildings taller than this [m] are blocks (flats, offices) rather than houses. */
 export const BLOCK_WALL_M = 13;
@@ -307,8 +313,9 @@ export function footprintRect(ring: [number, number][]): { corners: [number, num
  * rectangle; everything else a flat roof. The base sits on the lowest ground under the
  * footprint, so on slopes the uphill walls go into the ground instead of floating.
  */
-export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn): Mesh {
+export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = []): Mesh {
   const m = new MeshBuilder();
+  for (const l of lamps) lampPost(m, frame, ground, l);
   for (const poly of polys) {
     // Outlines whose parts are mapped separately (the parts are drawn instead).
     if (poly.properties["hide_3d"]) continue;
@@ -326,8 +333,9 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     m.seed = Math.floor(r() * 500) / 512;
     const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r);
     const wall = finish.col;
-    // Walls reach 1 m below the ground so slopes and terrain smoothing hide no gap.
-    const h0 = base - 1;
+    // Walls reach well below the ground: far away the renderer draws coarser terrain, which on
+    // slopes lies metres off the true heights, and buildings must not float over it.
+    const h0 = base - SKIRT_M;
     const h1 = base + Math.max(2.5, tall) - Number(poly.properties["render_min_height"] ?? 0);
     m.wallH = h1 - base;
     const block = m.wallH > BLOCK_WALL_M;
@@ -430,6 +438,37 @@ function box(m: MeshBuilder, frame: LocalFrame, ax: number, ay: number, tx: numb
   quad([b0, b1, f1, f0], [z0, z0, z0, z0], [0, w, w, 0], [-1, -1, -1, -1], [0, 0, -1]);
   quad([f0, f1, b1, b0], [z1, z1, z1, z1], [0, w, w, 0], [-2, -2, -2, -2], [0, 0, 1]);
   [m.mat, m.wallH] = [mat, wallH];
+}
+
+/**
+ * A street lamp: a 7 m steel pole at the roadside with a short arm towards the street and a
+ * flat head at its end (the renderer makes the head glow at night).
+ */
+function lampPost(m: MeshBuilder, frame: LocalFrame, ground: GroundFn, l: OsmTile["lamps"][number]) {
+  const [px, py] = frame.en(...l.pole), [sx, sy] = frame.en(...l.street);
+  const d = Math.hypot(sx - px, sy - py) || 1, ax = (sx - px) / d, ay = (sy - py) / d;
+  const g = ground(...l.pole);
+  const steel = [92, 96, 100], head = [210, 205, 190];
+  m.seed = 0;
+  // Boxes along the arm direction (a) and across it: [from, to along a, half width, z0, z1, material].
+  const part = (a0: number, a1: number, hw: number, z0: number, z1: number, mat: number, col: number[]) => {
+    m.mat = mat;
+    m.wallH = z1 - z0;
+    const P = (a: number, c: number): [number, number] => [px + ax * a - ay * c, py + ay * a + ax * c];
+    const quad = (q: [number, number][], zs: number[], N: number[]) => {
+      const i = q.map((p, k) => ((m.u = k % 2), (m.v = zs[k]! - z0), m.vertex(p[0], p[1], frame.up(p[0], p[1], g + zs[k]!), N[0]!, N[1]!, N[2]!, col)));
+      m.tri(i[0]!, i[1]!, i[2]!);
+      m.tri(i[0]!, i[2]!, i[3]!);
+    };
+    const c = [P(a0, -hw), P(a1, -hw), P(a1, hw), P(a0, hw)];
+    const sides: [number, number, number[]][] = [[0, 1, [ay, -ax, 0]], [1, 2, [ax, ay, 0]], [2, 3, [-ay, ax, 0]], [3, 0, [-ax, -ay, 0]]];
+    for (const [i, j, N] of sides) quad([c[i]!, c[j]!, c[j]!, c[i]!], [z0, z0, z1, z1], N);
+    quad([c[0]!, c[1]!, c[2]!, c[3]!], [z1, z1, z1, z1], [0, 0, 1]);
+    quad([c[0]!, c[3]!, c[2]!, c[1]!], [z0, z0, z0, z0], [0, 0, -1]);
+  };
+  part(-0.07, 0.07, 0.07, -1, LAMP_HEIGHT_M, MAT.pole, steel);
+  part(0.07, 1.5, 0.04, LAMP_HEIGHT_M - 0.12, LAMP_HEIGHT_M - 0.04, MAT.pole, steel);
+  part(1.2, 1.9, 0.14, LAMP_HEIGHT_M - 0.22, LAMP_HEIGHT_M - 0.1, MAT.lampHead, head);
 }
 
 /** A 0.6 m parapet around a flat roof (wall material, no windows) with a light coping on top. */

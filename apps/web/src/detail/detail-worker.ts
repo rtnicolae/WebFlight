@@ -602,7 +602,7 @@ function nightLook(ctx: Ctx, q: DetailRequest, layers: MvtLayer[] | undefined, t
     const r = 15 / ((C * Math.cos((latC * Math.PI) / 180)) / 2 ** q.z / SIZE); // 15 m pools
     ctx.globalCompositeOperation = "lighter";
     const a = 0.34 * Math.min(1, (n - 0.3) / 0.4);
-    for (const [u, v] of lamps.pts) {
+    for (const { u, v } of lamps.pts) {
       const [px, py] = f(u, v);
       if (px < -r || py < -r || px > SIZE + r || py > SIZE + r) continue;
       const grad = ctx.createRadialGradient(px, py, 0, px, py, r);

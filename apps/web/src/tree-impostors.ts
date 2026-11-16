@@ -7,6 +7,7 @@
  */
 import { lookGlsl } from "./lighting.ts";
 import {
+  ShadowMode,
   BoundingSphere,
   Cartesian3,
   ComponentDatatype,
@@ -52,6 +53,8 @@ out vec2 v_st;
 out float v_fade;
 out float v_y;
 out vec3 v_upEC;
+out vec3 v_nEC;
+out vec3 v_positionEC;
 void main() {
   vec4 p = czm_computePosition();
   // Positions may be in the tile's local frame (Cesium keeps the instance's model matrix):
@@ -68,13 +71,18 @@ void main() {
     float sway = corner.y * corner.y * 0.25 * sin(t * 1.3 + dot(world, vec3(0.013, 0.021, 0.017)));
     offset = right * (corner.x * size.x + sway) + up * corner.y * size.y;
     v_fade = 1.0 - smoothstep(0.86, 0.98, elev);
+    // A rounded crown's normal on the flat card: out to the sides, up towards the top, and
+    // towards the viewer in the middle, so the tree has a sunlit and a shaded side.
+    v_nEC = mat3(czm_view) * normalize(right * corner.x * 1.8 + up * (corner.y - 0.4) * 1.3 + normalize(toCam - up * elev) * 0.7);
   } else {
     vec3 east = normalize(cross(vec3(0.0, 0.0, 1.0), up));
     vec3 north = cross(up, east);
     offset = east * corner.x * size.x + north * (corner.y - 0.5) * size.x + up * size.y * 0.62;
     v_fade = smoothstep(0.7, 0.92, elev);
+    v_nEC = mat3(czm_view) * normalize(east * corner.x * 1.6 + north * (corner.y - 0.5) * 1.6 + up * 0.8);
   }
   p.xyz += offset * m3; // world → model (m3 is a rotation: its transpose is its inverse)
+  v_positionEC = (czm_modelViewRelativeToEye * p).xyz; // for receiving shadows
   v_st = rect.xy + vec2(corner.x + 0.5, corner.y) * rect.zw;
   v_y = corner.z < 0.5 ? corner.y : 1.0;
   v_upEC = mat3(czm_view) * up;
@@ -86,15 +94,18 @@ in vec2 v_st;
 in float v_fade;
 in float v_y;
 in vec3 v_upEC;
+in vec3 v_nEC;
+in vec3 v_positionEC;
 void main() {
   czm_materialInput mi;
   mi.st = v_st;
   czm_material m = czm_getMaterial(mi);
   float h = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   if (m.alpha < 0.5 || h > v_fade) discard;
-  // The pictures are lit softly from above; add the sim's sun and some self-shading low down.
-  float sun = max(dot(normalize(v_upEC), czm_lightDirectionEC), 0.0);
-  vec3 c = m.diffuse * (0.9 * LOOK_AMBIENT + 0.45 * sun * czm_lightColor) * (0.86 + 0.14 * v_y);
+  // Lit like the buildings: sky light plus the sun (or moon) on the side facing it, wrapped a
+  // little round the crown (leaves scatter light).
+  float sun = max((dot(normalize(v_nEC), czm_lightDirectionEC) + 0.3) / 1.3, 0.0);
+  vec3 c = m.diffuse * (0.72 * LOOK_AMBIENT + 0.75 * sun * czm_lightColor) * (0.86 + 0.14 * v_y);
   out_FragColor = vec4(c, 1.0);
 }`;
 
@@ -118,7 +129,7 @@ function atlasMaterial(atlas: TreeAtlas): Material {
 }
 
 /** One Primitive for a cell's trees (instances: 5 floats each, see treeInstances). */
-export function treeImpostors(atlas: TreeAtlas, origin: [number, number, number], inst: Float32Array): Primitive | undefined {
+export function treeImpostors(atlas: TreeAtlas, origin: [number, number, number], inst: Float32Array, shadows = false): Primitive | undefined {
   const n = inst.length / 5;
   if (!n) return undefined;
   const broad = atlas.trees.filter((t) => t.kind === 0), con = atlas.trees.filter((t) => t.kind === 1);
@@ -179,5 +190,7 @@ export function treeImpostors(atlas: TreeAtlas, origin: [number, number, number]
     asynchronous: false,
     compressVertices: false,
     allowPicking: false,
+    // In a building's or a hill's shadow, trees are in shadow too.
+    shadows: shadows ? ShadowMode.RECEIVE_ONLY : ShadowMode.DISABLED,
   });
 }

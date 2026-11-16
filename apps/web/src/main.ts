@@ -82,7 +82,9 @@ async function main(): Promise<void> {
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
   // 30 m strip is a smudge) draw ours.
   const imageryReady = addImagery(viewer, IMAGERY, sun).then((mode) => {
-    if (RUNWAY && (mode !== "photo" || !highResPhotoAt(RUNWAY.latDeg, RUNWAY.lonDeg) || params.get("runway") === "1")) addRunway(viewer, RUNWAY);
+    // In photo mode the ground imagery shows the runway itself (orthophoto, or our detail tiles,
+    // which paint it and take the time of day): an overlay on top would be lit differently.
+    if (RUNWAY && (mode !== "photo" || params.get("detail") === "0" || params.get("runway") === "1")) addRunway(viewer, RUNWAY);
     return mode;
   });
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, soaringFrom(F.weather).cumulus);

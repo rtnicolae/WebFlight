@@ -12,6 +12,7 @@ import {
   type Entity,
   type TerrainProvider,
 } from "cesium";
+import { LOOK } from "./lighting.ts";
 import type { TerrariumTerrain } from "@webflight/environment";
 import type { ThermalView } from "./protocol.ts";
 import { CloudLayer } from "./clouds.ts";
@@ -159,7 +160,7 @@ export function addRunway(viewer: Viewer, r: Runway): void {
     return Cartesian3.fromDegrees(r.lonDeg + e / (M_PER_DEG_LAT * cosLat), r.latDeg + n / M_PER_DEG_LAT);
   };
   const quad = (a0: number, a1: number, c0: number, c1: number, color: Color, zIndex: number) =>
-    viewer.entities.add({ polygon: { hierarchy: [at(a0, c0), at(a1, c0), at(a1, c1), at(a0, c1)], material: color, zIndex } });
+    viewer.entities.add({ polygon: { hierarchy: [at(a0, c0), at(a1, c0), at(a1, c1), at(a0, c1)], material: new Color(color.red * LOOK.ground, color.green * LOOK.ground, color.blue * LOOK.ground, color.alpha), zIndex } }); // unlit overlay: takes the time of day from LOOK
   const L = r.lengthM / 2, W = r.widthM / 2;
   if (!r.paved) {
     // Grass strip: a mown band a shade lighter than the field, no paint (real grass strips

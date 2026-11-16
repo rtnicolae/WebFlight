@@ -8,7 +8,8 @@
 import type { MvtLayer } from "./mvt.ts";
 
 export const LAMP_SPACING_M = 38;
-const LAMP_ROADS = new Set(["primary", "secondary", "tertiary", "minor"]);
+/** Streets with lamps, and where the pole stands from the centreline [m] (beyond the kerb). */
+const LAMP_ROADS: Record<string, number> = { primary: 7.5, secondary: 6, tertiary: 5.2, minor: 4.2 };
 const BUILT = new Set(["residential", "commercial", "retail", "industrial"]);
 
 const inRing = (ring: [number, number][], x: number, y: number) => {
@@ -20,11 +21,20 @@ const inRing = (ring: [number, number][], x: number, y: number) => {
   return c;
 };
 
-/** Lamp positions in the tile's own coordinates (0…extent, y down), for a tile at zoom z, row y. */
-export function streetLamps(layers: MvtLayer[], z: number, y: number): { extent: number; pts: [number, number][] } {
+export interface TileLamp {
+  /** On the street's centreline (the pool of light), tile units. */
+  u: number;
+  v: number;
+  /** The pole at the roadside, alternating sides along the street, tile units. */
+  pu: number;
+  pv: number;
+}
+
+/** Lamps in the tile's own coordinates (0…extent, y down), for a tile at zoom z, row y. */
+export function streetLamps(layers: MvtLayer[], z: number, y: number): { extent: number; pts: TileLamp[] } {
   const roads = layers.find((l) => l.name === "transportation"), landuse = layers.find((l) => l.name === "landuse");
   const extent = roads?.extent ?? 4096;
-  const pts: [number, number][] = [];
+  const pts: TileLamp[] = [];
   if (!roads || !landuse) return { extent, pts };
   // Built-up polygons with their bounding boxes (even-odd over a feature's rings).
   const built = landuse.features
@@ -41,16 +51,21 @@ export function streetLamps(layers: MvtLayer[], z: number, y: number): { extent:
   const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / 2 ** z)));
   const unitM = (40075016.686 * Math.cos(lat)) / 2 ** z / extent;
   for (const f of roads.features) {
-    if (f.type !== 2 || !LAMP_ROADS.has(String(f.properties["class"] ?? "")) || f.properties["brunnel"] === "tunnel") continue;
+    const side = LAMP_ROADS[String(f.properties["class"] ?? "")];
+    if (f.type !== 2 || !side || f.properties["brunnel"] === "tunnel") continue;
     for (const line of f.geometry) {
       let next = LAMP_SPACING_M / 3; // distance along the line to the next lamp [m]
+      let n = 0;
       for (let i = 0; i + 1 < line.length; i++) {
         const [ax, ay] = line[i]!, [bx, by] = line[i + 1]!;
         const len = Math.hypot(bx - ax, by - ay) * unitM;
         while (next <= len) {
           const t = next / len, u = ax + (bx - ax) * t, v = ay + (by - ay) * t;
           // Only lamps inside the tile proper: the neighbour places those in its own area.
-          if (u >= 0 && v >= 0 && u < extent && v < extent && isBuilt(u, v)) pts.push([u, v]);
+          if (u >= 0 && v >= 0 && u < extent && v < extent && isBuilt(u, v)) {
+            const l = Math.hypot(bx - ax, by - ay) || 1, o = ((n++ % 2 ? 1 : -1) * side) / unitM;
+            pts.push({ u, v, pu: u - ((by - ay) / l) * o, pv: v + ((bx - ax) / l) * o });
+          }
           next += LAMP_SPACING_M;
         }
         next -= len;

@@ -3,7 +3,7 @@
  * uses), the winch (FGData's supacat winch), and the rope between the glider's hitch and the
  * tug/winch. Positions come from the FDM worker's snapshot under FG property names.
  */
-import { lightModel } from "./lighting.ts";
+import { lightModel, LOOK } from "./lighting.ts";
 import { Axis, Cartesian3, Color, Material, Matrix4, Model, PolylineCollection, type ModelNode, type Polyline, type Scene } from "cesium";
 import { modelMatrixEcef, type AnimationEntry, type SnapshotLayout } from "@webflight/fdm-core";
 import { AnimationRig } from "./animations.ts";
@@ -101,7 +101,7 @@ export class LaunchView {
     this.tug = new SharedModelView(new URL("dr400/", modelsUrl).href, "/ai/models/dragger");
     this.winch = new SharedModelView(new URL("winch/", modelsUrl).href, "");
     scene.primitives.add(this.ropes);
-    this.rope = this.ropes.add({ positions: this.pts, width: 2, material: Material.fromType("Color", { color: Color.fromCssColorString("#f4e9c8") }), show: false });
+    this.rope = this.ropes.add({ positions: this.pts, width: 2, material: Material.fromType("Color", { color: Color.multiplyByScalar(Color.fromCssColorString("#f4e9c8"), LOOK.ground, new Color()).withAlpha(1) }), show: false });
   }
 
   async load(): Promise<void> {
