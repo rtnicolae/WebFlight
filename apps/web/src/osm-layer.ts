@@ -17,6 +17,9 @@ import {
   GeometryAttributes,
   GeometryInstance,
   Primitive,
+  Color,
+  NearFarScalar,
+  PointPrimitiveCollection,
   PrimitiveType,
   Resource,
   TextureMagnificationFilter,
@@ -29,7 +32,7 @@ import * as Cesium from "cesium";
 import { lonLatToTile, tileToLonLat } from "@webflight/environment";
 import type { Mesh } from "@webflight/scenery";
 import type { OsmRequest, OsmResult } from "./osm-worker.ts";
-import { lookGlsl } from "./lighting.ts";
+import { LOOK, lookGlsl } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { loadTreeAtlas, treeImpostors, type TreeAtlas } from "./tree-impostors.ts";
 
@@ -402,6 +405,7 @@ export class OsmLayer {
   private atlas: TreeAtlas | undefined;
   private textures: Textures | undefined;
   private lastKey = "";
+  private readonly lamps = new Map<string, PointPrimitiveCollection>();
 
   private constructor(
     private readonly viewer: Viewer,
@@ -414,6 +418,16 @@ export class OsmLayer {
       const p = e.data.trees ? (this.atlas ? treeImpostors(this.atlas, e.data.origin, e.data.trees) : undefined) : this.textures ? primitive(e.data, this.o.shadows, this.textures) : undefined;
       if (p) this.viewer.scene.primitives.add(p);
       this.tiles.set(key, p ?? null);
+      // Street lamps at night: warm points, small in the distance.
+      if (e.data.lamps?.length && LOOK.day < 0.6) {
+        const pts = new PointPrimitiveCollection();
+        const k = 1 - LOOK.day / 0.6, col = new Color(1, 0.78, 0.46, 0.95 * k);
+        const size = new NearFarScalar(40, 1.6, 6000, 0.3);
+        for (let i = 0; i < e.data.lamps.length; i += 3)
+          pts.add({ position: Cartesian3.fromDegrees(e.data.lamps[i]!, e.data.lamps[i + 1]!, e.data.lamps[i + 2]!), pixelSize: 4, color: col, scaleByDistance: size });
+        this.viewer.scene.primitives.add(pts);
+        this.lamps.set(key, pts);
+      }
     };
   }
 
@@ -481,6 +495,9 @@ export class OsmLayer {
       if (!far) continue;
       if (p) this.viewer.scene.primitives.remove(p);
       this.tiles.delete(k);
+      const l = this.lamps.get(k);
+      if (l) this.viewer.scene.primitives.remove(l);
+      this.lamps.delete(k);
     }
   }
 }

@@ -10,6 +10,7 @@
  * tile's buildings or trees as one draw call and this code stays testable without WebGL.
  */
 import earcut from "earcut";
+import { streetLamps } from "./lamps.ts";
 import { decodeMvt, type MvtLayer } from "./mvt.ts";
 
 export type LonLat = [number, number];
@@ -67,13 +68,18 @@ export interface OsmTile {
   greens: OsmPolygon[];
   /** Road and rail centrelines with half-widths [m], [lon, lat] points. */
   roads: { pts: LonLat[]; halfM: number }[];
+  /** Street lamps (see lamps.ts). */
+  lamps: LonLat[];
 }
 
 const ROAD_HALF_M: Record<string, number> = { motorway: 12, trunk: 9, primary: 7, secondary: 5.5, tertiary: 4.5, minor: 3.5, service: 2.5, track: 2, rail: 3, transit: 3 };
 
 export function osmFromTile(data: Uint8Array, z: number, x: number, y: number): OsmTile {
-  const t: OsmTile = { buildings: [], forests: [], greens: [], roads: [] };
-  for (const layer of decodeMvt(data)) {
+  const t: OsmTile = { buildings: [], forests: [], greens: [], roads: [], lamps: [] };
+  const layers = decodeMvt(data);
+  const lamps = streetLamps(layers, z, y);
+  t.lamps = lamps.pts.map(([u, v]) => tileToLonLat(x + u / lamps.extent, y + v / lamps.extent, z));
+  for (const layer of layers) {
     if (layer.name === "building") t.buildings = polygonsFromLayer(layer, z, x, y, () => true, true);
     else if (layer.name === "landcover") {
       t.forests = polygonsFromLayer(layer, z, x, y, (p) => p["class"] === "wood");
@@ -93,7 +99,7 @@ export function osmFromTile(data: Uint8Array, z: number, x: number, y: number): 
 
 export async function fetchOsm(url: string, z: number, x: number, y: number): Promise<OsmTile> {
   const r = await fetch(url.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y)));
-  if (!r.ok) return { buildings: [], forests: [], greens: [], roads: [] };
+  if (!r.ok) return { buildings: [], forests: [], greens: [], roads: [], lamps: [] };
   return osmFromTile(new Uint8Array(await r.arrayBuffer()), z, x, y);
 }
 

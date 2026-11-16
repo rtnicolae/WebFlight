@@ -6,7 +6,7 @@
  * shadows. Visual only.
  */
 import { airfieldsAround, bearingDeg, designatorDeg } from "@webflight/environment";
-import { decodeMvt, type MvtLayer } from "@webflight/scenery";
+import { decodeMvt, streetLamps, type MvtLayer } from "@webflight/scenery";
 import { edgeAwareUpsample, synthesize, hash2, COVERS, type Cover, type GroundTextures } from "./synth.ts";
 import { addRelief, buildDetailTexture, TEXTURES, type DetailTexture, type TextureRole } from "./textures.ts";
 
@@ -14,6 +14,11 @@ declare const self: DedicatedWorkerGlobalScope;
 
 export interface DetailRequest {
   id: number;
+  /**
+   * Time of day (lighting.ts LOOK): the tile darkens itself by `ground` and, by `night`,
+   * paints the street lamps' light pools (the layer is then drawn at full brightness).
+   */
+  look?: { ground: number; night: number };
   /** 3D building shadows are drawn: don't also paint them into tiles within their reach (zoom ≥ 15). */
   realShadows?: boolean;
   x: number;
@@ -342,6 +347,7 @@ async function composeLow(q: DetailRequest): Promise<ImageBitmap> {
       if (l.name === "waterway") drawWaterways(ctx, l, f, w);
       else if (l.name === "transportation") drawRoads(ctx, l, f, w, mPerPx);
     }
+  nightLook(ctx, q, undefined, undefined);
   return flipped(cv);
 }
 
@@ -574,5 +580,38 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
       }
     }
   }
+  nightLook(ctx, q, layers, toPx);
   return flipped(cv);
+}
+
+/** Darken the finished tile for the time of day; at night add the street lamps' pools of light. */
+function nightLook(ctx: Ctx, q: DetailRequest, layers: MvtLayer[] | undefined, toPx: ((e: number) => ToPx) | undefined): void {
+  const look = q.look;
+  if (!look || look.ground >= 0.995) return;
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.globalCompositeOperation = "multiply";
+  // Towards night the remaining light is bluish.
+  const g = look.ground, n = look.night;
+  ctx.fillStyle = `rgb(${Math.round(255 * g * (1 - 0.18 * n))}, ${Math.round(255 * g * (1 - 0.06 * n))}, ${Math.round(255 * Math.min(1, g * (1 + 0.25 * n)))})`;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  if (n > 0.3 && layers && toPx && q.z >= 14) {
+    const lamps = streetLamps(layers, 14, q.y >> (q.z - 14));
+    const f = toPx(lamps.extent);
+    const latC = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (q.y + 0.5)) / 2 ** q.z))) * 180) / Math.PI;
+    const r = 15 / ((C * Math.cos((latC * Math.PI) / 180)) / 2 ** q.z / SIZE); // 15 m pools
+    ctx.globalCompositeOperation = "lighter";
+    const a = 0.34 * Math.min(1, (n - 0.3) / 0.4);
+    for (const [u, v] of lamps.pts) {
+      const [px, py] = f(u, v);
+      if (px < -r || py < -r || px > SIZE + r || py > SIZE + r) continue;
+      const grad = ctx.createRadialGradient(px, py, 0, px, py, r);
+      grad.addColorStop(0, `rgba(255, 190, 110, ${a})`);
+      grad.addColorStop(0.35, `rgba(255, 170, 90, ${a * 0.45})`);
+      grad.addColorStop(1, "rgba(255, 160, 80, 0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(px - r, py - r, 2 * r, 2 * r);
+    }
+  }
+  ctx.globalCompositeOperation = "source-over";
 }

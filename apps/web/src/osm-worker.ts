@@ -17,17 +17,21 @@ export interface OsmResult {
   origin: [number, number, number];
   /** Buildings: a mesh. */
   mesh?: Mesh;
+  /** With buildings: street lamp heads, lon/lat/height triples. */
+  lamps?: Float64Array;
   /** Trees: instances, 5 floats each (see treeInstances). */
   trees?: Float32Array;
 }
 
+/** Lamp heads above the street [m]. */
+const LAMP_HEIGHT_M = 7;
 const terrain = new TerrariumTerrain({ zoom: 13, maxTiles: 256 });
 const tiles = new Map<string, Promise<OsmTile>>();
 const tile = (url: string, x: number, y: number): Promise<OsmTile> => {
   const k = `${x}/${y}`;
   let t = tiles.get(k);
   if (!t) {
-    t = fetchOsm(url, 14, x, y).catch(() => ({ buildings: [], forests: [], greens: [], roads: [] }));
+    t = fetchOsm(url, 14, x, y).catch(() => ({ buildings: [], forests: [], greens: [], roads: [], lamps: [] }));
     tiles.set(k, t);
     // Keep the last few dozen decoded tiles: trees ask for the same parent many times.
     if (tiles.size > 40) tiles.delete(tiles.keys().next().value!);
@@ -53,7 +57,9 @@ async function build(req: OsmRequest): Promise<void> {
   const frame = new LocalFrame(clon, clat, ground(clon, clat));
   if (req.kind === "buildings") {
     const mesh = buildingMesh(osm.buildings, frame, ground);
-    const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], mesh };
+    const lamps = new Float64Array(osm.lamps.length * 3);
+    osm.lamps.forEach(([lon, lat], i) => lamps.set([lon, lat, ground(lon, lat) + LAMP_HEIGHT_M], i * 3));
+    const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], mesh, lamps };
     (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer, mesh.uvm.buffer]);
   } else {
     const [e0, n1] = frame.en(lon0, lat0), [e1, n0] = frame.en(lon1, lat1);

@@ -11,6 +11,7 @@ import { ArcGisMapServerImageryProvider, Cartesian2, Cartographic, Credit, Disca
 import { sunFrom, type Sun } from "./paint/landcover.ts";
 import type { PaintRequest } from "./paint/paint-worker.ts";
 import type { DetailRequest } from "./detail/detail-worker.ts";
+import { LOOK } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 
 export type ImageryMode = "photo" | "painted" | "grid" | "osm";
@@ -171,6 +172,8 @@ export class DetailImageryProvider {
   private nextId = 0;
   private rr = 0;
   private empty: ImageBitmap | undefined;
+  /** The tiles carry the time of day themselves (darkening, lamp light): see lighting.ts. */
+  readonly selfLit = true;
   /** Composed tiles, least recently used first (~260 kB each). */
   private readonly cache = new Map<string, ImageBitmap>();
 
@@ -234,7 +237,7 @@ export class DetailImageryProvider {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { key, resolve, reject });
       const dbg = new URLSearchParams(location.search);
-      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: this.sun, realShadows: this.realShadows, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
+      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: this.sun, realShadows: this.realShadows, look: { ground: LOOK.ground, night: 1 - LOOK.day }, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
     });
   }
 }

@@ -6,3 +6,4 @@ export { BLOCK_FLOOR_M, BLOCK_WALL_M, buildingMesh, MAT, parseColour, windowPitc
 export type { GroundFn, LonLat, Mesh, OsmPolygon, OsmTile, TreeOptions } from "./osm.ts";
 export { fetchRunwayLines, mergeRunwayPieces, runwayPiecesFromTile } from "./runways.ts";
 export type { RunwayLine } from "./runways.ts";
+export { LAMP_SPACING_M, streetLamps } from "./lamps.ts";

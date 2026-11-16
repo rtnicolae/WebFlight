@@ -73,6 +73,7 @@ export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevati
   }
   // Ground imagery (every layer, also those added later).
   const dim = (l: ImageryLayer) => {
+    if ((l.imageryProvider as unknown as { selfLit?: boolean }).selfLit) return; // detail tiles darken themselves
     l.brightness = LOOK.ground;
     l.saturation = 0.45 + 0.55 * LOOK.day;
   };
