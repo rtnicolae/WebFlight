@@ -207,6 +207,21 @@ export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProv
   // camera is right at the ground, and past level 30 its traversal crashes ("d.southwest").
   // Beyond the last level, tiles are upsampled and refinement stops.
   p.getTileDataAvailable = (_x: number, _y: number, level: number) => level <= MAX_TERRAIN_LEVEL;
+  // Tiles past the last level are upsampled from their parent, which needs the parent's mesh
+  // (HeightmapTerrainData.upsample returns "try later" without it). But Cesium counts a parent
+  // as ready as soon as its heights arrived, so a parent that is not itself being drawn (its
+  // children are) never got its mesh built, and the children under the glider waited forever
+  // while a much coarser ancestor was drawn there (seen: four level-20 tiles stuck for minutes,
+  // `globe.tilesLoaded` never true). Reporting `canUpsample` only once the mesh exists makes
+  // Cesium advance the parent first, as it does for any parent not ready.
+  const request = p.requestTileGeometry.bind(p);
+  p.requestTileGeometry = (x, y, level, req) => {
+    const r = request(x, y, level, req);
+    return r?.then((td) => {
+      Object.defineProperty(td, "canUpsample", { get: () => (td as unknown as { _mesh?: unknown })._mesh !== undefined });
+      return td;
+    });
+  };
   return p;
 }
 /** Deepest terrain level (~55 m tiles at 45° N, a vertex every 0.8 m). Each level deeper quadruples the tiles to load near the camera. */
