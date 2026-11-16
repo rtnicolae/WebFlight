@@ -45,6 +45,9 @@ jobs:
       # SPA-free static site: no Jekyll processing (it would drop files starting with "_").
       - run: touch apps/web/dist/.nojekyll
       - uses: actions/configure-pages@v5
+        with:
+          # Turns Pages on (source: GitHub Actions) if it is still off.
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: apps/web/dist
