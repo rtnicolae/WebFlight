@@ -135,10 +135,9 @@ export interface Mesh {
   colors: Uint8Array;
   indices: Uint32Array;
   /**
-   * Per vertex (4 floats): texture u, v [m]; material + style seed (integer part: 0 wall with
-   * windows, 1 plain wall, 2 tiled roof, 3 bitumen roof, 4 gravel roof, 5 concrete coping,
-   * 6 metal rooftop unit; fraction: the building's style seed in [0, 0.99)); and the
-   * building's wall height [m] (facade details need to know where the wall ends).
+   * Per vertex (4 floats): texture u, v [m]; material + style seed (integer part: see MAT;
+   * fraction: the building's style seed, a multiple of 1/512 below 0.98); and the building's wall height [m]
+   * (facade details need to know where the wall ends; a balcony's own height).
    */
   uvm: Float32Array;
 }
@@ -153,7 +152,7 @@ class MeshBuilder {
   u = 0;
   v = 0;
   mat = 0;
-  /** Style seed of the current building [0, 0.99) and its wall height [m]. */
+  /** Style seed of the current building (k/512 < 0.98) and its wall height [m]. */
   seed = 0;
   wallH = 0;
   get count() {
@@ -209,14 +208,66 @@ const hash = (a: number, b: number) => (Math.imul(Math.round(a * 1e6), 73856093)
 
 // --- buildings -------------------------------------------------------------------------
 
-/** Window spacing along walls [m] (the renderer draws them from the wall's u, v). */
-export const WINDOW_PITCH_M = 2.8;
+/** Surface materials (the integer part of uvm.z); the renderer draws each from u, v. */
+export const MAT = { wall: 0, plainWall: 1, tiles: 2, bitumen: 3, gravel: 4, coping: 5, unit: 6, balcony: 7, brick: 8, plainBrick: 9, glass: 10 } as const;
+
+/** Buildings taller than this [m] are blocks (flats, offices) rather than houses. */
+export const BLOCK_WALL_M = 13;
+/** Storey height of blocks [m] (the renderer uses the same). */
+export const BLOCK_FLOOR_M = 2.8;
+
+/**
+ * Window spacing along walls [m], per building from its style seed (the renderer computes
+ * the same from the seed it gets): houses 2.3–3.6 m, blocks 2.7–3.6 m.
+ */
+export function windowPitch(seed: number, block: boolean): number {
+  const f = (seed * 7) % 1;
+  return block ? 2.7 + 0.9 * f : 2.3 + 1.3 * f;
+}
 /** Plaster, render and brick wall colours of central-European towns. */
 const WALLS = [[236, 230, 216], [228, 218, 196], [240, 236, 228], [222, 204, 176], [232, 214, 200], [214, 210, 202], [226, 222, 206], [196, 150, 120]];
 /** Pitched roofs: clay tiles, weathered tiles, slate/metal. */
 const PITCHED = [[150, 86, 66], [136, 80, 64], [118, 74, 60], [156, 104, 80], [96, 92, 90], [82, 84, 90]];
 /** Flat roofs: gravel, bitumen, metal. */
 const FLAT = [[112, 110, 104], [96, 94, 90], [126, 122, 114], [88, 90, 94], [104, 98, 88]];
+/** Balcony fronts: bare and painted concrete, enamelled panels. */
+const BALCONY = [[206, 202, 192], [190, 186, 178], [214, 206, 186], [200, 176, 150], [170, 186, 196], [214, 196, 160], [168, 172, 160]];
+
+const NAMED: Record<string, string> = { white: "#ffffff", lightgrey: "#d3d3d3", lightgray: "#d3d3d3", grey: "#808080", gray: "#808080", wheat: "#f5deb3", beige: "#f5f5dc", ivory: "#fffff0", tan: "#d2b48c", firebrick: "#b22222", brown: "#a52a2a", maroon: "#800000", red: "#ff0000", yellow: "#ffff00", orange: "#ffa500", pink: "#ffc0cb", silver: "#c0c0c0", cream: "#fffdd0" };
+/** A CSS colour from OpenStreetMap (building:colour) as RGB bytes, if it parses. */
+export function parseColour(c: unknown): [number, number, number] | undefined {
+  let s = String(c ?? "").trim().toLowerCase();
+  s = NAMED[s] ?? s;
+  const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/.exec(s);
+  if (!m) return undefined;
+  const h = m[1]!.length === 3 ? m[1]!.replace(/./g, "$&$&") : m[1]!;
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+/**
+ * Wall finish of a building. OpenMapTiles turns building:material into a colour: brick
+ * (#bd8161) and glass (#5a81a0) get those materials; other colours (building:colour) tint
+ * the plaster. Untagged buildings are plaster, or brick as often as brick is common where they
+ * stand (north of ~50.5° N: the Low Countries, northern Germany, Poland).
+ */
+function wallFinish(props: Record<string, unknown>, latDeg: number, r: () => number): { kind: "plaster" | "brick" | "glass"; col: number[] } {
+  const raw = String(props["colour"] ?? "").toLowerCase();
+  const col = parseColour(raw);
+  if (raw === "#bd8161" || raw === "firebrick" || raw === "brown" || raw === "maroon") return { kind: "brick", col: brickTint(r) };
+  if (raw === "#5a81a0") return { kind: "glass", col: [104, 128, 146] };
+  if (col) {
+    // Painted plaster: OSM colours are often saturated; keep them believable.
+    const l = (col[0] + col[1] + col[2]) / 3;
+    return { kind: "plaster", col: col.map((c) => Math.max(70, Math.min(245, 0.55 * c + 0.45 * l + 18))) };
+  }
+  if (r() < (latDeg > 50.5 ? 0.4 : 0.06)) return { kind: "brick", col: brickTint(r) };
+  return { kind: "plaster", col: WALLS[Math.floor(r() * WALLS.length)]! };
+}
+/** Brick walls use the photo's own colour; the vertex colour is a mild per-building tint. */
+const brickTint = (r: () => number) => {
+  const k = 225 + r() * 30;
+  return [k, k * (0.94 + 0.06 * r()), k * (0.9 + 0.1 * r())];
+};
 
 /**
  * The minimum-area rectangle around a footprint (rotating calipers over the ring's edge
@@ -253,6 +304,8 @@ export function footprintRect(ring: [number, number][]): { corners: [number, num
 export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn): Mesh {
   const m = new MeshBuilder();
   for (const poly of polys) {
+    // Outlines whose parts are mapped separately (the parts are drawn instead).
+    if (poly.properties["hide_3d"]) continue;
     const rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
     const outer = rings[0]!;
     if (outer.length < 4) continue;
@@ -263,12 +316,18 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     base += Number(poly.properties["render_min_height"] ?? 0);
     const tall = Number(poly.properties["render_height"] ?? 5);
     const r = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]));
-    const wall = WALLS[Math.floor(r() * WALLS.length)]!;
-    m.seed = Math.min(0.99, r());
+    // Quantized so the renderer recovers it exactly (it hashes it per window).
+    m.seed = Math.floor(r() * 500) / 512;
+    const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r);
+    const wall = finish.col;
     // Walls reach 1 m below the ground so slopes and terrain smoothing hide no gap.
     const h0 = base - 1;
     const h1 = base + Math.max(2.5, tall) - Number(poly.properties["render_min_height"] ?? 0);
     m.wallH = h1 - base;
+    const block = m.wallH > BLOCK_WALL_M;
+    const pitch = windowPitch(m.seed, block);
+    const balconies = block && finish.kind !== "glass" ? balconyStyle(r) : undefined;
+    let nBalc = 0;
     const ccw = ringArea(outer) > 0; // positive = counter-clockwise with y up (north)
     for (const ring of rings) {
       for (let k = 0; k < ring.length - 1; k++) {
@@ -280,8 +339,9 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
         let nx = dy / l, ny = -dx / l;
         if (!ccw) { nx = -nx; ny = -ny; }
         // Windows on walls long and high enough, their grid centred on the wall.
-        m.mat = l >= 3.2 && h1 - base >= 2.6 ? 0 : 1;
-        const u0 = (WINDOW_PITCH_M - (l % WINDOW_PITCH_M)) / 2;
+        const windows = l >= 3.2 && h1 - base >= 2.6;
+        m.mat = finish.kind === "glass" ? MAT.glass : finish.kind === "brick" ? (windows ? MAT.brick : MAT.plainBrick) : windows ? MAT.wall : MAT.plainWall;
+        const u0 = (pitch - (l % pitch)) / 2;
         const vert = (x: number, y: number, h: number, u: number) => {
           m.u = u;
           m.v = h - base;
@@ -290,6 +350,7 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
         const a0 = vert(ax, ay, h0, u0), b0 = vert(bx, by, h0, u0 + l), b1 = vert(bx, by, h1, u0 + l), a1 = vert(ax, ay, h1, u0);
         m.tri(a0, b0, b1);
         m.tri(a0, b1, a1);
+        if (balconies && windows && l >= 9 && nBalc < 400) nBalc += balconyStack(m, frame, ax, ay, dx / l, dy / l, nx, ny, l, u0, pitch, base, m.wallH, balconies, r);
       }
     }
     const rect = rings.length === 1 && outer.length <= 14 && tall <= 14 ? footprintRect(outer) : undefined;
@@ -301,6 +362,68 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     }
   }
   return m.build();
+}
+
+interface BalconyStyle {
+  /** Every `period` window columns a balcony `width` columns wide, starting at `phase`. */
+  period: number;
+  width: number;
+  phase: number;
+  depth: number;
+  /** Share of balconies glazed in (most in Romanian blocks, each owner their own way). */
+  enclosed: number;
+  colour: number[];
+}
+function balconyStyle(r: () => number): BalconyStyle | undefined {
+  if (r() < 0.25) return undefined; // offices, hotels, flats without
+  const period = 2 + Math.floor(r() * 3);
+  return { period, width: r() < 0.6 || period === 2 ? 1 : 2, phase: Math.floor(r() * period), depth: 1.0 + r() * 0.5, enclosed: r() < 0.5 ? 0.5 + r() * 0.5 : r() * 0.4, colour: BALCONY[Math.floor(r() * BALCONY.length)]! };
+}
+
+/**
+ * Balconies up one wall of a block: boxes on every storey above the ground floor, in columns
+ * aligned with the facade's windows; open ones are a slab with a 1.05 m front, enclosed ones
+ * reach to the slab above (the renderer glazes their upper part). Returns how many.
+ */
+function balconyStack(m: MeshBuilder, frame: LocalFrame, ax: number, ay: number, tx: number, ty: number, nx: number, ny: number, l: number, u0: number, pitch: number, base: number, wallH: number, st: BalconyStyle, r: () => number): number {
+  const floors = Math.floor((wallH - 0.6) / BLOCK_FLOOR_M);
+  let n = 0;
+  for (let c = 1; (c + st.width) * pitch <= u0 + l + 1e-6; c++) {
+    if ((c + st.phase) % st.period !== 0 || c * pitch < u0) continue;
+    const s0 = c * pitch - u0 + 0.12, s1 = (c + st.width) * pitch - u0 - 0.12;
+    for (let f = 1; f < floors; f++) {
+      const closed = r() < st.enclosed;
+      const z0 = f * BLOCK_FLOOR_M - 0.2, z1 = closed ? (f + 1) * BLOCK_FLOOR_M - 0.25 : f * BLOCK_FLOOR_M + 1.05;
+      // Owners paint their own: a slight shade per balcony.
+      const k = 0.92 + 0.12 * r();
+      box(m, frame, ax, ay, tx, ty, nx, ny, s0, s1, -0.05, st.depth, base + z0, base + z1, st.colour.map((v) => Math.min(255, v * k)));
+      n++;
+    }
+  }
+  return n;
+}
+
+/** A box against a wall: from s0 to s1 along it, d0 to d1 out from it, z0 to z1 [m] up. */
+function box(m: MeshBuilder, frame: LocalFrame, ax: number, ay: number, tx: number, ty: number, nx: number, ny: number, s0: number, s1: number, d0: number, d1: number, z0: number, z1: number, col: readonly number[]) {
+  const [mat, wallH] = [m.mat, m.wallH];
+  m.mat = MAT.balcony;
+  const H = z1 - z0;
+  m.wallH = H;
+  const P = (s: number, d: number): [number, number] => [ax + tx * s + nx * d, ay + ty * s + ny * d];
+  const quad = (p: [number, number][], zs: number[], us: number[], vs: number[], N: number[]) => {
+    const i = p.map((q, k) => ((m.u = us[k]!), (m.v = vs[k]!), m.vertex(q[0], q[1], frame.up(q[0], q[1], zs[k]!), N[0]!, N[1]!, N[2]!, col)));
+    m.tri(i[0]!, i[1]!, i[2]!);
+    m.tri(i[0]!, i[2]!, i[3]!);
+  };
+  const w = s1 - s0, dd = d1 - d0;
+  const f0 = P(s0, d1), f1 = P(s1, d1), b0 = P(s0, d0), b1 = P(s1, d0);
+  // Front, the two sides, underside, top.
+  quad([f0, f1, f1, f0], [z0, z0, z1, z1], [0, w, w, 0], [0, 0, H, H], [nx, ny, 0]);
+  quad([b0, f0, f0, b0], [z0, z0, z1, z1], [0, dd, dd, 0], [0, 0, H, H], [-tx, -ty, 0]);
+  quad([f1, b1, b1, f1], [z0, z0, z1, z1], [0, dd, dd, 0], [0, 0, H, H], [tx, ty, 0]);
+  quad([b0, b1, f1, f0], [z0, z0, z0, z0], [0, w, w, 0], [-1, -1, -1, -1], [0, 0, -1]);
+  quad([f0, f1, b1, b0], [z1, z1, z1, z1], [0, w, w, 0], [-2, -2, -2, -2], [0, 0, 1]);
+  [m.mat, m.wallH] = [mat, wallH];
 }
 
 /** A 0.6 m parapet around a flat roof (wall material, no windows) with a light coping on top. */

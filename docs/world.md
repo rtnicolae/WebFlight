@@ -107,8 +107,8 @@ From the glider at 220 m:
   OSM forests (conifers commoner with height), denser near the camera and sparser outwards.
 - **Buildings**: the OSM meshes carry texture coordinates and a material per vertex; the
   shader multiplies each building's own colour by a photo detail map (plaster, clay tiles,
-  bitumen; fading out by 260 m, as they have no mipmaps) and draws windows from the wall
-  coordinates (2.8 m apart, 2.7 m floors, frames, mullion, sky-tinted glass with a sun glint).
+  bitumen; mipmapped and repeating, the photo detail eases out by 260 m) and draws windows from
+  the wall coordinates.
 - **Relief and colour up close**: the ground textures' height maps give each sample a slope;
   the detail tiles shade it by the sun (a slope rising towards the sun is darker), at true
   scale and in the ×16 layer, so grass and soil have lit and shaded sides instead of a flat
@@ -121,3 +121,17 @@ From the glider at 220 m:
   panel joints or banded plaster and shop fronts; all get a contact shadow, grime under the
   sills and rain streaks. Flat roofs: bitumen membrane (with seams) or gravel, two rotated
   samples mixed by noise and large stains, a parapet with coping, and metal rooftop units.
+- **Variety**: window pitch (houses 2.3–3.6 m, blocks 2.7–3.6 m), window size, storey height
+  and frame colour vary per building; per window, roller shutters part or all the way down,
+  curtains, and the sky reflected in the glass. Beyond ~200 m windows fade into the facade's
+  average tone instead of speckling. The style seed is a multiple of 1/512 so the shader
+  recovers it exactly (hashing an interpolated value gives per-pixel noise).
+- **Wall finishes from OSM**: OpenMapTiles turns `building:material` into a colour; brick
+  (`#bd8161`) gets a brick photo with soldier-course lintels, glass (`#5a81a0`) a curtain wall
+  with mullions and spandrels, other `building:colour`s tint the plaster. Untagged buildings
+  are plaster, or brick where brick is common (40% north of 50.5° N, else 6%). Outlines with
+  `hide_3d` are skipped (their parts are drawn).
+- **Balconies** are real geometry on blocks (walls over 13 m, 2.8 m storeys): boxes on every
+  storey above the ground floor in columns aligned with the windows (every 2–4 columns, one or
+  two wide, per building), open (slab and a 1.05 m front with a handrail) or glazed in to the
+  slab above, as owners do in Romanian blocks; at most 400 per building. They cast shadows.

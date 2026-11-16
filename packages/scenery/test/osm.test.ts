@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildingMesh, footprintRect, LocalFrame, treeMesh, type OsmPolygon } from "../src/index.ts";
+import { BLOCK_FLOOR_M, buildingMesh, footprintRect, LocalFrame, MAT, parseColour, treeMesh, windowPitch, type Mesh, type OsmPolygon } from "../src/index.ts";
+
+const mats = (m: Mesh) => new Set(Array.from({ length: m.uvm.length / 4 }, (_, i) => Math.floor(m.uvm[i * 4 + 2]! + 0.001)));
 
 const LAT = 45.7, LON = 25.5;
 const frame = new LocalFrame(LON, LAT, 500);
@@ -57,6 +59,49 @@ describe("osm buildings", () => {
     const mats = new Set(Array.from({ length: n }, (_, i) => Math.floor(m.uvm[i * 4 + 2]!)));
     expect(mats.has(5)).toBe(true);
     expect(m.uvm[3]).toBeCloseTo(18, 5);
+  });
+});
+
+describe("osm wall finishes and balconies", () => {
+  it("reads building:material and building:colour, and skips outlines drawn as parts", () => {
+    expect(parseColour("#bd8161")).toEqual([189, 129, 97]);
+    expect(parseColour("wheat")).toEqual([245, 222, 179]);
+    expect(parseColour("#abc")).toEqual([170, 187, 204]);
+    expect(parseColour("sort of red")).toBeUndefined();
+    const at = (props: Record<string, unknown>) => buildingMesh([{ rings: [rect(0, 0, 30, 12)], properties: { render_height: 9, ...props } }], frame, ground);
+    expect(mats(at({ colour: "#bd8161" })).has(MAT.brick)).toBe(true);
+    expect(mats(at({ colour: "#5a81a0" })).has(MAT.glass)).toBe(true);
+    expect(mats(at({ colour: "#5a81a0" })).has(MAT.wall)).toBe(false);
+    expect(at({ hide_3d: true }).indices.length).toBe(0);
+  });
+
+  it("puts balconies on blocks only, in window columns, on storeys above the ground floor", () => {
+    let found = 0;
+    for (let k = 0; k < 12; k++) {
+      // Slab blocks 60 × 12 m, 30 m high, in different places (different style seeds).
+      const m = buildingMesh([{ rings: [rect(k * 100, 0, 60, 12)], properties: { render_height: 30 } }], frame, ground);
+      const n = m.uvm.length / 4;
+      for (let i = 0; i < n; i++) {
+        if (Math.floor(m.uvm[i * 4 + 2]! + 0.001) !== MAT.balcony) continue;
+        found++;
+        // Bottom at a slab (0.2 m below a floor level above the ground floor), at most a storey high.
+        const zRel = m.positions[3 * i + 2]! - 20;
+        const h = m.uvm[i * 4 + 3]!;
+        expect(h).toBeGreaterThan(1);
+        expect(h).toBeLessThan(BLOCK_FLOOR_M);
+        expect(zRel).toBeGreaterThan(BLOCK_FLOOR_M - 0.3);
+      }
+    }
+    expect(found).toBeGreaterThan(0);
+    const house = buildingMesh([{ rings: [rect(0, 0, 14, 9)], properties: { render_height: 7 } }], frame, ground);
+    expect(mats(house).has(MAT.balcony)).toBe(false);
+  });
+
+  it("varies the window pitch per building within believable bounds", () => {
+    const ps = Array.from({ length: 50 }, (_, i) => windowPitch(i / 50, false));
+    expect(Math.min(...ps)).toBeGreaterThanOrEqual(2.3);
+    expect(Math.max(...ps)).toBeLessThanOrEqual(3.6);
+    expect(new Set(ps.map((p) => p.toFixed(1))).size).toBeGreaterThan(5);
   });
 });
 

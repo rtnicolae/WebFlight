@@ -18,10 +18,14 @@ import {
   GeometryInstance,
   Primitive,
   PrimitiveType,
+  Resource,
+  TextureMagnificationFilter,
+  TextureMinificationFilter,
   ShadowMode,
   Transforms,
   type Viewer,
 } from "cesium";
+import * as Cesium from "cesium";
 import { lonLatToTile, tileToLonLat } from "@webflight/environment";
 import type { Mesh } from "@webflight/scenery";
 import type { OsmRequest, OsmResult } from "./osm-worker.ts";
@@ -64,11 +68,15 @@ void main() {
 
 /**
  * Buildings. Facades are generated from each wall's coordinates (u along the wall, v up from
- * the ground [m]), its building's wall height and a style seed:
+ * the ground [m]), its building's wall height and a style seed (mesh materials: MAT in
+ * @webflight/scenery):
  *  - houses (≤ 13 m): plinth, floor bands, windows with frames/sills/recess, shutters on some,
  *    doors on the ground floor, eave shadow under the roof;
- *  - blocks (> 13 m): precast panels (joints every 3.6 m × 2.8 m) or banded plaster, ribbon of
- *    windows, shop fronts on the ground floor;
+ *  - blocks (> 13 m): precast panels (joints) or banded plaster, shop fronts on the ground
+ *    floor; balconies are real boxes (open, or glazed in by their owners);
+ *  - window pitch, size, frame colour per building; per window: roller shutters part way
+ *    down, curtains, the sky reflected in the glass;
+ *  - brick walls from a brick photo, with soldier-course lintels; glass curtain walls;
  *  - everywhere: contact shadow at the foot, grime under the sills, rain streaks.
  * Roofs: clay tiles, bitumen membrane or gravel, sampled twice at different rotations and
  * mixed by noise (no repeat), with large-scale stains; parapet copings; metal rooftop units.
@@ -85,12 +93,23 @@ float vnoise(vec2 p) {
   f = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash1(i), hash1(i + vec2(1.0, 0.0)), f.x), mix(hash1(i + vec2(0.0, 1.0)), hash1(i + vec2(1.0, 1.0)), f.x), f.y);
 }
+// Glass: dark interior, the sky reflected (brighter towards grazing angles), sun glint.
+vec3 glassColour(vec3 n, vec3 up, float tint, out float spec) {
+  vec3 view = normalize(v_positionEC);
+  vec3 r = reflect(view, n);
+  float sky = clamp(dot(r, up) * 1.4 + 0.25, 0.0, 1.0);
+  float fres = pow(1.0 - abs(dot(view, n)), 3.0);
+  vec3 refl = mix(vec3(0.30, 0.31, 0.30), vec3(0.62, 0.72, 0.84), sky);
+  spec = pow(max(dot(r, czm_lightDirectionEC), 0.0), 80.0);
+  return mix(vec3(0.10, 0.12, 0.15) + 0.06 * tint, refl, 0.22 + 0.5 * fres);
+}
 
 void main() {
   vec3 n = normalize(v_normalEC);
   if (!gl_FrontFacing) n = -n;
+  vec3 up = normalize(czm_normal * vec3(0.0, 0.0, 1.0));
   float d = length(v_positionEC);
-  float mat = floor(v_uvm.z + 0.001), seed = fract(v_uvm.z);
+  float mat = floor(v_uvm.z + 0.001), seed = floor((v_uvm.z - mat) * 512.0 + 0.5) / 512.0;
   float u = v_uvm.x, v = v_uvm.y, wallH = v_uvm.w;
   czm_materialInput mi;
   mi.str = v_uvm.xyz;
@@ -99,98 +118,188 @@ void main() {
   vec3 base = v_color.rgb * tex.diffuse * (1.0 + clamp(tex.shininess, -0.35, 0.45));
   float detail = 1.0 - smoothstep(350.0, 1400.0, d); // facade detail fades with distance
   float spec = 0.0;
+  bool brick = mat > 7.5 && mat < 9.5;
+  float wm = brick ? mat - 8.0 : mat;
 
-  if (mat < 1.5) {
+  if (wm < 1.5) {
     bool block = wallH > 13.0;
-    float floorH = block ? 2.8 : 2.7;
+    // Per building: storey height, window pitch and size, frame colour.
+    float floorH = block ? 2.8 : 2.65 + 0.35 * fract(seed * 3.0);
+    float pitch = block ? 2.7 + 0.9 * fract(seed * 7.0) : 2.3 + 1.3 * fract(seed * 7.0);
+    float fs = fract(seed * 13.0), ws = fract(seed * 29.0);
     float fl = floor(v / floorH), fy = fract(v / floorH);
     // Dirt and weathering: darker towards the foot, soft vertical rain streaks.
     float streak = vnoise(vec2(u * 0.9, v * 0.08 + seed * 31.0));
     base *= mix(1.0, 0.86 + 0.14 * smoothstep(0.0, 2.5, v), detail);
-    base *= 1.0 - 0.10 * detail * smoothstep(0.55, 0.95, streak);
+    base *= 1.0 - (brick ? 0.05 : 0.10) * detail * smoothstep(0.55, 0.95, streak);
     // Plinth: a stone/render base course.
     if (v < 0.55) base = mix(base, vec3(0.42, 0.41, 0.39) * (0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), detail * 0.85);
     // Contact shadow at the foot, eave shadow under the roof (houses).
     base *= mix(1.0, 0.72 + 0.28 * smoothstep(0.0, 0.9, v), detail);
     if (!block) base *= mix(1.0, 0.68 + 0.32 * smoothstep(0.0, 0.7, wallH - v), detail);
     // Facade style by seed: houses get floor bands; blocks are panels (seed < 0.6) or banded.
-    bool panels = block && seed < 0.6;
+    bool panels = block && !brick && seed < 0.6;
     if (panels) {
       vec2 pj = vec2(abs(fract(u / 3.6 + 0.5) - 0.5) * 3.6, abs(fract(v / 2.8 + 0.5) - 0.5) * 2.8);
       if (min(pj.x, pj.y) < 0.025 && v > 0.55) base *= mix(1.0, 0.72, detail);
-    } else if (fl >= 1.0 && v < wallH - 0.3) {
+    } else if (!brick && fl >= 1.0 && v < wallH - 0.3) {
       float band = fy * floorH;
       if (band < 0.12) base *= mix(1.0, 1.14, detail);            // cornice catching light
       else if (band < 0.26) base *= mix(1.0, 0.84, detail);       // its shadow
     }
-    if (mat < 0.5 && v > 0.55 && v < wallH - 0.4) {
-      float pitch = 2.8;
+    if (wm < 0.5 && v > 0.55 && v < wallH - 0.4) {
       float col = floor(u / pitch);
       vec2 w = vec2(fract(u / pitch), fy);
+      vec2 sz = vec2(pitch, floorH);
       float cell = hash1(vec2(col, fl) + seed * 17.0);
       bool ground = fl < 0.5;
+      // Window: 0.9–1.6 m (houses) or 1.2–2.0 m (blocks) wide, sill 0.85–0.95 m up.
+      float halfW = min(block ? 0.6 + 0.4 * ws : 0.45 + 0.35 * ws, pitch * 0.5 - 0.35);
+      float sill = block ? 0.85 : 0.95, wh = block ? 1.45 : 1.2 + 0.35 * fs;
       // Ground floor: doors on houses, shop fronts on blocks.
       bool door = ground && !block && cell < 0.22;
       bool shop = ground && block && seed > 0.35;
-      vec2 lo = door ? vec2(0.36, 0.0) : shop ? vec2(0.06, 0.12) : vec2(0.32, 0.33);
-      vec2 hi = door ? vec2(0.64, 0.78) : shop ? vec2(0.94, 0.86) : block ? vec2(0.68, 0.78) : vec2(0.68, 0.74);
-      vec2 sz = vec2(pitch, floorH);
+      vec2 lo = door ? vec2(0.5 - 0.5 / pitch, 0.0) : shop ? vec2(0.06, 0.12) : vec2(0.5 - halfW / pitch, sill / floorH);
+      vec2 hi = door ? vec2(0.5 + 0.5 / pitch, 2.1 / floorH) : shop ? vec2(0.94, 0.86) : vec2(0.5 + halfW / pitch, min(0.92, (sill + wh) / floorH));
       // Shutters on some houses.
-      bool shutters = !block && !ground && seed > 0.55;
-      if (shutters && w.y > lo.y && w.y < hi.y && ((w.x > lo.x - 0.13 && w.x < lo.x) || (w.x > hi.x && w.x < hi.x + 0.13))) {
+      bool shutters = !block && !ground && seed > 0.55 && !brick;
+      float sw = 0.36 / pitch;
+      if (shutters && w.y > lo.y && w.y < hi.y && ((w.x > lo.x - sw && w.x < lo.x) || (w.x > hi.x && w.x < hi.x + sw))) {
         vec3 sc = seed > 0.8 ? vec3(0.22, 0.32, 0.22) : seed > 0.68 ? vec3(0.36, 0.24, 0.16) : vec3(0.55, 0.55, 0.52);
         float louvre = 0.85 + 0.15 * step(0.5, fract(w.y * sz.y * 14.0));
         base = mix(base, sc * louvre, detail);
       }
-      if (all(greaterThan(w, lo)) && all(lessThan(w, hi))) {
+      // Brick: a soldier-course lintel over each opening.
+      if (brick && w.x > lo.x - 0.03 && w.x < hi.x + 0.03 && (w.y - hi.y) * sz.y > 0.0 && (w.y - hi.y) * sz.y < 0.2) base *= mix(1.0, 0.82, detail);
+      vec3 frameCol = fs > 0.75 ? vec3(0.30, 0.22, 0.16) : fs > 0.6 ? vec3(0.24, 0.25, 0.26) : vec3(0.88, 0.88, 0.86);
+      if (block && !brick) frameCol = fs > 0.5 ? vec3(0.62, 0.63, 0.64) : vec3(0.86, 0.86, 0.84);
+      // Windows resolve to a few pixels from ~200 m: fade them into the facade's average
+      // tone (glass darkens it by its share of the wall) instead of letting them speckle.
+      float wd = 1.0 - smoothstep(160.0, 480.0, d);
+      if (!door) base *= 1.0 - (1.0 - wd) * 0.55 * (hi.x - lo.x) * (hi.y - lo.y);
+      if (wd > 0.0 && all(greaterThan(w, lo)) && all(lessThan(w, hi))) {
         vec2 e = min(w - lo, hi - w) * sz;
-        float frame = door ? 0.05 : 0.07;
+        vec2 p = (w - lo) * sz, P = (hi - lo) * sz; // within the opening [m]
+        float frame = door ? 0.05 : 0.06;
         vec3 fill;
         if (door) {
           fill = vec3(0.30, 0.20, 0.13) * (0.9 + 0.1 * step(0.5, fract(w.x * sz.x * 3.0)));
         } else {
-          // Glass: dark interior with a sky reflection that varies per pane; recessed (the
-          // lintel shades the top, the reveal one side).
-          vec3 glass = vec3(0.17, 0.21, 0.26) + vec3(0.07, 0.09, 0.12) * hash1(vec2(col, fl) + 3.1);
-          float topDist = (hi.y - w.y) * sz.y, sideDist = (w.x - lo.x) * sz.x;
-          glass *= 0.55 + 0.45 * smoothstep(0.06, 0.30, topDist) * smoothstep(0.06, 0.16, sideDist);
+          float gs;
+          vec3 glass = glassColour(n, up, hash1(vec2(col, fl) + 3.1), gs);
+          // Recessed: the lintel shades the top, the reveal one side.
+          glass *= 0.6 + 0.4 * smoothstep(0.04, 0.25, P.y - p.y) * smoothstep(0.04, 0.14, p.x);
+          // Curtains in some windows: a lighter, warm interior at the sides.
+          float b = hash1(vec2(col * 1.7, fl) + seed * 5.3 + 7.7);
+          if (!shop && b > 0.45 && b < 0.7 && (p.x < 0.25 * P.x || p.x > 0.75 * P.x)) glass = mix(glass, vec3(0.62, 0.58, 0.52), 0.55);
           fill = glass;
-          if (!shop && abs(w.x - 0.5) < 0.012) fill = vec3(0.86, 0.85, 0.82);   // mullion
-          vec3 r = reflect(normalize(v_positionEC), n);
-          spec = detail * pow(max(dot(r, czm_lightDirectionEC), 0.0), 60.0) * step(frame, min(e.x, e.y));
+          spec = gs * detail;
+          // Mullion (wider windows), transom on some houses.
+          if (!shop && P.x > 1.0 && abs(p.x - 0.5 * P.x) < 0.035) { fill = frameCol; spec = 0.0; }
+          if (!shop && !block && fs > 0.5 && abs(p.y - 0.72 * P.y) < 0.03) { fill = frameCol; spec = 0.0; }
+          // Roller shutters part way (or all the way) down.
+          float down = b < 0.38 ? (b < 0.1 ? 1.0 : 0.15 + 0.8 * fract(b * 9.0)) : 0.0;
+          if (!shop && P.y - p.y < down * P.y) {
+            fill = (block ? vec3(0.70, 0.70, 0.68) : vec3(0.62, 0.58, 0.52)) * (0.88 + 0.12 * step(0.35, fract(p.y * 18.0)));
+            spec = 0.0;
+          }
         }
-        if (min(e.x, e.y) < frame) fill = block ? vec3(0.62, 0.63, 0.64) : vec3(0.86, 0.85, 0.82);
-        base = mix(base, fill, detail);
+        if (min(e.x, e.y) < frame) { fill = frameCol; spec = 0.0; }
+        base = mix(base, fill, wd);
+        spec *= wd;
       }
       // Sill below windows, and grime washing down from it.
       if (!ground && w.x > lo.x - 0.02 && w.x < hi.x + 0.02) {
         float below = (lo.y - w.y) * sz.y;
-        if (below >= 0.0 && below < 0.06) base = mix(base, vec3(0.9, 0.89, 0.86), detail);
+        if (below >= 0.0 && below < 0.06) base = mix(base, vec3(0.86, 0.85, 0.82), detail);
         else if (below >= 0.06 && below < 0.9) base *= mix(1.0, 0.9 + 0.1 * smoothstep(0.06, 0.9, below) + 0.05 * vnoise(vec2(u * 12.0, 0.0)), detail);
       }
     }
   } else if (mat > 4.5 && mat < 5.5) {
     base = v_color.rgb * (0.95 + 0.1 * vnoise(vec2(u * 2.0, v * 2.0)));
-  } else if (mat > 5.5) {
+  } else if (mat > 5.5 && mat < 6.5) {
     // Rooftop units: ribbed metal sides, a darker base line.
     base = v_color.rgb * (abs(n.z) < 0.5 ? 0.9 + 0.1 * step(0.5, fract(u * 6.0)) : 1.0) * (abs(n.z) < 0.5 && v < 0.1 ? 0.7 : 1.0);
+  } else if (mat > 6.5 && mat < 7.5) {
+    // Balconies: slab edge, a solid front to 1.05 m, glazing above on enclosed ones.
+    float hb = hash1(floor(v_color.rgb * 255.0 + 0.5).rg * 0.37); // per balcony (its colour; quantized: interpolation noise must not reach the hash)
+    vec3 concrete = vec3(0.70, 0.69, 0.66) * (0.92 + 0.08 * vnoise(vec2(u, v) * 3.0));
+    if (v < -1.5) base = concrete * 0.95;                 // top
+    else if (v < -0.5) base = concrete * 0.55;            // underside, in its own shade
+    else if (v < 0.2) base = concrete;                    // slab edge
+    else if (v < 1.05) {
+      base = v_color.rgb * (hb > 0.5 ? 0.94 + 0.06 * step(0.5, fract(u * 5.0)) : 1.0);
+      base *= 0.9 + 0.1 * smoothstep(0.2, 0.5, v);         // drip stain at the foot
+      if (wallH < 1.5 && v > 0.98) base = vec3(0.80, 0.80, 0.78); // handrail
+    } else {
+      float gs;
+      vec3 g = glassColour(n, up, hb, gs);
+      float pane = 0.7 + 0.5 * hb;
+      vec2 q = vec2(fract(u / pane), v - 1.05);
+      vec3 fc = hb > 0.7 ? vec3(0.42, 0.30, 0.20) : vec3(0.88, 0.88, 0.86);
+      bool fr = min(q.x, 1.0 - q.x) * pane < 0.045 || q.y < 0.06 || wallH - v < 0.08;
+      if (hash1(vec2(floor(u / pane), hb)) > 0.75) g = mix(g, vec3(0.66, 0.62, 0.55), 0.6); // curtain
+      base = fr ? fc : g;
+      spec = fr ? 0.0 : gs;
+    }
+  } else if (mat > 9.5) {
+    // Glass curtain wall: mullions every 1.5 m, opaque spandrels at the floor slabs.
+    float gs;
+    vec3 g = glassColour(n, up, seed, gs) * mix(vec3(1.0), v_color.rgb * 1.6, 0.35);
+    float fy = fract(v / 3.6) * 3.6;
+    vec2 pm = vec2(abs(fract(u / 1.5 + 0.5) - 0.5) * 1.5, abs(fract(v / 3.6 + 0.5) - 0.5) * 3.6);
+    base = g; spec = gs;
+    if (fy < 0.9 && v > 1.0) { base = mix(g, v_color.rgb * 0.55, 0.7); spec *= 0.3; }
+    if (min(pm.x, pm.y) < 0.05 * mix(1.0, 3.0, smoothstep(150.0, 600.0, d))) { base = vec3(0.55, 0.57, 0.6); spec = 0.0; }
   }
   float sun = max(dot(n, czm_lightDirectionEC), 0.0);
-  float sky = 0.56 + 0.14 * dot(n, normalize(czm_normal * vec3(0.0, 0.0, 1.0)));
+  float sky = 0.56 + 0.14 * dot(n, up);
   vec3 c = base * (sky + 0.75 * sun * czm_lightColor) + spec * czm_lightColor;
   c = mix(c, vec3(0.70, 0.78, 0.86), clamp((d - 1500.0) / 9000.0, 0.0, 0.45));
   out_FragColor = vec4(c, 1.0);
 }`;
 
-let buildingMaterial: Material | undefined;
-function material(): Material {
+/** Cesium's renderer classes: exported at runtime, not in its public typings. */
+interface Texture {
+  generateMipmap(): void;
+}
+const { Sampler, Texture, TextureWrap } = Cesium as unknown as {
+  Sampler: new (o: Record<string, unknown>) => unknown;
+  Texture: new (o: { context: unknown; source: HTMLImageElement; sampler: unknown }) => Texture;
+  TextureWrap: { REPEAT: number };
+};
+
+/** Building textures: mipmapped and repeating (without mipmaps, they glitter at a distance). */
+const TEXTURES = ["wall", "tiles", "flat", "gravel", "brick"] as const;
+type Textures = Record<(typeof TEXTURES)[number], Texture>;
+
+async function loadTextures(viewer: Viewer): Promise<Textures> {
   const base = new URL(`${import.meta.env.BASE_URL}buildings/`, location.href).href;
-  buildingMaterial ??= new Material({
+  const context = (viewer.scene as unknown as { context: unknown }).context;
+  const sampler = new Sampler({ wrapS: TextureWrap.REPEAT, wrapT: TextureWrap.REPEAT, minificationFilter: TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR, maximumAnisotropy: 8 });
+  const out = {} as Textures;
+  await Promise.all(
+    TEXTURES.map(async (k) => {
+      const img = await Resource.fetchImage({ url: `${base}${k}.jpg`, preferImageBitmap: false });
+      if (!img) throw new Error(`texture ${k}`);
+      const t = new Texture({ context, source: img as HTMLImageElement, sampler });
+      t.generateMipmap();
+      out[k] = t;
+    }),
+  );
+  return out;
+}
+
+let buildingMaterial: Material | undefined;
+function material(tex: Textures): Material {
+  if (buildingMaterial) return buildingMaterial;
+  const m = new Material({
     fabric: {
       type: "BuildingDetail",
-      uniforms: { wall: `${base}wall.jpg`, tiles: `${base}tiles.jpg`, flat: `${base}flat.jpg`, gravel: `${base}gravel.jpg` },
-      // str = (u, v [m], material + seed). Detail = photo / mid-grey. Roofs: two rotated
-      // samples mixed by noise (no visible repeat) and large stains; emboss in shininess.
+      uniforms: Object.fromEntries(TEXTURES.map((k) => [k, Material.DefaultImageId])),
+      // str = (u, v [m], material + seed). Detail = photo / mid-grey (brick: the photo's own
+      // colour). Roofs: two rotated samples mixed by noise (no visible repeat) and large
+      // stains; emboss in shininess.
       source: `
 float bh(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float bn(vec2 p) {
@@ -199,18 +308,26 @@ float bn(vec2 p) {
   return mix(mix(bh(i), bh(i + vec2(1.0, 0.0)), f.x), mix(bh(i + vec2(0.0, 1.0)), bh(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 vec3 roofTex(float k, vec2 p) {
-  return k < 2.5 ? texture(tiles, fract(p / 4.0)).rgb : k < 3.5 ? texture(flat, fract(p / 9.0)).rgb : texture(gravel, fract(p / 3.0)).rgb;
+  return k < 2.5 ? texture(tiles, p / 4.0).rgb : k < 3.5 ? texture(flat, p / 9.0).rgb : texture(gravel, p / 3.0).rgb;
 }
 czm_material czm_getMaterial(czm_materialInput mi) {
   czm_material m = czm_getDefaultMaterial(mi);
   float k = floor(mi.str.z + 0.001);
   vec2 p = mi.str.xy;
   float far = smoothstep(60.0, 260.0, length(mi.positionToEyeEC));
+  if (k > 7.5 && k < 9.5) {
+    // Brick: 1 m of photo; large-scale tone variation; at a distance its mean colour.
+    vec3 t = texture(brick, p).rgb, t2 = texture(brick, p + vec2(0.0, 0.012)).rgb;
+    float tone = 0.9 + 0.2 * bn(p / 6.0);
+    m.diffuse = mix(t * tone, vec3(0.417, 0.327, 0.295), far * 0.7) * 0.82;
+    m.shininess = dot(t - t2, vec3(0.333)) * 2.0 * (1.0 - far);
+    return m;
+  }
   if (k > 4.5) { m.diffuse = vec3(1.0); return m; }
   vec3 t, t2;
   if (k < 1.5) {
-    t = texture(wall, fract(p / 2.0)).rgb;
-    t2 = texture(wall, fract((p + vec2(0.0, 0.02)) / 2.0)).rgb;
+    t = texture(wall, p / 2.0).rgb;
+    t2 = texture(wall, (p + vec2(0.0, 0.02)) / 2.0).rgb;
     t = mix(vec3(128.0 / 255.0), t, 0.6);
   } else if (k < 2.5) {
     t = roofTex(k, p);
@@ -235,10 +352,11 @@ czm_material czm_getMaterial(czm_materialInput mi) {
     },
     translucent: false,
   });
-  return buildingMaterial;
+  for (const k of TEXTURES) m.uniforms[k] = tex[k];
+  return (buildingMaterial = m);
 }
 
-function primitive(r: OsmResult, shadows: boolean): Primitive | undefined {
+function primitive(r: OsmResult, shadows: boolean, tex: Textures): Primitive | undefined {
   const m: Mesh | undefined = r.mesh;
   if (!m || !m.indices.length) return undefined;
   const pos = new Float64Array(m.positions);
@@ -256,7 +374,7 @@ function primitive(r: OsmResult, shadows: boolean): Primitive | undefined {
   const [lon, lat, h] = r.origin;
   return new Primitive({
     geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(lon, lat, h)) }),
-    appearance: new MaterialAppearance({ material: material(), vertexShaderSource: VS, fragmentShaderSource: FS, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: VS, fragmentShaderSource: FS, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
     asynchronous: false,
     compressVertices: false,
     allowPicking: false,
@@ -272,6 +390,7 @@ export class OsmLayer {
   private nextId = 1;
   private url: string | undefined;
   private atlas: TreeAtlas | undefined;
+  private textures: Textures | undefined;
   private lastKey = "";
 
   private constructor(
@@ -282,7 +401,7 @@ export class OsmLayer {
       const key = this.pending.get(e.data.id);
       this.pending.delete(e.data.id);
       if (!key || !this.tiles.has(key)) return; // dropped meanwhile
-      const p = e.data.trees ? (this.atlas ? treeImpostors(this.atlas, e.data.origin, e.data.trees) : undefined) : primitive(e.data, this.o.shadows);
+      const p = e.data.trees ? (this.atlas ? treeImpostors(this.atlas, e.data.origin, e.data.trees) : undefined) : this.textures ? primitive(e.data, this.o.shadows, this.textures) : undefined;
       if (p) this.viewer.scene.primitives.add(p);
       this.tiles.set(key, p ?? null);
     };
@@ -294,6 +413,7 @@ export class OsmLayer {
     const l = new OsmLayer(viewer, o);
     l.url = url;
     // Photoreal tree impostors (CC0 models rendered offline); without them no trees are drawn.
+    if (o.buildings) l.textures = await loadTextures(viewer).catch((e) => (console.warn("building textures", e), undefined));
     if (o.trees) l.atlas = await loadTreeAtlas(new URL(import.meta.env.BASE_URL, location.href).href).catch(() => undefined);
     return l;
   }
