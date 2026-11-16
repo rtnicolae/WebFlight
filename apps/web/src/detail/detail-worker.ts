@@ -186,10 +186,47 @@ const ROAD: Record<string, number> = { motorway: 22, trunk: 16, primary: 12, sec
 const ROOFS = ["#9c5a45", "#8f5644", "#7e5244", "#a2705a", "#6a6664", "#5c5e64", "#8c8a86"];
 const BIG_ROOFS = ["#76787a", "#86878a", "#696c70", "#8e8d88", "#5f6367"];
 
+/**
+ * Finished tiles on disk (Cache Storage): a tile is composed once and then read back, on this
+ * visit and later ones. The key holds everything that changes the picture; a new build of the
+ * app starts a new cache (the code may draw differently) and drops the old ones.
+ */
+declare const __BUILD_ID__: string;
+const DISK = `webflight-detail-${__BUILD_ID__}`;
+const disk: Promise<Cache | undefined> = (async () => {
+  try {
+    for (const k of await caches.keys()) if (k.startsWith("webflight-detail-") && k !== DISK) await caches.delete(k);
+    return await caches.open(DISK);
+  } catch {
+    return undefined; // no Cache Storage (private mode, file://): compose every time
+  }
+})();
+const r2 = (v: number) => Math.round(v * 100) / 100;
+function diskKey(q: DetailRequest): string {
+  const look = q.look ? `${r2(q.look.ground)},${r2(q.look.night)}` : "-";
+  return `https://webflight.cache/detail/${q.z}/${q.x}/${q.y}?sun=${Math.round(q.sun.azimuthDeg)},${Math.round(q.sun.elevationDeg)}&look=${look}&rs=${q.realShadows ? 1 : 0}&s=${q.synth === false ? 0 : 1}${q.snap === false ? 0 : 1}`;
+}
+async function fromDisk(q: DetailRequest): Promise<ImageBitmap | undefined> {
+  const c = await disk;
+  const hit = c && (await c.match(diskKey(q)).catch(() => undefined));
+  if (!hit) return undefined;
+  return createImageBitmap(await hit.blob(), { imageOrientation: "flipY" }).catch(() => undefined);
+}
+/** Store the finished tile (in the background) and hand it to Cesium flipped. */
+function finish(cv: OffscreenCanvas, q: DetailRequest): Promise<ImageBitmap> {
+  void (async () => {
+    const c = await disk;
+    if (!c) return;
+    const blob = await cv.convertToBlob({ type: "image/webp", quality: 0.9 }).catch(() => cv.convertToBlob({ type: "image/png" }));
+    await c.put(diskKey(q), new Response(blob, { headers: { "content-type": blob.type } }));
+  })().catch(() => {});
+  return flipped(cv);
+}
+
 self.onmessage = async (ev: MessageEvent<DetailRequest>) => {
   const q = ev.data;
   try {
-    const bitmap = await compose(q);
+    const bitmap = (await fromDisk(q)) ?? (await compose(q));
     self.postMessage({ id: q.id, bitmap }, [bitmap]);
   } catch (e) {
     self.postMessage({ id: q.id, error: String(e) });
@@ -353,7 +390,7 @@ async function composeLow(q: DetailRequest): Promise<ImageBitmap> {
       else if (l.name === "transportation") drawRoads(ctx, l, f, w, mPerPx);
     }
   nightLook(ctx, q, undefined, undefined);
-  return flipped(cv);
+  return finish(cv, q);
 }
 
 async function compose(q: DetailRequest): Promise<ImageBitmap> {
@@ -594,7 +631,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     }
   }
   nightLook(ctx, q, layers, toPx);
-  return flipped(cv);
+  return finish(cv, q);
 }
 
 /** Darken the finished tile for the time of day; at night add the street lamps' pools of light. */

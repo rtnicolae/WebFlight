@@ -70,4 +70,6 @@ export default defineConfig({
   worker: { format: "es" },
   optimizeDeps: { exclude: ["@0x62/jsbsim-wasm"] },
   build: { target: "es2022", chunkSizeWarningLimit: 6000 },
+  // Changes with every build: caches of things the code computes (detail tiles) start afresh.
+  define: { __BUILD_ID__: JSON.stringify(process.env.GITHUB_SHA?.slice(0, 12) ?? `dev-${Date.now()}`) },
 });

@@ -44,6 +44,12 @@ const AIR_START = params.has("lat") && params.has("lon");
 const LAUNCH = AIR_START ? undefined : params.get("launch") === "winch" ? "winch" : "aerotow";
 const SEED = Number(params.get("seed") ?? 1);
 // Off by default: every change of scale makes Cesium re-pick ground tiles (popping, reloads).
+// Disk cache for tiles and static assets (public/sw.js): what has been downloaded once loads
+// from disk afterwards. Takes over from the next request on; ?sw=0 unregisters it.
+if ("serviceWorker" in navigator) {
+  if (params.get("sw") === "0") void navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => void r.unregister()));
+  else void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, { scope: import.meta.env.BASE_URL }).catch((e: unknown) => console.warn("tile cache unavailable:", e));
+}
 const DYNRES = params.get("dynres") === "1";
 const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
 const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;

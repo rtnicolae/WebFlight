@@ -499,7 +499,8 @@ export class OsmLayer {
     for (const [k, p] of this.tiles) {
       if (want.has(k)) continue;
       const [kind, xs, ys] = k.split("/") as [string, string, string];
-      const far = kind === "b" ? Math.max(Math.abs(+xs - bx), Math.abs(+ys - by)) > 2 : Math.max(Math.abs(+xs - tx), Math.abs(+ys - ty)) > this.o.treeRings + 1;
+      // Kept well past the loading range: flying back over them shows them at once.
+      const far = kind === "b" ? Math.max(Math.abs(+xs - bx), Math.abs(+ys - by)) > 3 : Math.max(Math.abs(+xs - tx), Math.abs(+ys - ty)) > this.o.treeRings + 4;
       if (!far) continue;
       if (p) this.viewer.scene.primitives.remove(p);
       this.tiles.delete(k);
