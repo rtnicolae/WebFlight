@@ -175,14 +175,21 @@ export function addRunway(viewer: Viewer, r: Runway): void {
  * the physics ground.
  */
 export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProvider {
-  return new CustomHeightmapTerrainProvider({
+  const p = new CustomHeightmapTerrainProvider({
     width: 65,
     height: 65,
     tilingScheme: new WebMercatorTilingScheme(),
     credit: "Terrain Tiles © Mapzen and others (SRTM, GMTED2010, ETOPO1, …)",
     callback: (x, y, level) => terrain.mercatorHeightmap(level, x, y, 65),
   });
+  // Say where detail ends. Cesium's default ("unknown") lets it refine without limit when the
+  // camera is right at the ground, and past level 30 its traversal crashes ("d.southwest").
+  // Beyond the last level, tiles are upsampled and refinement stops.
+  p.getTileDataAvailable = (_x: number, _y: number, level: number) => level <= MAX_TERRAIN_LEVEL;
+  return p;
 }
+/** Deepest terrain level (~10 m tiles at 45° N; the imagery stops at 21). */
+export const MAX_TERRAIN_LEVEL = 22;
 
 /**
  * A cumulus over each thermal (sprite clouds, clouds.ts): flat base at the thermal's cloud
