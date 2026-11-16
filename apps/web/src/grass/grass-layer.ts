@@ -1,8 +1,10 @@
 /**
  * 3D grass around the camera when it is near the ground (on the airfield, low passes): cells of
  * `cellM` metres within `radiusM` of the camera, built in grass-worker.ts, one Primitive each.
- * The shader sways the blade tips in the wind and thins the grass out with distance by
- * dithering (no blending, no sorting), so it fades into the textured ground.
+ * The shader sways the blade tips in the wind and thins the grass out with distance tuft by
+ * tuft (each has a random threshold): far tufts collapse in the vertex shader, so there is no
+ * blending, sorting or fragment discard (costly on tile-based GPUs such as Apple's), and the
+ * thinning is stable as the camera moves. Cells are kept until well out of range.
  */
 import {
   Appearance,
@@ -50,6 +52,9 @@ void main() {
   v_sway = sway;
   v_upEC = mat3(czm_view) * up;
   gl_Position = czm_modelViewProjectionRelativeToEye * p;
+  // Thin out with distance, tuft by tuft (alpha: the tuft's random threshold): collapse it.
+  float keep = 1.0 - smoothstep(FADE0, FADE1, length(v_positionEC));
+  if (color.a > keep) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
 }`;
 
 const FS = `
@@ -58,11 +63,6 @@ in vec4 v_color;
 in float v_sway;
 in vec3 v_upEC;
 void main() {
-  float d = length(v_positionEC);
-  // Thin out with distance: dithered (stable per pixel), from FADE0 to FADE1 metres.
-  float keep = 1.0 - smoothstep(FADE0, FADE1, d);
-  float h = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-  if (h > keep) discard;
   // Light: sun on the blade (treated as facing up-ish), sky light, a little translucency.
   float sun = max(dot(normalize(v_upEC), czm_lightDirectionEC), 0.0);
   vec3 c = v_color.rgb * (0.5 + 0.55 * sun * czm_lightColor + 0.15 * v_sway);
@@ -100,6 +100,7 @@ export class GrassLayer {
         return;
       }
       const p = this.primitive(e.data);
+      p.show = !this.lastKey.startsWith("high");
       this.viewer.scene.primitives.add(p);
       this.cells.set(key, p);
     };
@@ -118,10 +119,10 @@ export class GrassLayer {
       primitiveType: PrimitiveType.TRIANGLES,
       boundingSphere: BoundingSphere.fromVertices(Array.from(pos)),
     });
-    const fs = FS.replaceAll("FADE0", (this.o.radiusM * 0.6).toFixed(1)).replaceAll("FADE1", (this.o.radiusM * 0.95).toFixed(1));
+    const vs = VS.replaceAll("FADE0", (this.o.radiusM * 0.55).toFixed(1)).replaceAll("FADE1", (this.o.radiusM * 0.95).toFixed(1));
     return new Primitive({
       geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(r.origin[0], r.origin[1], r.origin[2])) }),
-      appearance: new Appearance({ vertexShaderSource: VS, fragmentShaderSource: fs, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+      appearance: new Appearance({ vertexShaderSource: vs, fragmentShaderSource: FS, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
       asynchronous: false,
       compressVertices: false,
       allowPicking: false,
@@ -134,17 +135,17 @@ export class GrassLayer {
     const low = groundM !== undefined && camera.height - groundM < this.o.maxHeightM;
     const c = this.o.cellM, kx = 111_320 * Math.cos((latDeg * Math.PI) / 180), ky = 111_132;
     const cx = Math.floor((lonDeg * kx) / c), cy = Math.floor((latDeg * ky) / c);
-    const key = low ? `${cx}/${cy}` : "high";
+    const key = low ? `${cx}/${cy}` : `high/${Math.floor(cx / 8)}/${Math.floor(cy / 8)}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
-    const want = new Set<string>();
+    // Above the grass height: hide it, keep it (climbing out and coming back down is common).
+    for (const p of this.cells.values()) if (p) p.show = low;
     if (low) {
       const r = Math.ceil(this.o.radiusM / c);
       const jobs: [number, number, number][] = [];
       for (let dy = -r; dy <= r; dy++)
         for (let dx = -r; dx <= r; dx++) {
           if ((Math.max(0, Math.abs(dx) - 0.5) * c) ** 2 + (Math.max(0, Math.abs(dy) - 0.5) * c) ** 2 > this.o.radiusM ** 2) continue;
-          want.add(`${cx + dx}/${cy + dy}`);
           jobs.push([dx * dx + dy * dy, cx + dx, cy + dy]);
         }
       for (const [, x, y] of jobs.sort((a, b) => a[0] - b[0])) {
@@ -160,8 +161,11 @@ export class GrassLayer {
         this.worker.postMessage(req);
       }
     }
+    // Drop cells only well beyond the radius (no rebuilding as the camera wanders near an edge).
+    const keepR = this.o.radiusM + 2.5 * c;
     for (const [k, p] of this.cells) {
-      if (want.has(k)) continue;
+      const [x, y] = k.split("/").map(Number) as [number, number];
+      if (Math.hypot(x - cx, y - cy) * c <= keepR) continue;
       if (p) this.viewer.scene.primitives.remove(p);
       this.cells.delete(k);
     }

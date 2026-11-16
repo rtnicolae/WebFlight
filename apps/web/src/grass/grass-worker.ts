@@ -184,10 +184,13 @@ async function build(q: GrassRequest): Promise<GrassResult> {
     const v = 0.9 + 0.2 * r();
     // Towards the near-ground grass colour of the textured ground (detail/synth.ts LUSH).
     const gR = (R * 1.15 * 0.4 + 98 * 0.6) * v, gG = (G * 1.25 * 0.4 + 128 * 0.6) * v, gB = (B * 0.95 * 0.4 + 56 * 0.6) * v;
-    const BL = short ? 4 : 5;
+    const BL = 3;
+    // Per tuft: a random byte in the colour's alpha, so the renderer thins grass out with
+    // distance tuft by tuft (stable as the camera moves) rather than pixel by pixel.
+    const keep = Math.floor(r() * 255);
     for (let b = 0; b < BL; b++) {
       const a = rot + (b * Math.PI * 2) / BL + (r() - 0.5) * 0.8;
-      const w = (short ? 0.012 : 0.016) * (0.7 + 0.6 * r());
+      const w = (short ? 0.015 : 0.02) * (0.7 + 0.6 * r()); // three wider blades per tuft
       const lean = (short ? 0.15 : 0.3) * h * r();
       const ca = Math.cos(a), sa = Math.sin(a);
       const rad = (short ? 0.03 : 0.05) * r();
@@ -197,7 +200,7 @@ async function build(q: GrassRequest): Promise<GrassResult> {
       pos.push(e + ox - sa * w, nn + oy + ca * w, z, e + ox + sa * w, nn + oy - ca * w, z, e + ox + ca * lean, nn + oy + sa * lean, z + bh);
       sway.push(0, 0, 1);
       const tipK = 1.18 + 0.12 * r();
-      col.push(gR * 0.85, gG * 0.85, gB * 0.8, 255, gR * 0.85, gG * 0.85, gB * 0.8, 255, Math.min(255, gR * tipK + 8), Math.min(255, gG * tipK + 6), Math.min(255, gB * 1.05), 255);
+      col.push(gR * 0.85, gG * 0.85, gB * 0.8, keep, gR * 0.85, gG * 0.85, gB * 0.8, keep, Math.min(255, gR * tipK + 8), Math.min(255, gG * tipK + 6), Math.min(255, gB * 1.05), keep);
     }
     count++;
   }

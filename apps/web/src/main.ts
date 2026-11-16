@@ -34,11 +34,13 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0.7; 0 on low)
+ *   dynres=0          fixed resolution (default: lowered to keep ≥ 40 fps, down to 60%)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
  */
 const AIR_START = params.has("lat") && params.has("lon");
 const LAUNCH = AIR_START ? undefined : params.get("launch") === "winch" ? "winch" : "aerotow";
 const SEED = Number(params.get("seed") ?? 1);
+const DYNRES = params.get("dynres") !== "0";
 const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
 const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
 
@@ -87,7 +89,7 @@ async function main(): Promise<void> {
   const osmTiles = await openFreeMapTiles();
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
-      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { cellM: 10, radiusM: QUALITY === "ultra" ? 70 : 45, density: QUALITY === "ultra" ? 40 : 28, maxHeightM: 60 })
+      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { cellM: 20, radiusM: QUALITY === "ultra" ? 55 : 38, density: QUALITY === "ultra" ? 20 : 11, maxHeightM: 60 })
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
@@ -187,11 +189,21 @@ async function main(): Promise<void> {
 
   let last = performance.now();
   let fps = 60;
+  let lastScale = 0;
+  const bootT = performance.now();
   viewer.scene.preUpdate.addEventListener(() => {
     const now = performance.now();
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
     if (dt > 0) fps += (1 / dt - fps) * 0.05;
+    // Dynamic resolution: below ~40 fps render fewer pixels (down to 60%), back up above ~55.
+    // Sharpening keeps it crisp. Off with ?dynres=0.
+    if (DYNRES && now - lastScale > 2000 && now - bootT > 8000) {
+      lastScale = now;
+      const sc = viewer.resolutionScale;
+      if (fps < 40 && sc > 0.61) viewer.resolutionScale = Math.max(0.6, sc - 0.1);
+      else if (fps > 55 && sc < 0.99) viewer.resolutionScale = Math.min(1, sc + 0.1);
+    }
 
     const controls = input.update(dt);
     send({ type: "controls", controls });

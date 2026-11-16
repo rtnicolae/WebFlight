@@ -93,7 +93,8 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   scene.globe.dynamicAtmosphereLightingFromSun = true;
   scene.globe.showGroundAtmosphere = true;
   scene.globe.atmosphereLightIntensity = 12;
-  scene.globe.maximumScreenSpaceError = 1.5;
+  // Ultra refines the ground further; 2 (Cesium's default) halves the tiles drawn on High.
+  scene.globe.maximumScreenSpaceError = opts.quality === "ultra" ? 1.5 : 2;
   scene.globe.tileCacheSize = 400;
   scene.globe.preloadSiblings = true;
   scene.fog.enabled = true;
@@ -110,7 +111,8 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   if ((opts.sharpen ?? 0) > 0) scene.postProcessStages.add(new PostProcessStage({ fragmentShader: SHARPEN_FS, uniforms: { sharpness: Math.min(1, opts.sharpen!) } }));
   if (opts.shadows) {
     const sm = scene.shadowMap;
-    sm.softShadows = true;
+    // Soft (PCF) shadows filter every shadow lookup on every lit pixel, ground included: Ultra only.
+    sm.softShadows = opts.quality === "ultra";
     sm.size = 2048;
     sm.maximumDistance = 800;
     sm.darkness = 0.35;
