@@ -31,6 +31,8 @@ export interface GrassResult {
   positions: Float32Array;
   /** 0 at a blade's base, 1 at its tip (wind sway, fade). */
   sway: Float32Array;
+  /** Per vertex: its tuft's root (local frame), so a tuft fades as one. */
+  roots: Float32Array;
   colors: Uint8Array;
   count: number;
 }
@@ -91,7 +93,7 @@ const inside = (ring: [number, number][], x: number, y: number) => {
 self.onmessage = async (ev: MessageEvent<GrassRequest>) => {
   try {
     const out = await build(ev.data);
-    self.postMessage(out, [out.positions.buffer, out.sway.buffer, out.colors.buffer]);
+    self.postMessage(out, [out.positions.buffer, out.sway.buffer, out.roots.buffer, out.colors.buffer]);
   } catch (e) {
     self.postMessage({ id: ev.data.id, error: String(e) });
   }
@@ -160,7 +162,7 @@ async function build(q: GrassRequest): Promise<GrassResult> {
 
   const r = rng(q.seed);
   const n = Math.round(q.cellM * q.cellM * q.density);
-  const pos: number[] = [], sway: number[] = [], col: number[] = [];
+  const pos: number[] = [], sway: number[] = [], col: number[] = [], roots: number[] = [];
   let count = 0;
   for (let i = 0; i < n; i++) {
     const e = (r() - 0.5) * q.cellM, nn = (r() - 0.5) * q.cellM;
@@ -199,10 +201,11 @@ async function build(q: GrassRequest): Promise<GrassResult> {
       // Base left, base right, tip (leaning outwards).
       pos.push(e + ox - sa * w, nn + oy + ca * w, z, e + ox + sa * w, nn + oy - ca * w, z, e + ox + ca * lean, nn + oy + sa * lean, z + bh);
       sway.push(0, 0, 1);
+      roots.push(e, nn, z, e, nn, z, e, nn, z);
       const tipK = 1.18 + 0.12 * r();
       col.push(gR * 0.85, gG * 0.85, gB * 0.8, keep, gR * 0.85, gG * 0.85, gB * 0.8, keep, Math.min(255, gR * tipK + 8), Math.min(255, gG * tipK + 6), Math.min(255, gB * 1.05), keep);
     }
     count++;
   }
-  return { id: q.id, origin: [q.lon, q.lat, frame.heightM], positions: new Float32Array(pos), sway: new Float32Array(sway), colors: new Uint8Array(col), count };
+  return { id: q.id, origin: [q.lon, q.lat, frame.heightM], positions: new Float32Array(pos), sway: new Float32Array(sway), roots: new Float32Array(roots), colors: new Uint8Array(col), count };
 }

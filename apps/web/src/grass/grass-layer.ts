@@ -27,6 +27,7 @@ const VS = `
 in vec3 position3DHigh;
 in vec3 position3DLow;
 in float sway;
+in vec3 root;
 in vec4 color;
 in float batchId;
 out vec3 v_positionEC;
@@ -53,7 +54,9 @@ void main() {
   v_upEC = mat3(czm_view) * up;
   gl_Position = czm_modelViewProjectionRelativeToEye * p;
   // Thin out with distance, tuft by tuft (alpha: the tuft's random threshold): collapse it.
-  float keep = 1.0 - smoothstep(FADE0, FADE1, length(v_positionEC));
+  // Distance from the tuft's root, the same for all its vertices: a tuft goes as a whole
+  // (per-vertex distances left triangles half collapsed, stretched to the screen centre).
+  float keep = 1.0 - smoothstep(FADE0, FADE1, length((czm_modelView * vec4(root, 1.0)).xyz));
   if (color.a > keep) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
 }`;
 
@@ -112,6 +115,7 @@ export class GrassLayer {
     const geometry = new Geometry({
       attributes: Object.assign(new GeometryAttributes(), {
         position: new GeometryAttribute({ componentDatatype: ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
+        root: new GeometryAttribute({ componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: r.roots }),
         sway: new GeometryAttribute({ componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 1, values: r.sway }),
         color: new GeometryAttribute({ componentDatatype: ComponentDatatype.UNSIGNED_BYTE, componentsPerAttribute: 4, normalize: true, values: r.colors }),
       }),
