@@ -7,7 +7,7 @@
  *    fallback when the photo servers can't be reached.
  *  - "grid" / "osm": the old debug looks.
  */
-import { ArcGisMapServerImageryProvider, Cartesian2, Cartographic, Credit, DiscardMissingTileImagePolicy, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
+import { ArcGisMapServerImageryProvider, IonImageryProvider, Cartesian2, Cartographic, Credit, DiscardMissingTileImagePolicy, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
 import { sunFrom, type Sun } from "./paint/landcover.ts";
 import type { PaintRequest } from "./paint/paint-worker.ts";
 import type { DetailRequest } from "./detail/detail-worker.ts";
@@ -308,6 +308,14 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     // National orthophotos where they are free, Switzerland on top (sharpest, and where the
     // 3D scenery is). Elsewhere Sentinel-2 (10 m) shows through.
     // Where photos are only 10 m: detail synthesized from them and OpenStreetMap (visual only).
+    // Trial: Bing Maps aerial photos (sub-metre in much of Europe) via Cesium ion, asset 2,
+    // in place of the synthesized detail. Uses Cesium's evaluation token unless one is set.
+    if (new URLSearchParams(location.search).get("aerial") === "bing") {
+      layers.add(new ImageryLayer(await IonImageryProvider.fromAssetId(2)));
+      for (const o of ORTHOS) layers.add(orthoLayer(o));
+      layers.add(new ImageryLayer(swissImageProvider()));
+      return mode;
+    }
     const osmUrl = await openFreeMapTiles();
     if (osmUrl && new URLSearchParams(location.search).get("detail") !== "0") layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun, viewer.shadows) as unknown as ImageryProvider, { minimumTerrainLevel: 10 }));
     for (const o of ORTHOS) layers.add(orthoLayer(o));
