@@ -93,7 +93,13 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   scene.globe.dynamicAtmosphereLighting = true;
   scene.globe.dynamicAtmosphereLightingFromSun = true;
   scene.globe.showGroundAtmosphere = true;
-  scene.globe.atmosphereLightIntensity = 12;
+  // Aerial perspective: Cesium colours the ground fog with the atmosphere's scattering at the
+  // ground point (GlobeFS.glsl), which on its own is a dark navy, so distant hills went dark
+  // instead of fading into haze. Brighter, less saturated scattering on the globe (these feed
+  // only the ground and its fog, not the sky) gives the pale blue-grey of summer air.
+  scene.globe.atmosphereLightIntensity = 25;
+  scene.globe.atmosphereBrightnessShift = 0.3;
+  scene.globe.atmosphereSaturationShift = -0.4;
   // Finer than Cesium's default 2: it only saved ~10% of the tiles and blurred the ground.
   scene.globe.maximumScreenSpaceError = 1.5;
   // Tiles out of view stay loaded (turning the camera back shows them at once).
@@ -101,10 +107,10 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   scene.globe.preloadSiblings = true;
   scene.fog.enabled = true;
   // Haze: Cesium's fog is 1 − exp(−(d·ρ)²), ρ = density·heightScalar·(h/800 km)^−0.59 (×~70 at
-  // 600 m), thinner with altitude. With these, low down: ~15% at 30 km, half at 60 km, 85% at
-  // 100 km, so the ground kept loaded around the glider (30 km) is clear and what lies
-  // beyond fades into the sky.
-  scene.fog.density = 1.9e-4;
+  // 600 m), thinner with altitude. 4.5e-4 (was 1.9e-4): low down, the mountains 20–40 km away
+  // read as pale shapes behind the haze and the near ground stays clear (checked over Brașov
+  // at 100 m and Ghimbav at 250 m).
+  scene.fog.density = 4.5e-4;
   scene.fog.visualDensityScalar = 1;
   scene.fog.minimumBrightness = 0.08;
   scene.fog.screenSpaceErrorFactor = 4;
