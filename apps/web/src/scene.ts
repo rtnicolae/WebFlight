@@ -99,7 +99,12 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   scene.globe.tileCacheSize = 1200;
   scene.globe.preloadSiblings = true;
   scene.fog.enabled = true;
-  scene.fog.density = 1.6e-4;
+  // Haze: Cesium's fog is 1 − exp(−(d·ρ)²), ρ = density·heightScalar·(h/800 km)^−0.59 (×~70 at
+  // 600 m), thinner with altitude. With these, low down: ~15% at 30 km, half at 60 km, 85% at
+  // 100 km, so the ground kept loaded around the glider (30 km) is clear and what lies
+  // beyond fades into the sky.
+  scene.fog.density = 1.9e-4;
+  scene.fog.visualDensityScalar = 1;
   scene.fog.minimumBrightness = 0.08;
   scene.fog.screenSpaceErrorFactor = 4;
   if (scene.skyAtmosphere) {

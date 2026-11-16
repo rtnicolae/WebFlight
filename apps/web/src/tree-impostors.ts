@@ -5,6 +5,7 @@
  * at crown height; looking down (from a glider) the side card dithers out and the top card in.
  * The sim's sun lights them; the upper part sways in the wind.
  */
+import { lookGlsl } from "./lighting.ts";
 import {
   BoundingSphere,
   Cartesian3,
@@ -93,7 +94,7 @@ void main() {
   if (m.alpha < 0.5 || h > v_fade) discard;
   // The pictures are lit softly from above; add the sim's sun and some self-shading low down.
   float sun = max(dot(normalize(v_upEC), czm_lightDirectionEC), 0.0);
-  vec3 c = m.diffuse * (0.9 + 0.45 * sun * czm_lightColor) * (0.86 + 0.14 * v_y);
+  vec3 c = m.diffuse * (0.9 * LOOK_AMBIENT + 0.45 * sun * czm_lightColor) * (0.86 + 0.14 * v_y);
   out_FragColor = vec4(c, 1.0);
 }`;
 
@@ -170,7 +171,7 @@ export function treeImpostors(atlas: TreeAtlas, origin: [number, number, number]
     appearance: new MaterialAppearance({
       material: atlasMaterial(atlas),
       vertexShaderSource: VS,
-      fragmentShaderSource: FS,
+      fragmentShaderSource: lookGlsl(FS),
       translucent: false,
       closed: false,
       renderState: { depthTest: { enabled: true }, cull: { enabled: false } },

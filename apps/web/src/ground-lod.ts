@@ -24,7 +24,7 @@ const VISIBILITY_NONE = -1, VISIBILITY_PARTIAL = 0;
 const R_EARTH = 6_371_000;
 
 /** Returns a setter for the glider's position (degrees, metres), to call every frame. */
-export function pinGroundToGlider(viewer: Viewer, radiusM = 3000): (latDeg: number, lonDeg: number, altM: number) => void {
+export function pinGroundToGlider(viewer: Viewer, radiusM = 30_000): (latDeg: number, lonDeg: number, altM: number) => void {
   const provider = (viewer.scene.globe as unknown as { _surface?: { tileProvider?: Provider } })._surface?.tileProvider;
   if (!provider || typeof provider.computeDistanceToTile !== "function" || typeof provider.computeTileVisibility !== "function") return () => {};
   const carto = new Cartographic();

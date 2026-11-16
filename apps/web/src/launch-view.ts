@@ -3,6 +3,7 @@
  * uses), the winch (FGData's supacat winch), and the rope between the glider's hitch and the
  * tug/winch. Positions come from the FDM worker's snapshot under FG property names.
  */
+import { lightModel } from "./lighting.ts";
 import { Axis, Cartesian3, Color, Material, Matrix4, Model, PolylineCollection, type ModelNode, type Polyline, type Scene } from "cesium";
 import { modelMatrixEcef, type AnimationEntry, type SnapshotLayout } from "@webflight/fdm-core";
 import { AnimationRig } from "./animations.ts";
@@ -61,6 +62,7 @@ class SharedModelView {
     const m = (await res.json()) as SharedManifest;
     this.rig = new AnimationRig(m.model.animations);
     this.model = await Model.fromGltfAsync({ url: new URL(m.model.file, this.baseUrl).href, upAxis: Axis.Z, forwardAxis: Axis.X, backFaceCulling: true });
+    lightModel(this.model);
     this.model.show = false;
     scene.primitives.add(this.model);
     await new Promise<void>((resolve) => (this.model!.ready ? resolve() : this.model!.readyEvent.addEventListener(() => resolve())));

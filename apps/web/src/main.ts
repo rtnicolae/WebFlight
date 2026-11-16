@@ -1,6 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { Cartographic } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
+import { applyLighting, setLook } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
 import { advance, TerrariumTerrain } from "@webflight/environment";
@@ -76,6 +77,8 @@ async function main(): Promise<void> {
   const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
   const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: params.has("sharpen") ? Number(params.get("sharpen")) : 0 });
   const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
+  setLook(sun.elevationDeg);
+  applyLighting(viewer, sun, F.latDeg, F.lonDeg);
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
   // 30 m strip is a smudge) draw ours.
   const imageryReady = addImagery(viewer, IMAGERY, sun).then((mode) => {
@@ -100,7 +103,7 @@ async function main(): Promise<void> {
   const hud = new Hud(document.getElementById("hud")!);
   const cam = new ChaseCamera(viewer.camera, manifest.views.cockpit);
   cam.groundAt = (lat, lon) => renderTerrain.heightAt(lat, lon);
-  const pinGround = params.get("pin") === "0" ? () => {} : pinGroundToGlider(viewer);
+  const pinGround = params.get("pin") === "0" ? () => {} : pinGroundToGlider(viewer, 30_000);
   if (params.get("view") === "cockpit") cam.toggle();
 
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });

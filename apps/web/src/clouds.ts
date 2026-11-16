@@ -4,6 +4,7 @@
  * are shaded by height (grey-blue base, white tops) and by the sun direction, sorted back to
  * front for clean blending, and fade with distance into the haze.
  */
+import { LOOK } from "./lighting.ts";
 import { BillboardCollection, BoundingRectangle, Cartesian3, Color, NearFarScalar, Transforms, Matrix4, type Billboard, type Scene } from "cesium";
 
 export interface CloudSpec {
@@ -255,6 +256,9 @@ export class CloudLayer {
       b.width = it.size * 2;
       b.height = (it.size * 2) / aspect;
       b.color = Color.fromAlpha(it.puff.shade, 0.92 * it.opacity, b.color);
+      b.color.red *= LOOK.cloud[0]!;
+      b.color.green *= LOOK.cloud[1]!;
+      b.color.blue *= LOOK.cloud[2]!;
     }
   }
 }

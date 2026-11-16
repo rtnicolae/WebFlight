@@ -29,6 +29,7 @@ import * as Cesium from "cesium";
 import { lonLatToTile, tileToLonLat } from "@webflight/environment";
 import type { Mesh } from "@webflight/scenery";
 import type { OsmRequest, OsmResult } from "./osm-worker.ts";
+import { lookGlsl } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { loadTreeAtlas, treeImpostors, type TreeAtlas } from "./tree-impostors.ts";
 
@@ -118,6 +119,7 @@ void main() {
   vec3 base = v_color.rgb * tex.diffuse * (1.0 + clamp(tex.shininess, -0.35, 0.45));
   float detail = 1.0 - smoothstep(350.0, 1400.0, d); // facade detail fades with distance
   float spec = 0.0;
+  vec3 emis = vec3(0.0), glow = vec3(0.0); // lit windows at night; their average far away
   bool brick = mat > 7.5 && mat < 9.5;
   float wm = brick ? mat - 8.0 : mat;
 
@@ -177,6 +179,8 @@ void main() {
       // tone (glass darkens it by its share of the wall) instead of letting them speckle.
       float wd = 1.0 - smoothstep(160.0, 480.0, d);
       if (!door) base *= 1.0 - (1.0 - wd) * 0.55 * (hi.x - lo.x) * (hi.y - lo.y);
+      // …and at night their average glow.
+      if (!door) glow = (1.0 - wd) * LOOK_NIGHT * 0.4 * (hi.x - lo.x) * (hi.y - lo.y) * vec3(1.0, 0.74, 0.42);
       if (wd > 0.0 && all(greaterThan(w, lo)) && all(lessThan(w, hi))) {
         vec2 e = min(w - lo, hi - w) * sz;
         vec2 p = (w - lo) * sz, P = (hi - lo) * sz; // within the opening [m]
@@ -194,19 +198,24 @@ void main() {
           if (!shop && b > 0.45 && b < 0.7 && (p.x < 0.25 * P.x || p.x > 0.75 * P.x)) glass = mix(glass, vec3(0.62, 0.58, 0.52), 0.55);
           fill = glass;
           spec = gs * detail;
+          // At night some windows are lit (shop fronts mostly dark), warm, each a little different.
+          float lit = step(shop ? 0.8 : 0.6, hash1(vec2(col * 3.1 + 0.7, fl * 1.7) + seed * 9.0));
+          emis = LOOK_NIGHT * lit * vec3(1.0, 0.74, 0.42) * (0.55 + 0.45 * b) * (0.8 + 0.2 * smoothstep(0.0, 0.3, p.y));
           // Mullion (wider windows), transom on some houses.
-          if (!shop && P.x > 1.0 && abs(p.x - 0.5 * P.x) < 0.035) { fill = frameCol; spec = 0.0; }
-          if (!shop && !block && fs > 0.5 && abs(p.y - 0.72 * P.y) < 0.03) { fill = frameCol; spec = 0.0; }
+          if (!shop && P.x > 1.0 && abs(p.x - 0.5 * P.x) < 0.035) { fill = frameCol; spec = 0.0; emis = vec3(0.0); }
+          if (!shop && !block && fs > 0.5 && abs(p.y - 0.72 * P.y) < 0.03) { fill = frameCol; spec = 0.0; emis = vec3(0.0); }
           // Roller shutters part way (or all the way) down.
           float down = b < 0.38 ? (b < 0.1 ? 1.0 : 0.15 + 0.8 * fract(b * 9.0)) : 0.0;
           if (!shop && P.y - p.y < down * P.y) {
             fill = (block ? vec3(0.70, 0.70, 0.68) : vec3(0.62, 0.58, 0.52)) * (0.88 + 0.12 * step(0.35, fract(p.y * 18.0)));
             spec = 0.0;
+            emis *= 0.12; // light leaking through the slats
           }
         }
-        if (min(e.x, e.y) < frame) { fill = frameCol; spec = 0.0; }
+        if (min(e.x, e.y) < frame) { fill = frameCol; spec = 0.0; emis = vec3(0.0); }
         base = mix(base, fill, wd);
         spec *= wd;
+        emis *= wd;
       }
       // Sill below windows, and grime washing down from it.
       if (!ground && w.x > lo.x - 0.02 && w.x < hi.x + 0.02) {
@@ -241,6 +250,7 @@ void main() {
       if (hash1(vec2(floor(u / pane), hb)) > 0.75) g = mix(g, vec3(0.66, 0.62, 0.55), 0.6); // curtain
       base = fr ? fc : g;
       spec = fr ? 0.0 : gs;
+      if (!fr && hb > 0.55) emis = LOOK_NIGHT * vec3(1.0, 0.74, 0.42) * (0.3 + 0.5 * hb);
     }
   } else if (mat > 9.5) {
     // Glass curtain wall: mullions every 1.5 m, opaque spandrels at the floor slabs.
@@ -254,8 +264,8 @@ void main() {
   }
   float sun = max(dot(n, czm_lightDirectionEC), 0.0);
   float sky = 0.56 + 0.14 * dot(n, up);
-  vec3 c = base * (sky + 0.75 * sun * czm_lightColor) + spec * czm_lightColor;
-  c = mix(c, vec3(0.70, 0.78, 0.86), clamp((d - 1500.0) / 9000.0, 0.0, 0.45));
+  vec3 c = base * (sky * LOOK_AMBIENT + 0.75 * sun * czm_lightColor) + spec * czm_lightColor + emis + glow;
+  c = mix(c, vec3(0.70, 0.78, 0.86) * LOOK_AMBIENT, clamp((d - 1500.0) / 9000.0, 0.0, 0.45));
   out_FragColor = vec4(c, 1.0);
 }`;
 
@@ -374,7 +384,7 @@ function primitive(r: OsmResult, shadows: boolean, tex: Textures): Primitive | u
   const [lon, lat, h] = r.origin;
   return new Primitive({
     geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(lon, lat, h)) }),
-    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: VS, fragmentShaderSource: FS, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: VS, fragmentShaderSource: lookGlsl(FS), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
     asynchronous: false,
     compressVertices: false,
     allowPicking: false,

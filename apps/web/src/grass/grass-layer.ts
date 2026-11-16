@@ -21,6 +21,7 @@ import {
   type Cartographic,
   type Viewer,
 } from "cesium";
+import { lookGlsl } from "../lighting.ts";
 import type { GrassRequest, GrassResult } from "./grass-worker.ts";
 
 const VS = `
@@ -68,7 +69,7 @@ in vec3 v_upEC;
 void main() {
   // Light: sun on the blade (treated as facing up-ish), sky light, a little translucency.
   float sun = max(dot(normalize(v_upEC), czm_lightDirectionEC), 0.0);
-  vec3 c = v_color.rgb * (0.5 + 0.55 * sun * czm_lightColor + 0.15 * v_sway);
+  vec3 c = v_color.rgb * ((0.5 + 0.15 * v_sway) * LOOK_AMBIENT + 0.55 * sun * czm_lightColor);
   out_FragColor = vec4(c, 1.0);
 }`;
 
@@ -126,7 +127,7 @@ export class GrassLayer {
     const vs = VS.replaceAll("FADE0", (this.o.radiusM * 0.55).toFixed(1)).replaceAll("FADE1", (this.o.radiusM * 0.95).toFixed(1));
     return new Primitive({
       geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(r.origin[0], r.origin[1], r.origin[2])) }),
-      appearance: new Appearance({ vertexShaderSource: vs, fragmentShaderSource: FS, translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+      appearance: new Appearance({ vertexShaderSource: vs, fragmentShaderSource: lookGlsl(FS), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
       asynchronous: false,
       compressVertices: false,
       allowPicking: false,
