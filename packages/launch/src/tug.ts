@@ -1,6 +1,7 @@
 /**
  * The tow plane ("drag robot"), ported from the ASK21's Nasal/dragrobot.nas (Klaus Kerner,
  * Bea Wolf; GPL-2.0-or-later). As in FlightGear it is kinematic: it does not feel the rope.
+ * Its speeds and acceleration are a real tug's (TUG_DEFAULTS), not FlightGear's.
  *
  *  leg 0  tauten the rope slowly, then accelerate along the runway to take-off speed
  *  leg 2  straight legs (first 200–400 m, then 100 m), climbing with speed
@@ -53,6 +54,13 @@ export const FG_TUG_DEFAULTS: TugConfig = {
   tautenRelative: 0.7,
 };
 
+/**
+ * The tug as flown here. FlightGear's robot accelerates at 3 m/s² to 130 km/h (0–100 km/h in
+ * 8 s: it feels like a winch, and an untrimmed glider balloons 40 m above it). A real tow
+ * (Robin DR400 with a two-seater) takes ~20 s to lift off at ~90 km/h and climbs at ~110 km/h.
+ */
+export const TUG_DEFAULTS: TugConfig = { ...FG_TUG_DEFAULTS, minSpeedTakeoffMs: 25, maxSpeedMs: 30.5, maxAccelerationMss: 1.3 };
+
 export interface TugAir {
   windFromDeg: number;
   windKt: number;
@@ -103,7 +111,7 @@ export class Tug {
     private readonly onRelease: () => void = () => {},
     cfg: Partial<TugConfig> = {},
   ) {
-    this.cfg = { ...FG_TUG_DEFAULTS, ...cfg };
+    this.cfg = { ...TUG_DEFAULTS, ...cfg };
     const [lat, lon] = advance(glider.latDeg, glider.lonDeg, headingDeg, ropeLengthM * (this.cfg.tautenRelative - 0.02));
     this.latDeg = lat;
     this.lonDeg = lon;
