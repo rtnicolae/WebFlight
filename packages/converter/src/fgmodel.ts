@@ -636,6 +636,69 @@ function loadModel(ctx: Ctx, file: string, frame: M4, overlay?: PropNode): Scene
   return group;
 }
 
+/** Name of the node that holds the merged static geometry of the whole model. */
+export const STATIC_NODE = "_static";
+
+/**
+ * Merge the geometry nothing refers to into one mesh per material, per moving part. FlightGear
+ * models are hundreds of small objects, and in WebGL each is a draw call, again in every
+ * shadow pass (ASK21: 522 meshes; ~230 drawn per frame plus ~470 in the shadow cascades,
+ * most of all draw calls in the scene). A node that an animation entry names (rotate,
+ * translate, spin, select, texture, pick) keeps its own meshes and its name. Every other
+ * object moves, shows and hides exactly like its nearest named ancestor (it inherits that
+ * node's transform), so its triangles go into a "<ancestor>/_static" child of that ancestor
+ * ("_static" under the root for objects with no named ancestor). Clicks still resolve (the
+ * merged child's parent is the pick node) and texture animations still find their meshes in
+ * the subtree. Vertices are already in the model's frame (nodes carry no transforms), so
+ * merging is concatenation. Branches left empty are dropped: fewer nodes to update too.
+ */
+function mergeStatic(root: SceneNode, animations: readonly AnimationEntry[]): void {
+  const named = new Set<string>();
+  for (const a of animations) for (const n of a.nodes) named.add(n);
+  // Per owner (named node or root): primitives by material and presence of texture coords.
+  const buckets = new Map<SceneNode, Map<string, GlbPrimitive[]>>();
+  const put = (owner: SceneNode, p: GlbPrimitive) => {
+    const byKey = buckets.get(owner) ?? buckets.set(owner, new Map()).get(owner)!;
+    const key = `${p.material}/${p.uvs ? 1 : 0}`;
+    (byKey.get(key) ?? byKey.set(key, []).get(key)!).push(p);
+  };
+  // Returns whether the node stays (named, or something named below it).
+  const walk = (n: SceneNode, owner: SceneNode): boolean => {
+    const own = n === root || named.has(n.name);
+    const o = own ? n : owner;
+    for (const p of n.primitives) put(o, p);
+    n.primitives = [];
+    n.children = n.children.filter((c) => walk(c, o));
+    return own || n.children.length > 0;
+  };
+  walk(root, root);
+  for (const [owner, byKey] of buckets) {
+    const merged: GlbPrimitive[] = [];
+    for (const ps of byKey.values()) {
+      if (ps.length === 1) {
+        merged.push(ps[0]!);
+        continue;
+      }
+      const nv = ps.reduce((s, p) => s + p.positions.length / 3, 0);
+      const ni = ps.reduce((s, p) => s + p.indices.length, 0);
+      const positions = new Float32Array(nv * 3), normals = new Float32Array(nv * 3), indices = new Uint32Array(ni);
+      const uvs = ps[0]!.uvs ? new Float32Array(nv * 2) : undefined;
+      let v = 0, i = 0;
+      for (const p of ps) {
+        positions.set(p.positions, v * 3);
+        normals.set(p.normals, v * 3);
+        if (uvs) uvs.set(p.uvs!, v * 2);
+        for (let k = 0; k < p.indices.length; k++) indices[i + k] = p.indices[k]! + v;
+        v += p.positions.length / 3;
+        i += p.indices.length;
+      }
+      merged.push({ positions, normals, ...(uvs ? { uvs } : {}), indices, material: ps[0]!.material });
+    }
+    // A named node's own meshes are merged too (they move with it), into the same child.
+    owner.children.unshift({ name: owner === root ? STATIC_NODE : `${owner.name}/${STATIC_NODE}`, children: [], primitives: merged });
+  }
+}
+
 export function convertFgModel(aircraftDir: string, modelFile: string, resolver: FgResolver = new FgResolver(aircraftDir, path.basename(aircraftDir))): ConvertedModel {
   const ctx: Ctx = {
     aircraftDir,
@@ -667,6 +730,7 @@ export function convertFgModel(aircraftDir: string, modelFile: string, resolver:
     n.children.forEach(visit);
   };
   ctx.texNodes.forEach(visit);
+  mergeStatic(root, ctx.animations);
   // Flatten to glTF node list.
   const nodes: GlbNode[] = [];
   const add = (n: SceneNode): number => {

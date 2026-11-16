@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseAc3d } from "../src/ac3d.ts";
 import { buildGlb } from "../src/glb.ts";
-import { convertFgModel } from "../src/fgmodel.ts";
+import { convertFgModel, STATIC_NODE } from "../src/fgmodel.ts";
 
 /** Two quads: a parent at loc (1,0,0) and a kid rotated 90° about y at loc (0,0,2) relative to it. */
 const AC = `AC3Db
@@ -156,10 +156,14 @@ describe("FG model conversion", () => {
     const sel = m.animations.find((a) => a.type === "select" && a.nodes[0]?.startsWith("model:Models/sub.xml"));
     expect(sel).toBeDefined();
     // Submodel geometry is offset by FG (1, 0, 2) = AC (1, 2, 0).
-    const wings = m.nodes.filter((n) => n.name.startsWith("wing"));
-    const pos = (n: (typeof wings)[number]) => n.primitives![0]!.positions;
-    expect(pos(wings[1]!)[0]! - pos(wings[0]!)[0]!).toBeCloseTo(1, 6);
-    expect(pos(wings[1]!)[1]! - pos(wings[0]!)[1]!).toBeCloseTo(2, 6);
+    // Submodel geometry is offset by FG (1, 0, 2) = AC (1, 2, 0). The main wing is animated
+    // (its triangles are in "wing/_static"); the submodel's is not, so it is merged into the
+    // submodel's static node, white first (the wing comes first in the file).
+    const mainWing = m.nodes.find((n) => n.name === `wing/${STATIC_NODE}`)!.primitives![0]!.positions;
+    const subStatic = m.nodes.find((n) => n.name.startsWith("model:Models/sub.xml") && n.name.endsWith(`/${STATIC_NODE}`))!;
+    const subWing = subStatic.primitives![0]!.positions;
+    expect(subWing[0]! - mainWing[0]!).toBeCloseTo(1, 6);
+    expect(subWing[1]! - mainWing[1]!).toBeCloseTo(2, 6);
     expect(m.properties).toContain("/sim/show-sub");
   });
 
@@ -171,7 +175,26 @@ describe("FG model conversion", () => {
     const json = JSON.parse(new TextDecoder().decode(glb.subarray(20, 20 + dv.getUint32(12, true))));
     expect(json.nodes.length).toBe(m.nodes.length);
     expect(json.materials.some((x: { alphaMode?: string; doubleSided: boolean }) => x.alphaMode === "BLEND" && x.doubleSided)).toBe(true);
-    // Line objects produce no triangles.
-    expect(json.nodes.find((n: { name: string }) => n.name === "hinge").mesh).toBeUndefined();
+    // Line objects produce no triangles; with no animation on it, the node is dropped.
+    expect(json.nodes.find((n: { name: string }) => n.name === "hinge")).toBeUndefined();
+  });
+
+  it("merges geometry no animation refers to into one mesh per material", () => {
+    // sub.xml has no animations: wing, aileron and engine all go into the static node.
+    const s = convertFgModel(dir, path.join(dir, "Models", "sub.xml"));
+    const root = s.nodes[s.roots[0]!]!;
+    expect(s.nodes.map((n) => n.name).sort()).toEqual([root.name, STATIC_NODE].sort());
+    const st = s.nodes.find((n) => n.name === STATIC_NODE)!;
+    // White single-sided (wing, engine) and glass two-sided (aileron).
+    expect(st.primitives!.length).toBe(2);
+    expect(st.primitives!.reduce((t, p) => t + p.indices.length / 3, 0)).toBe(s.stats.triangles);
+    // In m.xml everything with a mesh is animated: no model-wide static node; each named node
+    // keeps its name and its triangles move into its own "/_static" child.
+    expect(m.nodes.some((n) => n.name === STATIC_NODE)).toBe(false);
+    const ail = m.nodes.find((n) => n.name === "aileron")!;
+    expect(ail.primitives ?? []).toHaveLength(0);
+    expect(m.nodes[ail.children[0]!]!.name).toBe(`aileron/${STATIC_NODE}`);
+    expect(m.nodes[ail.children[0]!]!.primitives).toHaveLength(1);
+    expect(m.parents[`aileron/${STATIC_NODE}`]).toBe("aileron");
   });
 });
