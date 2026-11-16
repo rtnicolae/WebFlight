@@ -129,7 +129,7 @@ export class GrassLayer {
     });
   }
 
-  /** Stream cells around the camera (call each frame; cheap when nothing changes). */
+  /** Stream cells around a position (the glider's; call each frame; cheap when nothing changes). */
   update(camera: Cartographic, groundM: number | undefined): void {
     const latDeg = (camera.latitude * 180) / Math.PI, lonDeg = (camera.longitude * 180) / Math.PI;
     const low = groundM !== undefined && camera.height - groundM < this.o.maxHeightM;

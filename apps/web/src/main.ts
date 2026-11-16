@@ -1,4 +1,5 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
+import { Cartographic } from "cesium";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
 import { advance, TerrariumTerrain } from "@webflight/environment";
@@ -96,6 +97,7 @@ async function main(): Promise<void> {
   const aircraft = new AircraftView(manifest, BUNDLE);
   const hud = new Hud(document.getElementById("hud")!);
   const cam = new ChaseCamera(viewer.camera, manifest.views.cockpit);
+  cam.groundAt = (lat, lon) => renderTerrain.heightAt(lat, lon);
   if (params.get("view") === "cockpit") cam.toggle();
 
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });
@@ -216,10 +218,8 @@ async function main(): Promise<void> {
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
-    if (grass) {
-      const cam = viewer.camera.positionCartographic;
-      grass.update(cam, renderTerrain.heightAt((cam.latitude * 180) / Math.PI, (cam.longitude * 180) / Math.PI));
-    }
+    // Grass follows the glider, not the camera: looking around rebuilds nothing.
+    if (grass) grass.update(Cartographic.fromDegrees(g("position/long-gc-deg"), g("position/lat-geod-deg"), g("position/h-agl-ft") * M_PER_FT), 0);
     let launchText: string | undefined;
     if (LAUNCH) {
       const connected = g(LAUNCH === "winch" ? "/sim/hitches/winch/open" : "/sim/hitches/aerotow/open") === 0;

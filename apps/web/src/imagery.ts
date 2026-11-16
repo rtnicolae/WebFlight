@@ -167,14 +167,18 @@ export class DetailImageryProvider {
   readonly hasAlphaChannel = true;
   readonly ready = true;
   private readonly workers: Worker[] = [];
-  private readonly pending = new Map<number, { resolve: (b: ImageBitmap) => void; reject: (e: Error) => void }>();
+  private readonly pending = new Map<number, { key: string; resolve: (b: ImageBitmap) => void; reject: (e: Error) => void }>();
   private nextId = 0;
   private rr = 0;
   private empty: ImageBitmap | undefined;
+  /** Composed tiles, least recently used first (~260 kB each). */
+  private readonly cache = new Map<string, ImageBitmap>();
 
   constructor(
     private readonly osmUrl: string,
     private readonly sun: { azimuthDeg: number; elevationDeg: number },
+    /** 3D shadows are on: near tiles leave building shadows to them. */
+    private readonly realShadows = false,
   ) {
     const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency ?? 4) - 2));
     for (let i = 0; i < n; i++) {
@@ -183,8 +187,17 @@ export class DetailImageryProvider {
         const p = this.pending.get(ev.data.id);
         if (!p) return;
         this.pending.delete(ev.data.id);
-        if (ev.data.bitmap) p.resolve(ev.data.bitmap);
-        else p.reject(new Error(ev.data.error ?? "detail failed"));
+        if (ev.data.bitmap) {
+          // Keep it: when Cesium drops a tile (camera turned away) and wants it again, it is
+          // not composed again.
+          this.cache.set(p.key, ev.data.bitmap);
+          if (this.cache.size > 500) {
+            const k = this.cache.keys().next().value!;
+            this.cache.get(k)?.close();
+            this.cache.delete(k);
+          }
+          p.resolve(ev.data.bitmap);
+        } else p.reject(new Error(ev.data.error ?? "detail failed"));
       };
       this.workers.push(w);
     }
@@ -208,14 +221,21 @@ export class DetailImageryProvider {
     const r = this.tilingScheme.tileXYToRectangle(x, y, level);
     const c = Rectangle.center(r);
     if (level < DETAIL_MIN_LEVEL || highResPhotoAt((c.latitude * 180) / Math.PI, (c.longitude * 180) / Math.PI)) return this.empty ? Promise.resolve(this.empty) : undefined;
+    const key = `${level}/${x}/${y}`;
+    const hit = this.cache.get(key);
+    if (hit) {
+      this.cache.delete(key);
+      this.cache.set(key, hit);
+      return Promise.resolve(hit);
+    }
     // Back-pressure: Cesium retries a tile later when this returns undefined.
     if (this.pending.size >= 6 * this.workers.length) return undefined;
     const id = this.nextId++;
     const w = this.workers[this.rr++ % this.workers.length]!;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { key, resolve, reject });
       const dbg = new URLSearchParams(location.search);
-      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: this.sun, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
+      w.postMessage({ id, x, y, z: level, s2Url: S2CLOUDLESS, osmUrl: this.osmUrl, texUrl: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href, sun: this.sun, realShadows: this.realShadows, synth: dbg.get("synth") !== "0", snap: dbg.get("snap") !== "0" } satisfies DetailRequest);
     });
   }
 }
@@ -287,7 +307,7 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     // 3D scenery is). Elsewhere Sentinel-2 (10 m) shows through.
     // Where photos are only 10 m: detail synthesized from them and OpenStreetMap (visual only).
     const osmUrl = await openFreeMapTiles();
-    if (osmUrl && new URLSearchParams(location.search).get("detail") !== "0") layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun) as unknown as ImageryProvider, { minimumTerrainLevel: 10 }));
+    if (osmUrl && new URLSearchParams(location.search).get("detail") !== "0") layers.add(new ImageryLayer(new DetailImageryProvider(osmUrl, sun, viewer.shadows) as unknown as ImageryProvider, { minimumTerrainLevel: 10 }));
     for (const o of ORTHOS) layers.add(orthoLayer(o));
     void addAncpi(viewer);
     layers.add(new ImageryLayer(swissImageProvider()));

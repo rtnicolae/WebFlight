@@ -14,6 +14,8 @@ declare const self: DedicatedWorkerGlobalScope;
 
 export interface DetailRequest {
   id: number;
+  /** 3D building shadows are drawn: don't also paint them into near tiles (zoom ≥ 17). */
+  realShadows?: boolean;
   x: number;
   y: number;
   z: number;
@@ -548,7 +550,7 @@ async function compose(q: DetailRequest): Promise<ImageBitmap> {
     }
     const sdx = -Math.sin(az), sdy = Math.cos(az); // shadow direction in pixels (y down)
     for (const ft of bld.features) {
-      if (ft.type !== 3) continue;
+      if (ft.type !== 3 || (q.realShadows && z >= 17)) continue;
       const h = Number(ft.properties["render_height"] ?? 5);
       const off = Math.min(18, h * sunLow) / mPerPx;
       ctx.globalAlpha = 1;

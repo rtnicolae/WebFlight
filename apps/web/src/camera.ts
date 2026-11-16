@@ -3,6 +3,8 @@ import { Cartesian3, HeadingPitchRange, Math as CMath, Matrix4, type Camera } fr
 
 export type ViewMode = "chase" | "cockpit";
 
+/** The chase camera stays this far above the ground [m]. */
+const CLEARANCE_M = 1.2;
 const wrapPi = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
 export class ChaseCamera {
@@ -44,6 +46,9 @@ export class ChaseCamera {
     }, { passive: true });
   }
 
+  /** Ground height [m] under a position, for keeping the chase camera above it. */
+  groundAt: ((latDeg: number, lonDeg: number) => number | undefined) | undefined;
+
   /** Drag handling is suspended while a cockpit control is being operated. */
   suspended = false;
 
@@ -81,6 +86,18 @@ export class ChaseCamera {
     if (this.heading === undefined) this.heading = att.psi;
     this.heading += wrapPi(att.psi - this.heading) * Math.min(1, dt / 0.8);
     const pitch = Math.max(-1.5, Math.min(1.4, CMath.toRadians(-9) + this.orbit.pitch));
-    this.camera.lookAt(this.target, new HeadingPitchRange(this.heading + this.orbit.heading, pitch, this.range));
+    const hpr = new HeadingPitchRange(this.heading + this.orbit.heading, pitch, this.range);
+    this.camera.lookAt(this.target, hpr);
+    // Keep the camera above the ground: if the orbit would put it under, flatten the orbit.
+    for (let k = 0; k < 2 && this.groundAt; k++) {
+      const c = this.camera.positionCartographic;
+      const ground = this.groundAt((c.latitude * 180) / Math.PI, (c.longitude * 180) / Math.PI);
+      if (ground === undefined || c.height >= ground + CLEARANCE_M) break;
+      // Camera height ≈ target height − range·sin(pitch): the pitch that clears the ground.
+      const targetH = c.height + this.range * Math.sin(hpr.pitch);
+      hpr.pitch = -Math.asin(Math.max(-1, Math.min(1, (ground + CLEARANCE_M + 0.3 - targetH) / this.range)));
+      this.orbit.pitch = Math.min(this.orbit.pitch, hpr.pitch - CMath.toRadians(-9));
+      this.camera.lookAt(this.target, hpr);
+    }
   }
 }

@@ -93,9 +93,10 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
   scene.globe.dynamicAtmosphereLightingFromSun = true;
   scene.globe.showGroundAtmosphere = true;
   scene.globe.atmosphereLightIntensity = 12;
-  // Ultra refines the ground further; 2 (Cesium's default) halves the tiles drawn on High.
-  scene.globe.maximumScreenSpaceError = opts.quality === "ultra" ? 1.5 : 2;
-  scene.globe.tileCacheSize = 400;
+  // Finer than Cesium's default 2: it only saved ~10% of the tiles and blurred the ground.
+  scene.globe.maximumScreenSpaceError = 1.5;
+  // Tiles out of view stay loaded (turning the camera back shows them at once).
+  scene.globe.tileCacheSize = 1200;
   scene.globe.preloadSiblings = true;
   scene.fog.enabled = true;
   scene.fog.density = 1.6e-4;
@@ -116,6 +117,13 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
     sm.size = 2048;
     sm.maximumDistance = 800;
     sm.darkness = 0.35;
+    // More bias than Cesium's defaults: walls nearly edge-on to the sun showed diagonal
+    // stripes (shadow acne). Internal, so guarded.
+    const bias = (sm as unknown as { _primitiveBias?: { normalOffsetScale: number; depthBias: number } })._primitiveBias;
+    if (bias) {
+      bias.normalOffsetScale = 0.5;
+      bias.depthBias = 0.0001;
+    }
   }
   viewer.clock.currentTime = JulianDate.fromDate(opts.time);
   viewer.clock.shouldAnimate = false;
