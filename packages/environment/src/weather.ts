@@ -139,7 +139,10 @@ export function openMeteoUrl(latDeg: number, lonDeg: number, from: string, to: s
 
 interface OpenMeteoResponse {
   elevation?: number;
+  /** The zone's offset now, not on the dates asked (2026-11: 7200 for Bucharest in July). */
   utc_offset_seconds?: number;
+  /** IANA name with timezone=auto, e.g. "Europe/Bucharest". */
+  timezone?: string;
   /** With timeformat=unixtime, `time` is UTC seconds (docs: local ISO times ignore DST changes). */
   hourly?: Record<string, (number | null)[] | undefined> & { time?: number[] };
 }
@@ -242,6 +245,19 @@ export function parseWhen(s: string | null | undefined): WhenSpec {
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
+/** UTC offset [h] of an IANA time zone at an instant, summer time included; undefined if unknown. */
+export function zoneOffsetH(timeZone: string, at: Date): number | undefined {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(at);
+    const g = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    const asUtc = Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second"));
+    const h = (asUtc - Math.floor(at.getTime() / 1000) * 1000) / 3600_000;
+    return Number.isFinite(h) ? h : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The weather and the sim time for a place and a WhenSpec: Open-Meteo for the local day
  * asked (the response's UTC offset turns local time into UTC), else the sun-based estimate.
@@ -268,15 +284,25 @@ export async function weatherFor(
   } catch (e) {
     note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
   }
-  const offsetH = json?.utc_offset_seconds !== undefined ? json.utc_offset_seconds / 3600 : guessH;
+  // Open-Meteo's offset is the zone's offset today; on the day asked it can differ by the
+  // summer hour, so it is worked out from the zone's name for the time asked.
+  let offsetH = json?.utc_offset_seconds !== undefined ? json.utc_offset_seconds / 3600 : guessH;
+  const zone = json?.timezone;
   let time = now;
   if (when.kind === "local") {
     const [h, m] = when.hm.split(":").map(Number) as [number, number];
-    time = new Date(d0.getTime() + (h * 60 + m) * 60_000 - offsetH * 3600_000);
-  }
+    const wall = d0.getTime() + (h * 60 + m) * 60_000;
+    time = new Date(wall - offsetH * 3600_000);
+    for (let i = 0; zone && i < 2; i++) {
+      const z = zoneOffsetH(zone, time);
+      if (z === undefined || z === offsetH) break;
+      offsetH = z;
+      time = new Date(wall - offsetH * 3600_000);
+    }
+  } else if (zone) offsetH = zoneOffsetH(zone, time) ?? offsetH;
   if (json) {
     try {
-      return { weather: parseOpenMeteo(json, latDeg, lonDeg, time, archive ? "archive" : "forecast"), time };
+      return { weather: { ...parseOpenMeteo(json, latDeg, lonDeg, time, archive ? "archive" : "forecast"), utcOffsetH: offsetH }, time };
     } catch (e) {
       note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
     }

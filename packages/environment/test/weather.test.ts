@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateWeather, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, windAt, type Weather } from "../src/index.ts";
+import { estimateWeather, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, weatherFor, windAt, zoneOffsetH, type Weather } from "../src/index.ts";
 
 // Shape of an Open-Meteo /v1/forecast response with timezone=auto&timeformat=unixtime.
 const fixture = {
@@ -113,5 +113,27 @@ describe("historical weather", () => {
     expect(u.startsWith("https://archive-api.open-meteo.com/v1/archive?")).toBe(true);
     expect(u).toContain("wind_speed_100m");
     expect(u).not.toContain("hPa");
+  });
+});
+
+describe("local time", () => {
+  it("knows summer time from the zone's name", () => {
+    expect(zoneOffsetH("Europe/Bucharest", new Date("2024-07-10T12:00:00Z"))).toBe(3);
+    expect(zoneOffsetH("Europe/Bucharest", new Date("2024-01-10T12:00:00Z"))).toBe(2);
+    expect(zoneOffsetH("Not/AZone", new Date())).toBeUndefined();
+  });
+
+  it("turns a July local time into UTC with summer time, though Open-Meteo answers in November", async () => {
+    // Open-Meteo gives the zone's offset today (winter, +2), not on the day asked.
+    const json = { ...fixture, utc_offset_seconds: 7200, hourly: { ...fixture.hourly, time: [Date.UTC(2024, 6, 10, 16) / 1000, Date.UTC(2024, 6, 10, 17) / 1000, Date.UTC(2024, 6, 10, 18) / 1000] } };
+    const r = await weatherFor(45.7, 25.53, parseWhen("2024-07-10T20:30"), 530, new Date("2026-11-17T08:00:00Z"), { fetchJson: async () => json });
+    expect(r.time.toISOString()).toBe("2024-07-10T17:30:00.000Z");
+    expect(r.weather.utcOffsetH).toBe(3);
+  });
+
+  it("keeps winter time in winter", async () => {
+    const json = { ...fixture, utc_offset_seconds: 7200, hourly: { ...fixture.hourly, time: [Date.UTC(2024, 0, 10, 10) / 1000] } };
+    const r = await weatherFor(45.7, 25.53, parseWhen("2024-01-10T12:00"), 530, new Date("2026-11-17T08:00:00Z"), { fetchJson: async () => json });
+    expect(r.time.toISOString()).toBe("2024-01-10T10:00:00.000Z");
   });
 });
