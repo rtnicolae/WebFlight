@@ -53,6 +53,7 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   far=N             distant buildings out to ±N zoom-14 tiles, ~1.7 km each (default 3, ultra 5; 0: off)
  *   skyline=N         beyond those, blocks and large buildings out to ±N tiles (default 6, ultra 8; 0: off)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
+ *   clouds=sprites    the sprite cumulus instead of the ray-marched volumes (default with quality=low)
  */
 // Off by default: every change of scale makes Cesium re-pick ground tiles (popping, reloads).
 // Disk cache for tiles and static assets (public/sw.js): what has been downloaded once loads

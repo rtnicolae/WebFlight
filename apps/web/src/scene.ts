@@ -15,7 +15,8 @@ import {
 import { LOOK } from "./lighting.ts";
 import type { TerrariumTerrain } from "@webflight/environment";
 import type { ThermalView } from "./protocol.ts";
-import { CloudLayer } from "./clouds.ts";
+import { CloudLayer, type CloudSpec } from "./clouds.ts";
+import { VolumetricClouds } from "./vclouds.ts";
 
 const M_PER_DEG_LAT = 111_132;
 
@@ -263,12 +264,12 @@ export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProv
 export const MAX_TERRAIN_LEVEL = 19;
 
 /**
- * A cumulus over each thermal (sprite clouds, clouds.ts): flat base at the thermal's cloud
+ * A cumulus over each thermal (volumes, vclouds.ts; or sprites, clouds.ts): flat base at the thermal's cloud
  * base, growing while the thermal forms and fading as it dies, so clouds mark the lift as
  * real ones do. With `columns`, the lift columns are drawn too.
  */
 export class ThermalLayer {
-  private readonly clouds: CloudLayer;
+  private readonly clouds: { set(specs: CloudSpec[]): void };
   private readonly columns = new Map<string, Entity>();
 
   constructor(
@@ -279,7 +280,10 @@ export class ThermalLayer {
     private readonly cumulus = true,
   ) {
     const az = (sun.azimuthDeg * Math.PI) / 180, el = (Math.max(5, sun.elevationDeg) * Math.PI) / 180;
-    this.clouds = new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) });
+    // Ray-marched volumes (vclouds.ts, ~1.5 ms a frame); the sprite puffs with quality=low or
+    // ?clouds=sprites.
+    const q = new URLSearchParams(location.search);
+    this.clouds = q.get("clouds") === "sprites" || (q.get("quality") === "low" && q.get("clouds") !== "volume") ? new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) }) : new VolumetricClouds(viewer);
   }
 
   update(list: ThermalView[]): void {

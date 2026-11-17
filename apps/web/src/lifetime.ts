@@ -5,7 +5,7 @@
  * a page load used to start a new one every flight and every return to the menu).
  *
  * While a lifetime is open it records, without the classes having to know:
- *  - primitives, ground primitives and entities added to the scene,
+ *  - primitives, ground primitives, entities and post-process stages added to the scene,
  *  - listeners added to the scene's frame events and to the imagery layer collection,
  *  - window, document and canvas event listeners,
  *  - workers started, intervals set.
@@ -27,6 +27,7 @@ export class Lifetime {
   private prims = new Set<unknown>();
   private groundPrims = new Set<unknown>();
   private ents = new Set<unknown>();
+  private stages = new Set<unknown>();
   private extra: Remover[] = [];
   private closed = false;
 
@@ -36,6 +37,7 @@ export class Lifetime {
     for (let i = 0; i < scene.primitives.length; i++) this.prims.add(scene.primitives.get(i));
     for (let i = 0; i < scene.groundPrimitives.length; i++) this.groundPrims.add(scene.groundPrimitives.get(i));
     for (const e of viewer.entities.values) this.ents.add(e);
+    for (let i = 0; i < scene.postProcessStages.length; i++) this.stages.add(scene.postProcessStages.get(i));
 
     // Cesium events: the scene's frame events and the imagery layers' layerAdded.
     const events: CesiumEvent[] = [scene.preUpdate, scene.postUpdate, scene.preRender, scene.postRender, viewer.imageryLayers.layerAdded];
@@ -118,5 +120,10 @@ export class Lifetime {
     drop(scene.primitives, this.prims);
     drop(scene.groundPrimitives, this.groundPrims);
     for (const e of [...this.viewer.entities.values]) if (!this.ents.has(e)) this.viewer.entities.remove(e);
+    const pp = scene.postProcessStages;
+    for (let i = pp.length - 1; i >= 0; i--) {
+      const st = pp.get(i);
+      if (!this.stages.has(st)) pp.remove(st);
+    }
   }
 }
