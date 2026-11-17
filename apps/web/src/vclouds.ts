@@ -117,10 +117,20 @@ float density(int i, vec3 q, int oct) {
     np = np * 2.07 + vec3(3.1, 7.7, 1.3);
     a *= 0.5;
   }
-  float d = s * 2.6 - (0.875 - n) * (0.9 + 0.6 * hn) + 0.15;
+  // A gentler rise than before (×2.6 made a hard, opaque surface: "solid" clouds).
+  float d = s * 1.5 - (0.875 - n) * (0.9 + 0.6 * hn) + 0.1;
+  if (d <= 0.0) return 0.0;
+  // Fine erosion of the thin outer layer only: ragged, wispy edges round a dense core.
+  if (oct >= 3 && d < 0.55) {
+    float hf = 0.6 * vnoise(q / R * 16.0 + u_d[i].z * 1.7) + 0.4 * vnoise(q / R * 34.0 + 5.3);
+    d -= (1.0 - smoothstep(0.0, 0.55, d)) * (1.0 - hf) * 0.5;
+  }
+  d = clamp(d, 0.0, 1.0);
+  // Thin at the rim, dense inside.
+  d *= d * (1.6 - 0.6 * d);
   // Level base: a short fade at the bottom only.
   d *= smoothstep(0.0, 0.025, hn);
-  return clamp(d, 0.0, 1.0) * u_d[i].y;
+  return d * u_d[i].y;
 }
 
 float hg(float c, float g) {
@@ -149,7 +159,8 @@ void main() {
     if (i >= u_n) break;
     float R = u_c[i].w, H = u_d[i].x;
     vec3 ctr = u_c[i].xyz + u_up * (H * 0.5);
-    float rad = length(vec2(R * 1.15, H * 0.55));
+    // Bubbles reach ~1.2 R out with their noise (a straight cut where this was 1.15).
+    float rad = length(vec2(R * 1.3, H * 0.6));
     float b = dot(ctr, dir);
     float disc = b * b - dot(ctr, ctr) + rad * rad;
     if (disc <= 0.0) continue;
@@ -248,8 +259,9 @@ export class VolumetricClouds {
         u_E: () => self.east,
         u_N: () => self.north,
         // The sky's light on the tops, a grey-blue underside; dimmed with the day.
-        u_ambTop: new Cartesian3(0.7 * amb[0]!, 0.76 * amb[1]!, 0.88 * amb[2]!),
-        u_ambBase: new Cartesian3(0.36 * amb[0]!, 0.39 * amb[1]!, 0.46 * amb[2]!),
+        // A little less sky light than the sun's: sunlit faces stand out from the shaded ones.
+        u_ambTop: new Cartesian3(0.6 * amb[0]!, 0.67 * amb[1]!, 0.8 * amb[2]!),
+        u_ambBase: new Cartesian3(0.3 * amb[0]!, 0.33 * amb[1]!, 0.4 * amb[2]!),
         u_haze: new Cartesian3(0.72 * LOOK.ground, 0.78 * LOOK.ground, 0.86 * LOOK.ground),
         u_fade: new Cartesian2(15_000, 70_000),
         u_sigma: 0.045,
@@ -291,7 +303,7 @@ export class VolumetricClouds {
         if (x.d > 70_000) return false;
         const R = x.c.radius * x.c.spec.size, H = x.c.height * x.c.spec.size;
         Cartesian3.add(x.c.base, Cartesian3.multiplyByScalar(this.up, H * 0.5, bs.center), bs.center);
-        bs.radius = Math.hypot(R * 1.15, H * 0.55) * 1.1;
+        bs.radius = Math.hypot(R * 1.3, H * 0.6) * 1.1;
         return cull.computeVisibility(bs) !== Intersect.OUTSIDE;
       })
       .sort((a, b) => a.d - b.d)
