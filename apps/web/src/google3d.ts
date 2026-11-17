@@ -277,7 +277,8 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     if (this.targetM === undefined) return;
     const d = this.targetM - this.offsetM;
     if (Math.abs(d) < 0.005) return;
-    this.setOffset(this.offsetM + Math.sign(d) * Math.min(Math.abs(d), 2 * dt));
+    // On the ground, quickly (the glider stands on it); in the air, gently.
+    this.setOffset(this.offsetM + Math.sign(d) * Math.min(Math.abs(d), (aglM < 5 ? 6 : 2) * dt));
   }
 
   private setOffset(m: number): void {
@@ -295,12 +296,13 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   }
 
   /**
-   * Median of Google minus ours at the glider and 6 points 12 m round it, from the tiles
-   * loaded (once all in view are: before that a coarse tile can answer kilometres off), each
-   * within 15 m of the wide figure (the geoid moves a few metres over a flight).
+   * Median of Google minus ours at the glider and 6 points 12 m round it, from the tiles drawn
+   * now, each within 15 m of the wide figure (a coarse tile can answer kilometres off; the
+   * geoid moves only a few metres over a flight). It used to wait for every tile in view to
+   * load: ~20 s at a ground start, with the glider 2.5 m under the ground meanwhile.
    */
   private measureNear(latDeg: number, lonDeg: number): void {
-    if (this.wideM === undefined || !this.tileset.tilesLoaded) return;
+    if (this.wideM === undefined) return;
     const kx = 111_320 * Math.cos((latDeg * Math.PI) / 180), ky = 110_540;
     const d: number[] = [];
     for (let i = -1; i < 6; i++) {
