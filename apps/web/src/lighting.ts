@@ -174,8 +174,17 @@ function patchGround(scene: Viewer["scene"], sky: number[], haze: { base: number
   });
 }
 
+/** The globe's ground colour before applyLighting dimmed it (applyLighting runs once per flight). */
+const baseColours = new WeakMap<object, Color>();
+
 export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevationDeg: number }, latDeg: number, lonDeg: number): void {
   const scene = viewer.scene, el = sun.elevationDeg;
+  // Each flight lights the same viewer again (main.ts): start from the sky createViewer set.
+  if (scene.skyAtmosphere) {
+    scene.skyAtmosphere.show = true;
+    scene.skyAtmosphere.brightnessShift = 0.04;
+  }
+  if (scene.skyBox) scene.skyBox.show = true;
   // Cesium's sky and haze take their light from the scene's light (not the sun). Below 5° the
   // light comes from the sun's bearing but no lower than just above the horizon (from the
   // glow over the sunset, after sunset), its colour turning to the sky's.
@@ -218,6 +227,7 @@ export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevati
   };
   for (let i = 0; i < viewer.imageryLayers.length; i++) dim(viewer.imageryLayers.get(i));
   viewer.imageryLayers.layerAdded.addEventListener(dim);
-  const b = scene.globe.baseColor;
+  let b = baseColours.get(scene.globe);
+  if (!b) baseColours.set(scene.globe, (b = Color.clone(scene.globe.baseColor)));
   scene.globe.baseColor = new Color(b.red * LOOK.ground, b.green * LOOK.ground, b.blue * LOOK.ground, 1);
 }

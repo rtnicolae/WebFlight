@@ -24,6 +24,11 @@ else comes from data for that place and time, fetched around the start point as 
 ?lat=…&lon=…&hdg=…&agl=…            or start in the air anywhere (free flight)
 ```
 
+The title screen and every flight run in one page: "Fly", Esc and the browser's back and
+forward buttons swap them without reloading (`lifetime.ts` takes away what each added), so the
+viewer and Google's 3D tiles carry over, and with them Google's session (Cesium ion meters one
+root tile per session of up to three hours). Changing Quality or Scenery reloads the page.
+
 Overrides for testing: `rwy=04`, `wind=270@15`, `thermals=0`, `seed=N`. Scenery: `world=globe`
 (the globe with aerial photos instead of Google's 3D tiles), `g3dsse=N` (their detail, default
 8), `g3dgrade=0` (their photos as Google has them), `g3dreq=N` (tiles downloading at once).

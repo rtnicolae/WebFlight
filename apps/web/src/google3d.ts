@@ -145,19 +145,24 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     const scene = viewer.scene;
     scene.primitives.add(tileset);
     scene.globe.show = false;
-    const g = scene.globe, a = scene.atmosphere;
+    const g3 = new Google3D(viewer, tileset, groundAt);
+    g3.relight();
+    return g3;
+  }
+
+  /** After applyLighting (each flight: the time of day may differ): light and haze on the tiles. */
+  relight(): void {
+    const scene = this.viewer.scene, g = scene.globe, a = scene.atmosphere;
+    (this.tileset.customShader as CustomShader | undefined)?.setUniform("u_photoLight", photoLight(this.viewer));
     a.lightIntensity = g.atmosphereLightIntensity;
     a.hueShift = g.atmosphereHueShift;
-    a.saturationShift = g.atmosphereSaturationShift;
-    a.brightnessShift = g.atmosphereBrightnessShift;
     // After sunset our ground's haze turns to a dark blue-grey (lighting.ts twilightHaze);
     // Cesium's would glow orange on the far ridges: greyed and darkened as far.
     const k = LOOK.haze.k;
-    a.saturationShift += (-0.9 - a.saturationShift) * k;
-    a.brightnessShift += (-0.6 - a.brightnessShift) * k;
+    a.saturationShift = g.atmosphereSaturationShift + (-0.9 - g.atmosphereSaturationShift) * k;
+    a.brightnessShift = g.atmosphereBrightnessShift + (-0.6 - g.atmosphereBrightnessShift) * k;
     // …and darkened with the light like the globe's (else the haze glows grey at night).
     a.dynamicLighting = !g.dynamicAtmosphereLighting ? DynamicAtmosphereLightingType.NONE : g.dynamicAtmosphereLightingFromSun ? DynamicAtmosphereLightingType.SUNLIGHT : DynamicAtmosphereLightingType.SCENE_LIGHT;
-    return new Google3D(viewer, tileset, groundAt);
   }
 
   /** Every frame, with the glider's position and height above our terrain. */

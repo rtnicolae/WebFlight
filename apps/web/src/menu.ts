@@ -1,12 +1,20 @@
 /**
  * Title screen: a slow orbit over the chosen airfield in the chosen day's weather. Pick an
  * airfield (any in Europe), when, and how to launch; everything else comes from the data.
- * "Fly" starts the sim by navigating to its URL parameters (any flight can be bookmarked).
+ * "Fly" starts the sim at its URL parameters (any flight can be bookmarked), in the same page
+ * (main.ts): the viewer and Google's 3D tiles carry over.
+ *
+ * The backdrop costs nothing metered: Google's 3D tiles once a flight has opened their
+ * session (it lasts up to three hours), before that the globe with Sentinel-2 (free; it used
+ * to be Bing via Cesium ion, a metered session on every visit to this screen).
  */
-import { HeadingPitchRange, Cartesian3, Math as CMath } from "cesium";
-import { advance, loadAirfieldIndex, searchAirfields, soaringFrom, sunPosition, TerrariumTerrain, ThermalSky, type Thermal } from "@webflight/environment";
-import { addImagery, type ImageryMode } from "./imagery.ts";
-import { createViewer, ThermalLayer } from "./scene.ts";
+import { HeadingPitchRange, Cartesian3, Credit, ImageryLayer, JulianDate, Matrix4, UrlTemplateImageryProvider, Math as CMath, type Viewer } from "cesium";
+import { advance, loadAirfieldIndex, searchAirfields, soaringFrom, sunPosition, type TerrariumTerrain, ThermalSky, type Thermal } from "@webflight/environment";
+import type { Google3D } from "./google3d.ts";
+import { S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
+import type { Lifetime } from "./lifetime.ts";
+import { applyLighting, setLook } from "./lighting.ts";
+import { ThermalLayer } from "./scene.ts";
 import { Scenery } from "./scenery.ts";
 import type { ThermalView } from "./protocol.ts";
 import { resolveFlight } from "./world.ts";
@@ -45,7 +53,17 @@ function segmented(parent: HTMLElement, label: string, options: [string, string]
   parent.appendChild(sec);
 }
 
-export async function showMenu(params: URLSearchParams): Promise<void> {
+export interface MenuEnv {
+  viewer: Viewer;
+  terrain: TerrariumTerrain;
+  /** Google's 3D tiles, when a flight has opened their session. */
+  google3d?: Google3D;
+  life: Lifetime;
+  /** Show another page of the app (menu or flight) without reloading; replace: no history entry. */
+  go: (href: string, replace?: boolean) => void;
+}
+
+export async function showMenu(params: URLSearchParams, env: MenuEnv): Promise<void> {
   const remembered = (() => {
     try {
       return JSON.parse(localStorage.getItem("webflight.menu") ?? "{}") as Partial<Pick>;
@@ -66,6 +84,8 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   };
   const q = (extra: Record<string, string> = {}) =>
     new URLSearchParams({ ...(pick.field && pick.at ? { field: pick.field, at: pick.at } : {}), time: pick.time, ...extra });
+  /** The page-wide settings (main.ts appKey): a change of these reloads the page. */
+  const app = (): Record<string, string> => ({ imagery: pick.imagery, quality: pick.quality, ...(pick.world === "globe" ? { world: "globe" } : {}) });
 
   // The flight as the sim will resolve it: airfield, runway in use, weather.
   const F = await resolveFlight(q());
@@ -74,6 +94,10 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
 
   const root = document.getElementById("menu")!;
   root.hidden = false;
+  env.life.onClose(() => {
+    root.replaceChildren();
+    root.hidden = true;
+  });
   const panel = document.createElement("div");
   panel.className = "menu-panel";
   panel.innerHTML = `<h1 class="menu-title">WebFlight</h1><p class="menu-tagline">Gliding in Europe · ASK 21 · JSBSim</p>`;
@@ -95,7 +119,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
           b.onclick = () => {
             Object.assign(pick, { field: a.ident, at: `${a.latDeg},${a.lonDeg}` });
             save();
-            location.replace(`?menu&${q()}`); // move the backdrop
+            env.go(`?menu&${q(app())}`, true); // move the backdrop
           };
           return b;
         }),
@@ -140,14 +164,14 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
     sec.querySelector("button")!.onclick = () => {
       pick.time = "now";
       save();
-      location.replace(`?menu&${q()}`);
+      env.go(`?menu&${q(app())}`, true);
     };
     const input = sec.querySelector("input")!;
     input.onchange = () => {
       if (!input.value) return;
       pick.time = input.value;
       save();
-      location.replace(`?menu&${q()}`); // new weather and light
+      env.go(`?menu&${q(app())}`, true); // new weather and light
     };
     opts.appendChild(sec);
   }
@@ -179,7 +203,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   }
   function fly(): void {
     save();
-    location.assign(`?${q({ launch: pick.launch, imagery: pick.imagery, quality: pick.quality, ...(pick.world === "globe" ? { world: "globe" } : {}) })}`);
+    env.go(`?${q({ launch: pick.launch, ...app() })}`);
   }
   window.addEventListener("keydown", (e) => {
     if (e.key === "Enter") fly();
@@ -187,11 +211,19 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
 
   // Backdrop: the real scene, orbiting slowly.
   const date = F.time;
-  const terrain = new TerrariumTerrain({ zoom: 13 });
-  const viewer = createViewer(document.getElementById("cesium")!, { time: date, shadows: false, terrain, quality: pick.quality === "ultra" ? "ultra" : "high" });
+  const { viewer, terrain } = env;
   (window as unknown as { webflightViewer: unknown }).webflightViewer = viewer;
   const sun = sunPosition(date, F.latDeg, F.lonDeg);
-  void addImagery(viewer, pick.imagery, sun);
+  viewer.clock.currentTime = JulianDate.fromDate(date);
+  setLook(sun.elevationDeg);
+  applyLighting(viewer, sun, F.latDeg, F.lonDeg);
+  if (env.google3d) env.google3d.relight();
+  else {
+    // Sentinel-2 cloudless (free, 10 m): plenty for an orbit 5 km out.
+    const s2 = new ImageryLayer(new UrlTemplateImageryProvider({ url: S2CLOUDLESS, maximumLevel: 15, credit: new Credit('Sentinel-2 cloudless 2016 by <a href="https://s2maps.eu">EOX IT Services GmbH</a> (contains modified Copernicus Sentinel data 2016), CC BY 4.0') }));
+    viewer.imageryLayers.add(s2);
+    env.life.onClose(() => viewer.imageryLayers.remove(s2));
+  }
   // The day's thermals and cumulus, streamed in as their terrain loads (as in flight).
   const layer = new ThermalLayer(viewer, false, sun, soaringFrom(F.weather).cumulus);
   if (F.environment.thermalSky) {
@@ -218,12 +250,15 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
     setInterval(tick, 2000);
   }
   // Lakes and rivers read well from the orbit; buildings and trees are too small up here.
-  Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: false, trees: false, water: true, shadows: false, treeDetail: 24, drape: false });
+  // (Google's tiles have their own.)
+  if (!env.google3d) Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: false, trees: false, water: true, shadows: false, treeDetail: 24, drape: false });
   document.getElementById("boot")!.hidden = true;
   // Orbit a point a few km upwind of the field.
   const [cLat, cLon] = advance(F.latDeg, F.lonDeg, F.environment.windFromDeg, 3000);
   const groundM = await terrain.heightAtAsync(cLat, cLon).catch(() => 500);
   const centre = Cartesian3.fromDegrees(cLon, cLat, groundM + 450);
+  // lookAt leaves the camera in the centre's frame: back to the earth's for the flight.
+  env.life.onClose(() => viewer.camera.lookAtTransform(Matrix4.IDENTITY));
   let heading = CMath.toRadians(200);
   let last = performance.now();
   viewer.scene.preUpdate.addEventListener(() => {

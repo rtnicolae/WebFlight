@@ -1,5 +1,5 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
-import { Cartographic } from "cesium";
+import { Cartographic, JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
 import { applyLighting, setLook } from "./lighting.ts";
 import "./style.css";
@@ -12,18 +12,21 @@ import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, followShadows, ThermalLayer } from "./scene.ts";
 import { Google3D } from "./google3d.ts";
+import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, highResPhotoAt, photoTileUrl, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import { soaringFrom, sunPosition } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
+import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
 import { GrassLayer } from "./grass/grass-layer.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
-const params = new URLSearchParams(location.search);
-const AIRCRAFT = params.get("aircraft") ?? "ASK21";
+/** The page's URL parameters: the page-wide settings (appKey) come from these. */
+const page = new URLSearchParams(location.search);
+const AIRCRAFT = page.get("aircraft") ?? "ASK21";
 const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL, location.href)).href;
 
 /**
@@ -51,22 +54,33 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   skyline=N         beyond those, blocks and large buildings out to ±N tiles (default 6, ultra 8; 0: off)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
  */
-const AIR_START = params.has("lat") && params.has("lon");
-const LAUNCH = AIR_START ? undefined : params.get("launch") === "winch" ? "winch" : "aerotow";
-const SEED = Number(params.get("seed") ?? 1);
 // Off by default: every change of scale makes Cesium re-pick ground tiles (popping, reloads).
 // Disk cache for tiles and static assets (public/sw.js): what has been downloaded once loads
 // from disk afterwards. Takes over from the next request on; ?sw=0 unregisters it.
 if ("serviceWorker" in navigator) {
-  if (params.get("sw") === "0") void navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => void r.unregister()));
+  if (page.get("sw") === "0") void navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => void r.unregister()));
   else void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, { scope: import.meta.env.BASE_URL }).catch((e: unknown) => console.warn("tile cache unavailable:", e));
 }
-const DYNRES = params.get("dynres") === "1";
-const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
-const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
-const GOOGLE3D = params.get("world") !== "globe" && IMAGERY === "photo";
+const qualityOf = (p: URLSearchParams) => (["low", "high", "ultra"].includes(p.get("quality") ?? "") ? p.get("quality") : "high") as "low" | "high" | "ultra";
+const imageryOf = (p: URLSearchParams) => (["photo", "painted", "grid", "osm"].includes(p.get("imagery") ?? "") ? p.get("imagery") : p.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
+const DYNRES = page.get("dynres") === "1";
+const QUALITY = qualityOf(page);
+const IMAGERY = imageryOf(page);
+const GOOGLE3D = page.get("world") !== "globe" && IMAGERY === "photo";
+/**
+ * The settings the viewer is built with: the menu and every flight with the same ones share
+ * the page (and Google's 3D tiles session); a change of these reloads the page.
+ */
+function appKey(p: URLSearchParams): string {
+  const im = imageryOf(p);
+  const world = p.get("world") === "globe" || im !== "photo" ? "globe" : "google3d";
+  return [qualityOf(p), im, world, ...["aircraft", "shadows", "sharpen", "shadowdist", "dynres", "g3dsse", "g3dgrade", "g3dreq", "gdetail", "aerial", "nosab", "pin"].map((k) => p.get(k) ?? "")].join("|");
+}
 
-async function startState(F: Flight): Promise<StartState> {
+async function startState(F: Flight, params: URLSearchParams): Promise<StartState> {
+  const AIR_START = params.has("lat") && params.has("lon");
+  const LAUNCH = AIR_START ? undefined : params.get("launch") === "winch" ? "winch" : "aerotow";
+  const SEED = Number(params.get("seed") ?? 1);
   if (AIR_START || !F.runway)
     return { latDeg: F.latDeg, lonDeg: F.lonDeg, headingDeg: Number(params.get("hdg") ?? 0), aglM: Number(params.get("agl") ?? 600), easKmh: Number(params.get("eas") ?? 90) };
   // On the runway in use, 50 m past its threshold.
@@ -79,36 +93,58 @@ async function startState(F: Flight): Promise<StartState> {
 const LOADOUT: Record<number, number> = { 0: 80, 1: 0, 2: 0 };
 
 const status = document.getElementById("boot")!;
-const setStatus = (s: string) => (status.textContent = s);
+const setStatus = (s: string) => ((status.textContent = s), (status.hidden = false));
 
-async function main(): Promise<void> {
+/** What the menu and every flight in this page share. */
+interface App {
+  viewer: Viewer;
+  /** The renderer draws the same Terrarium heights the worker flies on. */
+  renderTerrain: TerrariumTerrain;
+  google3d?: Google3D;
+  /** Google's tiles were asked for (they may have failed: the globe then). */
+  googleTried: boolean;
+}
+let app: App | undefined;
+function ensureApp(time: Date): App {
+  if (app) return app;
+  const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
+  const viewer = createViewer(document.getElementById("cesium")!, { time, shadows: page.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: page.has("sharpen") ? Number(page.get("sharpen")) : 0, ...(page.has("shadowdist") ? { shadowDistanceM: Number(page.get("shadowdist")) } : {}) });
+  return (app = { viewer, renderTerrain, googleTried: false });
+}
+/** Google 3D tiles in place of the globe (google3d.ts); the globe with the photo if they can't be had. */
+async function ensureGoogle3D(a: App): Promise<Google3D | undefined> {
+  if (!GOOGLE3D || a.googleTried) return a.google3d;
+  a.googleTried = true;
+  try {
+    a.google3d = await Google3D.create(a.viewer, (lat, lon) => a.renderTerrain.heightAt(lat, lon), { screenSpaceError: page.has("g3dsse") ? Number(page.get("g3dsse")) : QUALITY === "low" ? 16 : 8, ...(page.get("gdetail") !== "0" ? { texBase: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href } : {}), ...(page.has("g3dgrade") ? { grade: Number(page.get("g3dgrade")) } : {}), ...(page.has("g3dreq") ? { maxRequests: Number(page.get("g3dreq")) } : {}) });
+  } catch (e) {
+    console.warn("Google 3D tiles unavailable; the globe with the aerial photo instead:", e);
+  }
+  return a.google3d;
+}
+
+let manifestP: Promise<BundleManifestCore> | undefined;
+const loadManifest = () =>
+  (manifestP ??= fetch(new URL("manifest.json", BUNDLE)).then(async (res) => {
+    if (!res.ok) throw new Error(`No bundle for ${AIRCRAFT} (${res.status}). Run: pnpm bundle:ask21`);
+    return (await res.json()) as BundleManifestCore;
+  }));
+
+async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: Flight): Promise<void> {
+  const AIR_START = params.has("lat") && params.has("lon");
+  const LAUNCH = AIR_START ? undefined : params.get("launch") === "winch" ? "winch" : "aerotow";
   setStatus("Loading aircraft bundle…");
-  const res = await fetch(new URL("manifest.json", BUNDLE));
-  if (!res.ok) throw new Error(`No bundle for ${AIRCRAFT} (${res.status}). Run: pnpm bundle:ask21`);
-  const manifest = (await res.json()) as BundleManifestCore;
-  setStatus("Airfield, runway and weather…");
-  const F = await resolveFlight(params);
+  const manifest = await loadManifest();
   const RUNWAY = F.runway, TIME = F.time;
   const WORLD: WorldConfig = { terrain: "terrarium", environment: F.environment };
-
-  // The renderer draws the same Terrarium heights the worker flies on.
-  const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
-  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: params.has("sharpen") ? Number(params.get("sharpen")) : 0, ...(params.has("shadowdist") ? { shadowDistanceM: Number(params.get("shadowdist")) } : {}) });
+  const { viewer, renderTerrain, google3d } = a;
+  viewer.clock.currentTime = JulianDate.fromDate(TIME);
   const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
   setLook(sun.elevationDeg);
   applyLighting(viewer, sun, F.latDeg, F.lonDeg);
+  google3d?.relight();
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
   // 30 m strip is a smudge) draw ours.
-  // Google 3D tiles in place of the globe (google3d.ts); the globe with the photo if they can't
-  // be had.
-  let google3d: Google3D | undefined;
-  if (GOOGLE3D) {
-    try {
-      google3d = await Google3D.create(viewer, (lat, lon) => renderTerrain.heightAt(lat, lon), { screenSpaceError: params.has("g3dsse") ? Number(params.get("g3dsse")) : QUALITY === "low" ? 16 : 8, ...(params.get("gdetail") !== "0" ? { texBase: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href } : {}), ...(params.has("g3dgrade") ? { grade: Number(params.get("g3dgrade")) } : {}), ...(params.has("g3dreq") ? { maxRequests: Number(params.get("g3dreq")) } : {}) });
-    } catch (e) {
-      console.warn("Google 3D tiles unavailable; the globe with the aerial photo instead:", e);
-    }
-  }
   const imageryReady = addImagery(viewer, IMAGERY, sun, { aerial: !google3d }).then((mode) => {
     // In photo mode the ground imagery shows the runway itself (orthophoto, or our detail tiles,
     // which paint it and take the time of day): an overlay on top would be lit differently.
@@ -132,7 +168,9 @@ async function main(): Promise<void> {
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);
-  const hud = new Hud(document.getElementById("hud")!);
+  const hudEl = document.getElementById("hud")!;
+  const hud = new Hud(hudEl);
+  life.onClose(() => hudEl.replaceChildren());
   const cam = new ChaseCamera(viewer.camera, manifest.views.cockpit);
   cam.groundAt = (lat, lon) => renderTerrain.heightAt(lat, lon);
   // ?pin=<metres>: ground tiles within that radius of the glider chosen by the glider's position.
@@ -145,6 +183,7 @@ async function main(): Promise<void> {
 
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });
   const send = (m: ToWorker) => worker.postMessage(m);
+  life.onClose(() => worker.terminate());
   let reader: SnapshotReader | undefined;
   let layout: SnapshotLayout | undefined;
   let shared = false;
@@ -152,7 +191,7 @@ async function main(): Promise<void> {
   let paused = false;
   let fdmHz = 0;
   const input = new PilotInput({
-    reset: () => void startState(F).then((start) => send({ type: "reset", start })),
+    reset: () => void startState(F, params).then((start) => send({ type: "reset", start })),
     toggleView: () => cam.toggle(),
     togglePause: () => send({ type: "pause", paused: (paused = !paused) }),
     toggleHelp: () => hud.toggleHelp(),
@@ -160,7 +199,7 @@ async function main(): Promise<void> {
     release: () => send({ type: "launch", action: "release" }),
     winchFaster: () => send({ type: "launch", action: "faster" }),
     winchSlower: () => send({ type: "launch", action: "slower" }),
-    menu: () => location.assign(`?menu&time=${encodeURIComponent(params.get("time") ?? "now")}${F.field ? `&field=${F.field.ident}&at=${F.field.latDeg},${F.field.lonDeg}` : ""}`),
+    menu: () => go(`?menu&time=${encodeURIComponent(params.get("time") ?? "now")}${F.field ? `&field=${F.field.ident}&at=${F.field.latDeg},${F.field.lonDeg}` : ""}&${appParams(params)}`),
   });
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -209,7 +248,7 @@ async function main(): Promise<void> {
 
   // Warm the renderer's terrain around the start at the zooms Cesium will ask for first, in
   // parallel, so its level-by-level refinement doesn't wait on one download per level.
-  const start = await startState(F);
+  const start = await startState(F, params);
   hud.message(F.weatherText);
   const warm = Promise.all([[13, 5000], [12, 9000], [11, 16000], [10, 30000], [9, 60000], [8, 120000]].map(([z, r]) => renderTerrain.load(start.latDeg, start.lonDeg, r!, z!))).catch(() => {});
   setStatus("Starting flight model…");
@@ -243,6 +282,7 @@ async function main(): Promise<void> {
     if (dt > 0) fps += (1 / dt - fps) * 0.05;
     // Dynamic resolution: below ~40 fps render fewer pixels (down to 60%), back up above ~55.
     // Sharpening keeps it crisp. Off with ?dynres=0.
+    if (life.isClosed) return;
     if (DYNRES && now - lastScale > 2000 && now - bootT > 8000) {
       lastScale = now;
       const sc = viewer.resolutionScale;
@@ -303,13 +343,74 @@ async function main(): Promise<void> {
       dt,
     );
   });
+  if (DYNRES) life.onClose(() => (viewer.resolutionScale = 1));
   // Expose for debugging and automated checks.
-  (window as unknown as { webflight: unknown }).webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, get layout() { return layout; }, get reader() { return reader; }, send };
+  const w = window as unknown as { webflight: unknown };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, get layout() { return layout; }, get reader() { return reader; }, send };
+  life.onClose(() => (w.webflight = undefined));
 }
 
-// An empty URL (or ?menu) shows the title screen; any other parameters start a flight.
-const MENU = location.search === "" || params.has("menu");
-(MENU ? showMenu(params) : main()).catch((e: unknown) => {
-  setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
-  console.error(e);
-});
+/** The page-wide parameters of p, for links within the app (appKey). */
+function appParams(p: URLSearchParams): string {
+  const o = new URLSearchParams();
+  for (const k of ["quality", "imagery", "world", "aircraft", "shadows", "sharpen", "shadowdist", "dynres", "g3dsse", "g3dgrade", "g3dreq", "gdetail", "aerial", "nosab", "pin"]) {
+    const v = p.get(k);
+    if (v !== null) o.set(k, v);
+  }
+  return o.toString();
+}
+
+/*
+ * One page for the title screen and every flight: going from one to the other closes what the
+ * last one added (lifetime.ts) and keeps the viewer and Google's 3D tiles, so their session
+ * (metered by Cesium ion per root tile, up to three hours each) carries over. A change of the
+ * page-wide settings (appKey: quality, scenery, …) reloads the page; so does leaving a flight
+ * on the globe (the photo layers it adds are not undone).
+ */
+const isMenu = (p: URLSearchParams) => [...p.keys()].length === 0 || p.has("menu");
+let current: { life: Lifetime; flight: boolean } | undefined;
+let busy = false;
+
+async function show(url: URL, history: "push" | "replace" | "none"): Promise<void> {
+  const p = url.searchParams;
+  const toMenu = isMenu(p);
+  const globe = !GOOGLE3D || (app?.googleTried && !app.google3d);
+  if (current && (appKey(p) !== appKey(page) || (globe && (current.flight || !toMenu)))) {
+    location.assign(url.href);
+    return;
+  }
+  if (busy) return;
+  busy = true;
+  try {
+    current?.life.close();
+    current = undefined;
+    if (history === "push") window.history.pushState(null, "", url.href);
+    else if (history === "replace") window.history.replaceState(null, "", url.href);
+    if (toMenu) {
+      const a = ensureApp(new Date());
+      const life = new Lifetime(a.viewer);
+      current = { life, flight: false };
+      await showMenu(p, { viewer: a.viewer, terrain: a.renderTerrain, ...(a.google3d ? { google3d: a.google3d } : {}), life, go });
+    } else {
+      setStatus("Airfield, runway and weather…");
+      const F = await resolveFlight(p);
+      const a = ensureApp(F.time);
+      // Before the flight's lifetime: the tiles outlive it.
+      if (GOOGLE3D) setStatus("Google 3D tiles…");
+      await ensureGoogle3D(a);
+      const life = new Lifetime(a.viewer);
+      current = { life, flight: true };
+      await startFlight(p, life, a, F);
+    }
+  } catch (e) {
+    setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(e);
+  } finally {
+    busy = false;
+  }
+}
+function go(href: string, replace = false): void {
+  void show(new URL(href, location.href), replace ? "replace" : "push");
+}
+window.addEventListener("popstate", () => void show(new URL(location.href), "none"));
+void show(new URL(location.href), "none");
