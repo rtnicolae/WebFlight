@@ -238,6 +238,13 @@ export function windowPitch(seed: number, block: boolean): number {
 }
 /** Plaster, render and brick wall colours of central-European towns. */
 const WALLS = [[236, 230, 216], [228, 218, 196], [240, 236, 228], [222, 204, 176], [232, 214, 200], [214, 210, 202], [226, 222, 206], [196, 150, 120]];
+/**
+ * Blocks of flats in central and south-eastern Europe: concrete panels long since insulated
+ * and painted, each block (or stairwell) its own pastel: off-white, beige, pale yellow, peach,
+ * pale green, light grey, now and then a terracotta. With the house colours every block was
+ * the same light grey from a few km away, cardboard against the photo.
+ */
+const BLOCK_WALLS = [[232, 228, 218], [226, 212, 182], [234, 220, 164], [232, 196, 160], [204, 214, 182], [208, 208, 202], [222, 222, 210], [214, 150, 112], [198, 206, 210], [236, 206, 150]];
 /** Pitched roofs: clay tiles, weathered tiles, slate/metal. */
 const PITCHED = [[150, 86, 66], [136, 80, 64], [118, 74, 60], [156, 104, 80], [96, 92, 90], [82, 84, 90]];
 /** Flat roofs: gravel, bitumen, metal. */
@@ -262,7 +269,7 @@ export function parseColour(c: unknown): [number, number, number] | undefined {
  * the plaster. Untagged buildings are plaster, or brick as often as brick is common where they
  * stand (north of ~50.5° N: the Low Countries, northern Germany, Poland).
  */
-function wallFinish(props: Record<string, unknown>, latDeg: number, r: () => number): { kind: "plaster" | "brick" | "glass"; col: number[] } {
+function wallFinish(props: Record<string, unknown>, latDeg: number, r: () => number, block = false): { kind: "plaster" | "brick" | "glass"; col: number[] } {
   const raw = String(props["colour"] ?? "").toLowerCase();
   const col = parseColour(raw);
   if (raw === "#bd8161" || raw === "firebrick" || raw === "brown" || raw === "maroon") return { kind: "brick", col: brickTint(r) };
@@ -272,8 +279,11 @@ function wallFinish(props: Record<string, unknown>, latDeg: number, r: () => num
     const l = (col[0] + col[1] + col[2]) / 3;
     return { kind: "plaster", col: col.map((c) => Math.max(70, Math.min(245, 0.55 * c + 0.45 * l + 18))) };
   }
-  if (r() < (latDeg > 50.5 ? 0.4 : 0.06)) return { kind: "brick", col: brickTint(r) };
-  return { kind: "plaster", col: WALLS[Math.floor(r() * WALLS.length)]! };
+  const north = latDeg > 50.5;
+  // Brick: common in the north; further south houses only (blocks there are rendered panels).
+  if (r() < (north ? 0.4 : block ? 0 : 0.06)) return { kind: "brick", col: brickTint(r) };
+  const palette = block && !north ? BLOCK_WALLS : WALLS;
+  return { kind: "plaster", col: palette[Math.floor(r() * palette.length)]! };
 }
 /** Brick walls use the photo's own colour; the vertex colour is a mild per-building tint. */
 const brickTint = (r: () => number) => {
@@ -371,7 +381,7 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     const rRoof = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]) ^ 0x9e3779b9);
     // Quantized so the renderer recovers it exactly (it hashes it per window).
     m.seed = Math.floor(r() * 500) / 512;
-    const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r);
+    const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r, tall - Number(poly.properties["render_min_height"] ?? 0) > BLOCK_WALL_M);
     const wall = finish.col;
     // Walls reach well below the ground: far away the renderer draws coarser terrain, which on
     // slopes lies metres off the true heights, and buildings must not float over it.
