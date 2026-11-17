@@ -8,3 +8,4 @@ export { fetchRunwayLines, mergeRunwayPieces, runwayPiecesFromTile } from "./run
 export type { RunwayLine } from "./runways.ts";
 export { LAMP_SPACING_M, streetLamps, type TileLamp } from "./lamps.ts";
 export { photoOffset, type AlignFootprint, type AlignOptions, type Gray, type PhotoOffset } from "./photo-align.ts";
+export { footprintColour, type Rgba } from "./roof-colour.ts";
