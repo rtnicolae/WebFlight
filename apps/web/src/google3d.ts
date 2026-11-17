@@ -226,7 +226,7 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
       Cartesian3.subtract(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, d), cam, d);
       const R = c.radiusM * 1.4 * c.size;
       // The cloud's middle over the ground, cast away from the sun.
-      const h = c.baseM - (c.groundM ?? c.baseM - 1500) + R * 0.45;
+      const h = c.baseM - (c.groundM ?? c.baseM - 1500) + Math.min(1000, R * 0.45 * (c.tall ?? 1));
       const e = Cartesian3.dot(d, east) - (Math.sin(az) * h) / tanEl, n = Cartesian3.dot(d, north) - (Math.cos(az) * h) / tanEl;
       // The footprint of the volume (vclouds.ts: towers out to ~1.2 R), soft at the rim.
       const x = (0.5 + e / SHADOW_M) * SHADOW_PX, y = (0.5 + n / SHADOW_M) * SHADOW_PX, r = Math.max(2, R * 1.2 * px);

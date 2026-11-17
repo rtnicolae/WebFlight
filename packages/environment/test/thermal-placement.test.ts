@@ -46,6 +46,21 @@ describe("thermal placement from terrain and sun", () => {
     }
   });
 
+  it("gives thermals a skewed spread of widths, the wider ones stronger", () => {
+    const sky = new ThermalSky({ seed: 3, weather: W, groundAt: () => 530 });
+    const ts = sky.thermalsAround(45.7, 25.5, 40_000);
+    expect(ts.length).toBeGreaterThan(100);
+    const d = ts.map((t) => t.spec.diameterFt).sort((a, b) => a - b);
+    const mean = d.reduce((a, b) => a + b, 0) / d.length, median = d[Math.floor(d.length / 2)]!;
+    // Many narrow, a few wide: the median below the mean, the widest well over twice the median.
+    expect(median).toBeLessThan(mean);
+    expect(d[d.length - 1]! / median).toBeGreaterThan(2);
+    // Wider thermals are stronger on average.
+    const by = (lo: number, hi: number) => ts.filter((t) => t.spec.diameterFt >= d[Math.floor(lo * d.length)]! && t.spec.diameterFt <= d[Math.floor(hi * (d.length - 1))]!);
+    const avg = (xs: typeof ts) => xs.reduce((a, t) => a + t.spec.strengthFps, 0) / xs.length;
+    expect(avg(by(0.75, 1))).toBeGreaterThan(avg(by(0, 0.25)) * 1.15);
+  });
+
   it("has no thermals at night", () => {
     const night = estimateWeather(45.7, 25.53, new Date("2026-07-15T23:00:00Z"));
     expect(new ThermalSky({ seed: 1, weather: night, groundAt: () => 530 }).thermalsAround(45.7, 25.5, 20_000)).toEqual([]);

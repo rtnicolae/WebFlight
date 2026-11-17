@@ -23,6 +23,13 @@ import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PostProc
 import type { CloudSpec } from "./clouds.ts";
 import { LOOK } from "./lighting.ts";
 
+/**
+ * Tallest cloud [m above its base]: fair-weather cumulus seldom grow more than ~2 km; how much
+ * higher they would go depends on the air above the cloud base, which the weather data here
+ * doesn't give.
+ */
+export const MAX_TOWER_M = 2200;
+
 /** Most clouds drawn (the nearest in view). */
 const MAX = 96;
 
@@ -95,7 +102,9 @@ float density(int i, vec3 q, int oct) {
   float s = -1.0;
   for (int k = 0; k < BUBBLES; k++) {
     vec4 b = g_b[k];
-    s = max(s, 1.0 - length(vec3(xy - b.xy, (h - b.z) * 1.05)) / b.w);
+    // Wide clouds under the height cap: towers squashed to fit (round tops, not cut ones).
+    float vz = min(1.0, (H - b.z) / (b.w * 1.05));
+    s = max(s, 1.0 - length(vec3(xy - b.xy, (h - b.z) * 1.05 / max(vz, 0.3))) / b.w);
   }
   if (s < -0.3) return 0.0;
   float hn = h / H;
@@ -259,7 +268,7 @@ export class VolumetricClouds {
         const r = (h % 1000) / 1000;
         // Wider than the thermal's figure (the sprite puffs spread past it too); towers as tall
         // as 0.8–1.4 times that.
-        return { spec, base: Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, spec.baseM), radius: spec.radiusM * 1.4, height: spec.radiusM * 1.4 * (0.8 + 0.6 * r), seed: (h % 997) * 0.37 };
+        return { spec, base: Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, spec.baseM), radius: spec.radiusM * 1.4, height: Math.min(MAX_TOWER_M, spec.radiusM * 1.4 * (spec.tall ?? 0.8 + 0.6 * r)), seed: (h % 997) * 0.37 };
       });
   }
 

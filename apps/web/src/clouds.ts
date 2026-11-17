@@ -24,6 +24,8 @@ export interface CloudSpec {
   groundM?: number;
   /** Detail 0..1 (default 1): far clouds, a few pixels across in the haze, get fewer puffs. */
   lod?: number;
+  /** Height ÷ radius (default 0.55–1: the sprite layout picks): flat humilis ~0.5, towers ~2. */
+  tall?: number;
 }
 
 interface Puff {
@@ -231,7 +233,7 @@ export class CloudLayer {
     seed = (seed % 2147483646) + 1;
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const r = spec.radiusM;
-    const height = r * (0.55 + 0.45 * rnd());
+    const height = Math.min(1600, r * (spec.tall !== undefined ? spec.tall * 0.75 : 0.55 + 0.45 * rnd()));
     const lod = spec.lod ?? 1;
     const n = Math.max(5, Math.round((22 + Math.min(34, r / 22)) * lod));
     const puffs: Puff[] = [];

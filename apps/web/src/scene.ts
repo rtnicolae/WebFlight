@@ -279,6 +279,27 @@ export function thermalView(t: Thermal): ThermalView {
   };
 }
 
+/** 0..1 from a string, stable (a cloud keeps its looks). */
+function hash01(id: string, salt: number): number {
+  let h = (2166136261 ^ salt) >>> 0;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
+  return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+}
+
+/**
+ * The cumulus over a thermal, sized by it: as wide as 2.2 times the thermal (the thermal
+ * model gives a skewed spread of widths, thermals.ts thermalSize), and the stronger the
+ * thermal the taller the cloud (flat humilis ~0.5 of the radius over 1 m/s, towers ~2 over
+ * 4 m/s), with a little of its own on top.
+ */
+function cloudsOver(t: ThermalView): CloudSpec[] {
+  const size = t.phase === "formed" ? 1 : t.phase === "forming" ? 0.6 : t.phase === "dying" ? 0.75 : 0;
+  const opacity = t.phase === "dying" ? 0.55 : t.phase === "dead" ? 0 : 1;
+  const strong = Math.min(1, Math.max(0, (t.strengthMs - 1) / 3));
+  return [{ id: t.id, latDeg: t.latDeg, lonDeg: t.lonDeg, baseM: t.topM, groundM: t.groundM, radiusM: Math.max(200, t.radiusM * 2.2), tall: 0.5 + 1.4 * strong + 0.25 * hash01(t.id, 2), size, opacity }];
+}
+
 /** Within this distance of the camera clouds are ray-marched volumes; beyond, sprites. */
 const VOLUME_M = 22_000;
 
@@ -341,17 +362,7 @@ export class ThermalLayer {
   private refresh(): void {
     const ids = new Set(this.near.map((t) => t.id));
     const all = this.cumulus ? [...this.near, ...this.far.filter((t) => !ids.has(t.id))] : [];
-    const specs: CloudSpec[] = all.map((t) => ({
-      id: t.id,
-      latDeg: t.latDeg,
-      lonDeg: t.lonDeg,
-      baseM: t.topM,
-      groundM: t.groundM,
-      // Cumulus are wider than the thermal feeding them.
-      radiusM: Math.max(300, t.radiusM * 2.2),
-      size: t.phase === "formed" ? 1 : t.phase === "forming" ? 0.6 : t.phase === "dying" ? 0.75 : 0,
-      opacity: t.phase === "dying" ? 0.55 : t.phase === "dead" ? 0 : 1,
-    }));
+    const specs: CloudSpec[] = all.flatMap(cloudsOver);
     if (this.volumes) {
       const cam = this.viewer.camera.positionWC, p = new Cartesian3();
       const near: CloudSpec[] = [], far: CloudSpec[] = [];

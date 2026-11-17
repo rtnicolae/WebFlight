@@ -279,6 +279,22 @@ const SKY_M_LON = 111_320 * Math.cos((47 * Math.PI) / 180);
  * seed always puts the same thermals in the same places; their life cycles start when their
  * cell first comes alive. As in FGAIManager, the nearest thermal decides the lift.
  */
+/**
+ * One thermal's width and strength relative to the day's mean. Widths are skewed: many narrow
+ * thermals, a few wide ones (lognormal, σ = 0.5, mean 1, kept within 0.35–3); the wider ones
+ * are stronger (∝ width^0.4, ±15 %, kept within 0.72–1.28: the old model's range of strength),
+ * so the averages stay close to the day's. It was a uniform ±30 % width and a strength unrelated to it, so every
+ * thermal, and the cumulus over it, came out about the same size.
+ */
+export function thermalSize(rand: () => number): { widthK: number; strengthK: number } {
+  const SIGMA = 0.5;
+  const u1 = Math.max(1e-9, rand()), u2 = rand();
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  const widthK = Math.min(3, Math.max(0.35, Math.exp(SIGMA * z - (SIGMA * SIGMA) / 2)));
+  // Within the old model's range of strength (0.63–2.24 w* with the terrain factor).
+  return { widthK, strengthK: Math.min(1.28, Math.max(0.72, widthK ** 0.4 * (0.85 + 0.3 * rand()))) };
+}
+
 export class ThermalSky {
   private readonly cells = new Map<string, Thermal[]>();
   /** FGAIManager: lift of the nearest thermal [ft/s]. */
@@ -322,14 +338,15 @@ export class ThermalSky {
       const group = cand.slice(4 * k, 4 * k + 4).sort((a, b) => b.score - a.score);
       const c = group[0]!;
       if (c.score < 0.35) continue; // shaded slopes don't go
-      const strengthMs = s.wStarMs * (0.9 + 0.7 * rand()) * Math.min(1.4, Math.max(0.7, c.score));
+      const { widthK, strengthK } = thermalSize(rand);
+      const strengthMs = s.wStarMs * 1.25 * strengthK * Math.min(1.4, Math.max(0.7, c.score));
       const t = new Thermal(
         {
           latDeg: c.lat,
           lonDeg: c.lon,
           heightMslFt: topM(c.g) / FT_TO_M,
           strengthFps: strengthMs / FT_TO_M,
-          diameterFt: (s.diameterM * (0.7 + 0.6 * rand())) / FT_TO_M,
+          diameterFt: (s.diameterM * widthK) / FT_TO_M,
           groundElevFt: c.g / FT_TO_M,
         },
         rand,
@@ -363,6 +380,7 @@ export class ThermalSky {
     const rand = mulberry32(h);
     const n = 1 + Math.floor(rand() * o.perCellSpread);
     const [smin, smax] = o.strengthMs, [dmin, dmax] = o.diameterM;
+    const dMean = (dmin + dmax) / 2, sMean = (smin + smax) / 2;
     const out: Thermal[] = [];
     for (let k = 0; k < n; k++) {
       const lat = ((cy + rand()) * o.cellM) / SKY_M_LAT;
@@ -373,8 +391,7 @@ export class ThermalSky {
           latDeg: lat,
           lonDeg: lon,
           heightMslFt: Math.max(o.cloudBaseM, ground + 600) / FT_TO_M,
-          strengthFps: (smin + rand() * (smax - smin)) / FT_TO_M,
-          diameterFt: (dmin + rand() * (dmax - dmin)) / FT_TO_M,
+          ...((size) => ({ strengthFps: (sMean * size.strengthK) / FT_TO_M, diameterFt: (dMean * size.widthK) / FT_TO_M }))(thermalSize(rand)),
           groundElevFt: ground / FT_TO_M,
         },
         rand,
