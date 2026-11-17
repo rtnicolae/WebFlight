@@ -184,7 +184,7 @@ export function treeImpostors(atlas: TreeAtlas, origin: [number, number, number]
     primitiveType: PrimitiveType.TRIANGLES,
     // The cards grow from their bases in the shader: pad the bounds by the tallest tree.
     boundingSphere: (() => {
-      const b = BoundingSphere.fromVertices(Array.from(pos));
+      const b = BoundingSphere.fromVertices(pos as unknown as number[]); // reads it by index: no copy
       b.radius += 30;
       return b;
     })(),

@@ -3,7 +3,7 @@
  * FG properties published by fg-host in the same snapshot (defaults from the manifest),
  * with texture (UV) animations and cockpit picking.
  */
-import { lightModel } from "./lighting.ts";
+import { ENVIRONMENT_MAP_ONCE, lightModel } from "./lighting.ts";
 import { Axis, Matrix3, Matrix4, Model, type ModelNode, type Scene } from "cesium";
 import { modelMatrixEcef, structuralToBodyFt, type BundleManifestCore, type SnapshotLayout } from "@webflight/fdm-core";
 import { AnimationRig, type PickEntry } from "./animations.ts";
@@ -61,6 +61,7 @@ export class AircraftView {
       upAxis: Axis.Z,
       forwardAxis: Axis.X,
       backFaceCulling: true,
+      environmentMapOptions: ENVIRONMENT_MAP_ONCE,
     });
     lightModel(this.model);
     scene.primitives.add(this.model);

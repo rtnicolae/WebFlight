@@ -103,6 +103,13 @@ vec3 hazeFS(vec3 color, vec3 positionEC) {
   return czm_fog(length(positionEC), color, v_hazeColor, czm_fogVisualDensityScalar);
 }`;
 
+/**
+ * Cesium re-renders the sky round a model (its reflections and ambient light) whenever the
+ * model has moved 1 km: a GPU readback and a shader rebuild, a 100–300 ms stall every ~20 s
+ * of flight. The sky barely changes over a flight and the clock does not run: made once.
+ */
+export const ENVIRONMENT_MAP_ONCE = { maximumPositionEpsilon: Number.POSITIVE_INFINITY, maximumSecondsDifference: Number.POSITIVE_INFINITY };
+
 /** A model's environment (image-based) light follows the time of day. */
 export function lightModel(m: Model): void {
   m.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(LOOK.ground, LOOK.ground);

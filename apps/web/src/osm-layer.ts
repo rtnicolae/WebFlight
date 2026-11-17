@@ -436,7 +436,7 @@ function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false, m
     }),
     indices: m.indices,
     primitiveType: PrimitiveType.TRIANGLES,
-    boundingSphere: BoundingSphere.fromVertices(Array.from(pos)),
+    boundingSphere: BoundingSphere.fromVertices(pos as unknown as number[]), // reads it by index: no copy
   });
   const [lon, lat, h] = r.origin;
   return new Primitive({
@@ -467,6 +467,8 @@ export class OsmLayer {
   /** Keys whose result has come (the primitive may still be null: nothing there). */
   private readonly ready = new Set<string>();
   private readonly pending = new Map<number, string>();
+  /** Finished tiles waiting to be turned into primitives (a few per frame: drain). */
+  private readonly arrived: OsmResult[] = [];
   private nextId = 1;
   private url: string | undefined;
   private atlas: TreeAtlas | undefined;
@@ -485,7 +487,7 @@ export class OsmLayer {
     private readonly viewer: Viewer,
     private readonly o: OsmLayerOptions,
   ) {
-    this.worker.onmessage = (e: MessageEvent<OsmResult>) => this.received(e.data);
+    this.worker.onmessage = (e: MessageEvent<OsmResult>) => this.arrived.push(e.data);
   }
 
   private received(r: OsmResult): void {
@@ -534,7 +536,23 @@ export class OsmLayer {
 
   /** Tiles still being built (for tests and screenshots). */
   get pendingCount(): number {
-    return this.pending.size;
+    return this.pending.size; // (queued arrivals are still pending)
+  }
+
+  /**
+   * Turning a finished tile into a primitive runs on the main thread, in the next render
+   * (Cesium's geometry pipeline and the upload), in proportion to its vertices: a town is
+   * 10–40 ms. Several arriving together stalled a frame for 100–160 ms in flight; now each
+   * frame adds tiles up to ~250k vertices (at least one).
+   */
+  private drain(): void {
+    let budget = 250_000;
+    while (this.arrived.length && budget > 0) {
+      const r = this.arrived.shift()!;
+      const m = r.mesh;
+      budget -= m ? (m.positions.length + (m.parts ?? []).reduce((a, p) => a + p.positions.length, 0)) / 3 : (r.trees?.length ?? 0) / 5 * 8;
+      this.received(r);
+    }
   }
 
   /**
@@ -600,7 +618,7 @@ export class OsmLayer {
 
   private spawnFar(): Worker {
     const w = newWorker();
-    w.onmessage = (e: MessageEvent<OsmResult>) => this.received(e.data);
+    w.onmessage = (e: MessageEvent<OsmResult>) => this.arrived.push(e.data);
     return w;
   }
 
@@ -627,6 +645,7 @@ export class OsmLayer {
   update(latDeg: number, lonDeg: number): void {
     if (!this.url) return;
     this.here = [latDeg, lonDeg];
+    this.drain();
     this.showDetails(latDeg, lonDeg);
     const [bx, by] = lonLatToTile(lonDeg, latDeg, 14).map(Math.floor) as [number, number];
     const [tx, ty] = lonLatToTile(lonDeg, latDeg, 16).map(Math.floor) as [number, number];

@@ -128,7 +128,7 @@ export class GrassLayer {
       }),
       indices: Uint32Array.from({ length: n }, (_, i) => i),
       primitiveType: PrimitiveType.TRIANGLES,
-      boundingSphere: BoundingSphere.fromVertices(Array.from(pos)),
+      boundingSphere: BoundingSphere.fromVertices(pos as unknown as number[]), // reads it by index: no copy
     });
     const vs = VS.replaceAll("FADE0", (this.o.radiusM * 0.55).toFixed(1)).replaceAll("FADE1", (this.o.radiusM * 0.95).toFixed(1));
     return new Primitive({
