@@ -11,6 +11,9 @@
  * the powder term (dark crevices), and the sky's light from above, darker below; integrated
  * energy-conserving (Hillaire 2015). Far clouds fade into the haze colour, then out.
  *
+ * Drawn at half resolution (a quarter of the pixels), then blended over the scene at full
+ * resolution with a small depth-aware filter.
+ *
  * Shape: each cloud is 7 spheres (a big central tower, smaller ones round it) whose bottoms
  * reach below the cloud base, cut level there (the flat underside), eaten by billowy (folded)
  * value noise. Tried and dropped: one dome (smooth mushroom caps), a separate base slab (a
@@ -19,7 +22,7 @@
  * Ghimbav), vsync off: 124 fps with these, 161 with the sprite puffs (~1.5 ms a frame); the
  * same from above the tops.
  */
-import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PostProcessStage, type Viewer } from "cesium";
+import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import { LOOK } from "./lighting.ts";
 
@@ -142,8 +145,7 @@ float hg(float c, float g) {
 }
 
 void main() {
-  vec4 scene = texture(colorTexture, v_textureCoordinates);
-  if (u_n == 0) { out_FragColor = scene; return; }
+  if (u_n == 0) { out_FragColor = vec4(0.0); return; }
   float depth = czm_readDepth(depthTexture, v_textureCoordinates);
   vec4 hitEC = czm_windowToEyeCoordinates(gl_FragCoord.xy, depth);
   vec3 dirEC = normalize(hitEC.xyz / hitEC.w);
@@ -179,13 +181,13 @@ void main() {
     t0s[k] = a0; t1s[k] = a1; ids[k] = i;
     hits = min(hits + 1, 4);
   }
-  if (hits == 0) { out_FragColor = scene; return; }
+  if (hits == 0) { out_FragColor = vec4(0.0); return; }
 
   vec3 lin = vec3(0.0);
   float T = 1.0;
   float firstT = -1.0;
-  // Per-pixel start offset against banding, at half strength (full: a visible grain).
-  float jit = 0.25 + 0.5 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  // Per-pixel start offset against banding (the blend's filter smooths the pattern it leaves).
+  float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   vec3 sunCol = czm_lightColor;
   for (int h = 0; h < 4; h++) {
     if (h >= hits || T < 0.02) break;
@@ -222,14 +224,49 @@ void main() {
       t += step;
     }
   }
-  if (firstT < 0.0) { out_FragColor = scene; return; }
+  if (firstT < 0.0) { out_FragColor = vec4(0.0); return; }
   // Into the haze, then gone.
   float hz = smoothstep(u_fade.x, u_fade.y, firstT);
   vec3 col = mix(lin, u_haze * (1.0 - T), clamp(hz * 1.2, 0.0, 1.0));
   float keep = 1.0 - smoothstep(u_fade.y * 0.85, u_fade.y, firstT);
   float a = (1.0 - T) * keep;
   col *= keep;
-  out_FragColor = vec4(scene.rgb * (1.0 - a) + col, scene.a);
+  out_FragColor = vec4(col, a);
+}
+`;
+
+/**
+ * Full resolution: the half-resolution clouds over the scene, four bilinear taps (a soft 3×3
+ * texel tent: it also smooths the march's step pattern), each weighted by how close the scene
+ * depth at the tap is to the depth here, so clouds don't bleed onto the glider's edges.
+ */
+const BLEND_FS = /* glsl */ `
+uniform sampler2D colorTexture;
+uniform sampler2D depthTexture;
+uniform sampler2D u_clouds;
+in vec2 v_textureCoordinates;
+float distAt(vec2 uv) {
+  float d = czm_readDepth(depthTexture, uv);
+  if (d >= 1.0) return 1e9;
+  vec4 e = czm_windowToEyeCoordinates(uv * czm_viewport.zw + czm_viewport.xy, d);
+  return length(e.xyz / e.w);
+}
+void main() {
+  vec2 uv = v_textureCoordinates;
+  vec4 scene = texture(colorTexture, uv);
+  vec2 px = 1.0 / vec2(textureSize(u_clouds, 0));
+  float here = distAt(uv);
+  vec4 sum = vec4(0.0);
+  float wsum = 0.0;
+  for (int k = 0; k < 4; k++) {
+    vec2 o = vec2(k == 0 || k == 2 ? -0.5 : 0.5, k < 2 ? -0.5 : 0.5) * px;
+    float dt = distAt(uv + o);
+    float w = exp(-abs(log(max(dt, 0.1) / max(here, 0.1))) * 6.0) + 1e-4;
+    sum += texture(u_clouds, uv + o) * w;
+    wsum += w;
+  }
+  vec4 c = sum / wsum;
+  out_FragColor = vec4(scene.rgb * (1.0 - c.a) + c.rgb, scene.a);
 }
 `;
 
@@ -249,12 +286,14 @@ export class VolumetricClouds {
   private readonly up = new Cartesian3();
   private readonly east = new Cartesian3();
   private readonly north = new Cartesian3();
-  readonly stage: PostProcessStage;
+  readonly stage: PostProcessStageComposite;
 
   constructor(private readonly viewer: Viewer) {
     const amb = LOOK.ambient;
     const self = this;
-    this.stage = new PostProcessStage({
+    const march = new PostProcessStage({
+      // Half resolution in each direction: a quarter of the pixels to march.
+      textureScale: 0.5,
       fragmentShader: FS,
       uniforms: {
         u_c: () => (self.refresh(), self.c),
@@ -273,6 +312,8 @@ export class VolumetricClouds {
         u_steps: 40,
       },
     });
+    const blend = new PostProcessStage({ fragmentShader: BLEND_FS, uniforms: { u_clouds: march.name } });
+    this.stage = new PostProcessStageComposite({ stages: [march, blend], inputPreviousStageTexture: false });
     viewer.scene.postProcessStages.add(this.stage);
   }
 
