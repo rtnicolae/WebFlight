@@ -7,3 +7,4 @@ export type { GroundFn, LonLat, Mesh, OsmPolygon, OsmTile, TreeOptions } from ".
 export { fetchRunwayLines, mergeRunwayPieces, runwayPiecesFromTile } from "./runways.ts";
 export type { RunwayLine } from "./runways.ts";
 export { LAMP_SPACING_M, streetLamps, type TileLamp } from "./lamps.ts";
+export { photoOffset, type AlignFootprint, type AlignOptions, type Gray, type PhotoOffset } from "./photo-align.ts";

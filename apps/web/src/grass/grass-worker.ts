@@ -24,6 +24,8 @@ export interface GrassRequest {
   s2Url: string;
   /** Aerial photo tiles ({quadkey} URL, Web Mercator): colour and grass test from the photo. */
   photoUrl?: string;
+  /** East, north [m] to move OpenStreetMap's roads, buildings etc. by, onto the photo (photo-align.ts). */
+  osmShift?: [number, number];
   seed: number;
 }
 
@@ -178,8 +180,13 @@ async function build(q: GrassRequest): Promise<GrassResult> {
   const polys: [number, number][][][] = [];
   const mown: [number, number][][][] = [];
   const mownLines: { pts: [number, number][]; hw: number }[] = [];
+  const [se, sn] = q.osmShift ?? [0, 0];
   for (const l of layers) {
-    const toLocal = (r: [number, number][]) => r.map(([a, b]) => frame.en(...tileLL(a, b, l.extent)));
+    const toLocal = (r: [number, number][]) =>
+      r.map(([a, b]) => {
+        const [e, n] = frame.en(...tileLL(a, b, l.extent));
+        return [e + se, n + sn] as [number, number];
+      });
     for (const f of l.features) {
       const cls = String(f.properties["class"] ?? "");
       if (l.name === "transportation" && f.type === 2 && ROAD_W[cls]) {

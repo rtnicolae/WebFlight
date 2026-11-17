@@ -23,6 +23,7 @@ import {
   type Viewer,
 } from "cesium";
 import { lookGlsl } from "../lighting.ts";
+import { osmShiftAt } from "../photo-align.ts";
 import type { GrassRequest, GrassResult } from "./grass-worker.ts";
 
 const VS = `
@@ -168,7 +169,8 @@ export class GrassLayer {
         const dist = Math.hypot(x - cx, y - cy) * c;
         const density = this.o.density * Math.max(0.25, 1 - dist / this.o.radiusM);
         const req: GrassRequest = { id, lat: ((y + 0.5) * c) / ky, lon: ((x + 0.5) * c) / kx, cellM: c, density, osmUrl: this.osmUrl, s2Url: this.s2Url, ...(this.o.photoUrl ? { photoUrl: this.o.photoUrl } : {}), seed: (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)) >>> 0 };
-        this.worker.postMessage(req);
+        // OSM's masks moved onto the photo the tufts take their colour from.
+        void osmShiftAt(req.lat, req.lon).then((osmShift) => this.worker.postMessage({ ...req, osmShift }));
       }
     }
     // Drop cells only well beyond the radius (no rebuilding as the camera wanders near an edge).

@@ -34,6 +34,7 @@ import type { Mesh } from "@webflight/scenery";
 import type { OsmRequest, OsmResult } from "./osm-worker.ts";
 import { LOOK, lookGlsl } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
+import { osmShift } from "./photo-align.ts";
 import { loadTreeAtlas, treeImpostors, type TreeAtlas } from "./tree-impostors.ts";
 
 export interface OsmLayerOptions {
@@ -460,7 +461,12 @@ export class OsmLayer {
     this.tiles.set(key, null);
     const id = this.nextId++;
     this.pending.set(id, key);
-    this.worker.postMessage({ ...req, id, url: this.url } as OsmRequest);
+    // Moved onto the aerial photo (photo-align.ts); trees by their zoom-14 tile's measurement.
+    const [x14, y14] = req.kind === "buildings" ? [req.x, req.y] : [req.x >> 2, req.y >> 2];
+    void osmShift(x14, y14).then((shift) => {
+      if (this.tiles.has(key)) this.worker.postMessage({ ...req, id, url: this.url, shift } as OsmRequest);
+      else this.pending.delete(id);
+    });
   }
 
   update(latDeg: number, lonDeg: number): void {

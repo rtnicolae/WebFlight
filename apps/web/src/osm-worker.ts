@@ -6,10 +6,11 @@
 import { TerrariumTerrain, tileToLonLat } from "@webflight/environment";
 import { buildingMesh, fetchOsm, LAMP_HEIGHT_M, LocalFrame, townTreeInstances, treeInstances, type Mesh, type OsmTile } from "@webflight/scenery";
 
+/** shift: east, north [m] to move everything by, onto the aerial photo (photo-align.ts). */
 export type OsmRequest =
-  | { id: number; kind: "buildings"; url: string; x: number; y: number }
+  | { id: number; kind: "buildings"; url: string; x: number; y: number; shift?: [number, number] }
   /** Trees of one zoom-16 cell (inside zoom-14 tile x >> 2, y >> 2). */
-  | { id: number; kind: "trees"; url: string; x: number; y: number; spacingM: number };
+  | { id: number; kind: "trees"; url: string; x: number; y: number; spacingM: number; shift?: [number, number] };
 
 export interface OsmResult {
   id: number;
@@ -51,8 +52,13 @@ async function build(req: OsmRequest): Promise<void> {
   const [clon, clat] = [(lon0 + lon1) / 2, (lat0 + lat1) / 2];
   const halfM = (Math.abs(lat0 - lat1) * 111_320) / 2 + 300;
   const [osm] = await Promise.all([req.kind === "buildings" ? tile(req.url, req.x, req.y) : tile(req.url, req.x >> 2, req.y >> 2), terrain.load(clat, clon, halfM)]);
-  const ground = (lon: number, lat: number) => terrain.heightAt(lat, lon) ?? 0;
+  // Built around the tile's centre from the OSM positions, drawn moved by the shift (the
+  // origin moves; heights are taken where things end up).
+  const [se, sn] = req.shift ?? [0, 0];
+  const dLat = sn / 111_195, dLon = se / (111_195 * Math.cos((clat * Math.PI) / 180));
+  const ground = (lon: number, lat: number) => terrain.heightAt(lat + dLat, lon + dLon) ?? 0;
   const frame = new LocalFrame(clon, clat, ground(clon, clat));
+  const origin: [number, number, number] = [clon + dLon, clat + dLat, frame.heightM];
   if (req.kind === "buildings") {
     const mesh = buildingMesh(osm.buildings, frame, ground, osm.lamps);
     const lamps = new Float64Array(osm.lamps.length * 3);
@@ -60,9 +66,9 @@ async function build(req: OsmRequest): Promise<void> {
     osm.lamps.forEach((l, i) => {
       const [px, py] = frame.en(...l.pole), [sx, sy] = frame.en(...l.street), d = Math.hypot(sx - px, sy - py) || 1;
       const [lon, lat] = frame.lonLat(px + ((sx - px) / d) * 1.55, py + ((sy - py) / d) * 1.55);
-      lamps.set([lon, lat, ground(...l.pole) + LAMP_HEIGHT_M - 0.25], i * 3);
+      lamps.set([lon + dLon, lat + dLat, ground(...l.pole) + LAMP_HEIGHT_M - 0.25], i * 3);
     });
-    const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], mesh, lamps };
+    const out: OsmResult = { id: req.id, origin, mesh, lamps };
     (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer, mesh.uvm.buffer]);
   } else {
     const [e0, n1] = frame.en(lon0, lat0), [e1, n0] = frame.en(lon1, lat1);
@@ -72,7 +78,7 @@ async function build(req: OsmRequest): Promise<void> {
     const trees = new Float32Array(forest.length + town.length);
     trees.set(forest);
     trees.set(town, forest.length);
-    const out: OsmResult = { id: req.id, origin: [clon, clat, frame.heightM], trees };
+    const out: OsmResult = { id: req.id, origin, trees };
     (self as unknown as Worker).postMessage(out, [trees.buffer]);
   }
 }
