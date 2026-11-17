@@ -7,7 +7,7 @@
  *    fallback when the photo servers can't be reached.
  *  - "grid" / "osm": the old debug looks.
  */
-import { ArcGisMapServerImageryProvider, Ion, IonImageryProvider, Cartesian2, Cartographic, Credit, DiscardMissingTileImagePolicy, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
+import { ArcGisBaseMapType, ArcGisMapServerImageryProvider, ArcGisMapService, Google2DImageryProvider, Ion, IonImageryProvider, Cartesian2, Cartographic, Credit, DiscardMissingTileImagePolicy, Event, GridImageryProvider, ImageryLayer, OpenStreetMapImageryProvider, Rectangle, UrlTemplateImageryProvider, WebMercatorTilingScheme, Color, type ImageryProvider, type Viewer } from "cesium";
 import { sunFrom, type Sun } from "./paint/landcover.ts";
 import type { PaintRequest } from "./paint/paint-worker.ts";
 import type { DetailRequest } from "./detail/detail-worker.ts";
@@ -290,8 +290,48 @@ async function addAncpi(viewer: Viewer): Promise<void> {
   }
 }
 
-/** Bing tile URL with a {quadkey} placeholder, once the photo layer is up (else undefined). */
-export let photoQuadkeyUrl: string | undefined;
+/**
+ * Which aerial photos cover the ground (?aerial=): Bing via Cesium ion (default), Esri World
+ * Imagery (Maxar Vivid; Cesium's default ArcGIS key, or VITE_ARCGIS_KEY), Google's 2D
+ * satellite tiles via Cesium ion, or s2 (Sentinel-2 with the synthesized detail).
+ * Compared round Brașov on 2026-11-17 (Esri: 2024–25, ~0.3 m, served to zoom 17–18 here;
+ * Google: sharpest, true ortho in towns, but a faint "© Google" in the tiles and a blue-magenta
+ * cast over fields); Esri and Google are switches for comparison, Bing stays the default.
+ */
+export type AerialSource = "bing" | "esri" | "google" | "s2";
+export const AERIAL: AerialSource = ((a) => (["bing", "esri", "google", "s2"].includes(a ?? "") ? a : "bing"))(new URLSearchParams(location.search).get("aerial")) as AerialSource;
+
+/** The photo's tile URL template (tile-url.ts), once the photo layer is up (else undefined). */
+export let photoTileUrl: string | undefined;
+
+/** Bing, Esri or Google aerial photos as the ground's one imagery layer. */
+async function addAerial(viewer: Viewer, source: Exclude<AerialSource, "s2">): Promise<void> {
+  const layers = viewer.imageryLayers;
+  const token = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
+  if (token) Ion.defaultAccessToken = token;
+  if (source === "esri") {
+    // Esri's basemap service; tiles it has no photo for come back as a grey "Map data not yet
+    // available" image, which the provider's discard policy drops (the parent tile shows).
+    const key = import.meta.env.VITE_ARCGIS_KEY as string | undefined;
+    if (key) ArcGisMapService.defaultAccessToken = key;
+    layers.add(new ImageryLayer(await ArcGisMapServerImageryProvider.fromBasemapType(ArcGisBaseMapType.SATELLITE)));
+    photoTileUrl = `https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?token=${encodeURIComponent(ArcGisMapService.defaultAccessToken)}`;
+    return;
+  }
+  if (source === "google") {
+    // Google Map Tiles API, satellite, through Cesium ion (asset 3830182). Display only:
+    // Google's tile policies forbid "non-visualization use cases" such as image analysis, so
+    // no photoTileUrl (roofs keep palette colours, no photo alignment, grass from Sentinel-2).
+    const google = await Google2DImageryProvider.fromIonAssetId({ assetId: "3830182" });
+    layers.add(new ImageryLayer(google as unknown as ImageryProvider));
+    return;
+  }
+  const bing = await IonImageryProvider.fromAssetId(2);
+  layers.add(new ImageryLayer(bing));
+  // The tile URL template (quadkey addressed) for workers that need the photo's colours.
+  const inner = (bing as unknown as { _imageryProvider?: { _imageUrlTemplate?: string; _imageUrlSubdomains?: string[] } })._imageryProvider;
+  if (inner?._imageUrlTemplate) photoTileUrl = inner._imageUrlTemplate.replace("{subdomain}", inner._imageUrlSubdomains?.[0] ?? "t0").replace("{culture}", "").replace(/^http:/, "https:");
+}
 
 export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimuthDeg: number; elevationDeg: number }): Promise<ImageryMode> {
   const layers = viewer.imageryLayers;
@@ -299,20 +339,14 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
     console.warn("photo imagery unreachable; using painted terrain");
     mode = "painted";
   }
-  // Bing Maps aerial photos (sub-metre in much of Europe) via Cesium ion, asset 2, alone: it
-  // covers everywhere the other layers do, and every extra layer is more textures per ground
-  // tile (Cesium's ground shader has 16 texture units in all). Close-range detail is drawn in
-  // the ground shader (ground-detail.ts). The default; ?aerial=s2 for Sentinel-2 with the
-  // synthesized detail and the national orthophotos. The Cesium ion token comes from
-  // VITE_CESIUM_ION_TOKEN (apps/web/.env.local); without one, Cesium's evaluation token.
-  if (mode === "photo" && new URLSearchParams(location.search).get("aerial") !== "s2") {
-    const token = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
-    if (token) Ion.defaultAccessToken = token;
-    const bing = await IonImageryProvider.fromAssetId(2);
-    layers.add(new ImageryLayer(bing));
-    // The tile URL template (quadkey addressed) for workers that need the photo's colours.
-    const inner = (bing as unknown as { _imageryProvider?: { _imageUrlTemplate?: string; _imageUrlSubdomains?: string[] } })._imageryProvider;
-    if (inner?._imageUrlTemplate) photoQuadkeyUrl = inner._imageUrlTemplate.replace("{subdomain}", inner._imageUrlSubdomains?.[0] ?? "t0").replace("{culture}", "").replace(/^http:/, "https:");
+  // Sub-metre aerial photos (Bing by default, see AERIAL) alone: they cover everywhere the
+  // other layers do, and every extra layer is more textures per ground tile (Cesium's ground
+  // shader has 16 texture units in all). Close-range detail is drawn in the ground shader
+  // (ground-detail.ts). ?aerial=s2 for Sentinel-2 with the synthesized detail and the national
+  // orthophotos. The Cesium ion token comes from VITE_CESIUM_ION_TOKEN (apps/web/.env.local);
+  // without one, Cesium's evaluation token.
+  if (mode === "photo" && AERIAL !== "s2") {
+    await addAerial(viewer, AERIAL);
     if (new URLSearchParams(location.search).get("gdetail") !== "0") addGroundDetail(viewer, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href);
     return mode;
   }

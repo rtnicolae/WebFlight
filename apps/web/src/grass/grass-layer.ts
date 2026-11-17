@@ -78,7 +78,7 @@ void main() {
 }`;
 
 export interface GrassOptions {
-  /** Aerial photo tiles ({quadkey} URL): tufts take the colour of the photo under them. */
+  /** Aerial photo tiles (URL template, tile-url.ts): tufts take the colour of the photo under them. */
   photoUrl?: string;
   cellM: number;
   radiusM: number;

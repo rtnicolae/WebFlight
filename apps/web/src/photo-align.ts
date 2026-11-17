@@ -12,11 +12,12 @@
  * Measured once per tile and kept in localStorage for a month. Off with ?align=0.
  */
 import { lonLatToTile } from "@webflight/environment";
-import { photoQuadkeyUrl } from "./imagery.ts";
+import { AERIAL, photoTileUrl } from "./imagery.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import type { AlignRequest, AlignResult } from "./photo-align-worker.ts";
 
-const KEY = "wf-osm-photo-shift-v1";
+// Per photo source: each is registered differently.
+const KEY = `wf-osm-photo-shift-v1${AERIAL === "bing" ? "" : `-${AERIAL}`}`;
 const MONTH_MS = 30 * 86_400_000;
 const ENABLED = new URLSearchParams(location.search).get("align") !== "0";
 
@@ -45,11 +46,11 @@ export function osmShift(x: number, y: number): Promise<[number, number]> {
   let p = known.get(k);
   if (p) return p;
   const e = stored[k];
-  if (!ENABLED || !photoQuadkeyUrl) p = Promise.resolve([0, 0]);
+  if (!ENABLED || !photoTileUrl) p = Promise.resolve([0, 0]);
   else if (e && Date.now() - e.t < MONTH_MS) p = Promise.resolve(e.s ?? [0, 0]);
   else
     p = openFreeMapTiles().then((osmUrl) => {
-      const photoUrl = photoQuadkeyUrl;
+      const photoUrl = photoTileUrl;
       if (!osmUrl || !photoUrl) return [0, 0] as [number, number];
       if (!worker) {
         worker = new Worker(new URL("./photo-align-worker.ts", import.meta.url), { type: "module" });
@@ -78,7 +79,7 @@ export function osmShift(x: number, y: number): Promise<[number, number]> {
 /** The shift if already measured, else [0, 0], without measuring: for towns far away, where a few metres don't show. */
 export function osmShiftIfKnown(x: number, y: number): [number, number] {
   const e = stored[`${x}/${y}`];
-  return ENABLED && photoQuadkeyUrl && e?.s ? e.s : [0, 0];
+  return ENABLED && photoTileUrl && e?.s ? e.s : [0, 0];
 }
 
 /** The same for the zoom-14 tile under a position. */

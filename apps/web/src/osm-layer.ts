@@ -40,7 +40,7 @@ import type { Mesh } from "@webflight/scenery";
 import type { OsmRequest, OsmResult } from "./osm-worker.ts";
 import { HAZE_FS, HAZE_VS, LOOK, lookGlsl } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
-import { photoQuadkeyUrl } from "./imagery.ts";
+import { photoTileUrl } from "./imagery.ts";
 import { osmShift, osmShiftIfKnown } from "./photo-align.ts";
 import { loadTreeAtlas, treeImpostors, type TreeAtlas } from "./tree-impostors.ts";
 
@@ -610,7 +610,7 @@ export class OsmLayer {
     const shift = far && ring > 2 ? Promise.resolve(osmShiftIfKnown(x14, y14)) : osmShift(x14, y14);
     void shift.then((shift) => {
       // Roofs coloured from the aerial photo, when the ground is Bing's.
-      const photo = req.kind === "buildings" && photoQuadkeyUrl ? { photoUrl: photoQuadkeyUrl } : {};
+      const photo = req.kind === "buildings" && photoTileUrl ? { photoUrl: photoTileUrl } : {};
       if (this.tiles.has(key)) worker.postMessage({ ...req, ...photo, id, url: this.url, shift } as OsmRequest);
       else this.pending.delete(id);
     });

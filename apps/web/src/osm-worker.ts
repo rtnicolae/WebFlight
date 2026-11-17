@@ -5,13 +5,14 @@
  */
 import { lonLatToTile, TerrariumTerrain, tileToLonLat } from "@webflight/environment";
 import { buildingMesh, fetchOsm, footprintColour, LAMP_HEIGHT_M, LocalFrame, townTreeInstances, treeInstances, type Mesh, type OsmPolygon, type OsmTile, type Rgba } from "@webflight/scenery";
+import { tileUrl } from "./tile-url.ts";
 
 /** shift: east, north [m] to move everything by, onto the aerial photo (photo-align.ts). */
 export type OsmRequest =
   /**
    * far: the light version for towns kilometres away (buildingMesh's `far`); skyline (with
    * far): only blocks and large buildings, what still shows ~10 km away; photoUrl: aerial photo
-   * tiles ({quadkey}, Bing) the roofs take their colours from.
+   * tiles (URL template, tile-url.ts) the roofs take their colours from.
    */
   | { id: number; kind: "buildings"; url: string; x: number; y: number; far?: boolean; skyline?: boolean; photoUrl?: string; shift?: [number, number] }
   /** Trees of one zoom-16 cell (inside zoom-14 tile x >> 2, y >> 2). */
@@ -43,14 +44,6 @@ const tile = (url: string, x: number, y: number): Promise<OsmTile> => {
   return t;
 };
 
-function quadkey(x: number, y: number, z: number): string {
-  let k = "";
-  for (let i = z; i > 0; i--) {
-    const m = 1 << (i - 1);
-    k += String((x & m ? 1 : 0) + (y & m ? 2 : 0));
-  }
-  return k;
-}
 
 /**
  * The aerial photo over zoom-14 tile x, y at zoom z, as one image (missing tiles transparent);
@@ -64,7 +57,7 @@ async function photoOver(url: string, x: number, y: number, z: number): Promise<
   for (let j = 0; j < n; j++)
     for (let i = 0; i < n; i++)
       jobs.push(
-        fetch(url.replace("{quadkey}", quadkey(x * n + i, y * n + j, z)))
+        fetch(tileUrl(url, x * n + i, y * n + j, z))
           .then(async (r) => {
             if (!r.ok) return;
             c.drawImage(await createImageBitmap(await r.blob()), i * 256, j * 256, 256, 256);

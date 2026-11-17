@@ -9,6 +9,7 @@
  */
 import { TerrariumTerrain, lonLatToTile } from "@webflight/environment";
 import { decodeMvt, LocalFrame, rng, type MvtLayer } from "@webflight/scenery";
+import { tileUrl } from "../tile-url.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -22,7 +23,7 @@ export interface GrassRequest {
   density: number;
   osmUrl: string;
   s2Url: string;
-  /** Aerial photo tiles ({quadkey} URL, Web Mercator): colour and grass test from the photo. */
+  /** Aerial photo tiles (URL template, tile-url.ts): colour and grass test from the photo. */
   photoUrl?: string;
   /** East, north [m] to move OpenStreetMap's roads, buildings etc. by, onto the photo (photo-align.ts). */
   osmShift?: [number, number];
@@ -63,19 +64,11 @@ function osm(url: string, x: number, y: number): Promise<MvtLayer[]> {
 /** Photo tiles at this zoom (~1.2 m pixels at 45° N) for the tuft colours. */
 const PHOTO_Z = 17;
 const photoCache = new Map<string, Promise<Uint8ClampedArray | undefined>>();
-function quadkey(x: number, y: number, z: number): string {
-  let k = "";
-  for (let i = z; i > 0; i--) {
-    const m = 1 << (i - 1);
-    k += String((x & m ? 1 : 0) + (y & m ? 2 : 0));
-  }
-  return k;
-}
 function photoTile(url: string, x: number, y: number): Promise<Uint8ClampedArray | undefined> {
   const k = `${x}/${y}`;
   let p = photoCache.get(k);
   if (!p) {
-    p = fetch(url.replace("{quadkey}", quadkey(x, y, PHOTO_Z)))
+    p = fetch(tileUrl(url, x, y, PHOTO_Z))
       .then(async (r) => {
         if (!r.ok) return undefined;
         const b = await createImageBitmap(await r.blob());

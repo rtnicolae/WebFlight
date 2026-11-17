@@ -1,5 +1,5 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
-import { Cartographic } from "cesium";
+import { Cartographic, createGooglePhotorealistic3DTileset } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
 import { applyLighting, setLook } from "./lighting.ts";
 import "./style.css";
@@ -12,7 +12,7 @@ import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, followShadows, ThermalLayer } from "./scene.ts";
 import { resolveFlight, type Flight } from "./world.ts";
-import { addImagery, highResPhotoAt, photoQuadkeyUrl, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
+import { addImagery, highResPhotoAt, photoTileUrl, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import { soaringFrom, sunPosition } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import { Scenery } from "./scenery.ts";
@@ -35,7 +35,9 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   rwy=04: a runway other than the longest · wind=from@kt: override the weather's wind
  *   winchtype=1 (rope-speed regulated, default) | 0 (FG's constant-force winch)
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
- *   aerial=bing (default: Bing aerial photos via Cesium ion) | s2 (Sentinel-2, synthesized detail)
+ *   aerial=bing (default: Bing aerial photos via Cesium ion) | esri (Esri World Imagery) |
+ *     google (Google satellite via Cesium ion) | s2 (Sentinel-2, synthesized detail)
+ *   world=google3d    Google Photorealistic 3D Tiles instead of the globe and our 3D scenery (comparison)
  *   gdetail=0         no close-range ground texture over the photos
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
@@ -58,6 +60,7 @@ if ("serviceWorker" in navigator) {
 }
 const DYNRES = params.get("dynres") === "1";
 const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
+const GOOGLE3D = params.get("world") === "google3d";
 const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
 
 async function startState(F: Flight): Promise<StartState> {
@@ -103,13 +106,20 @@ async function main(): Promise<void> {
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
-  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4, osmFarRings: params.has("far") ? Number(params.get("far")) : QUALITY === "ultra" ? 5 : 3, osmSkylineRings: params.has("skyline") ? Number(params.get("skyline")) : QUALITY === "ultra" ? 8 : 6 });
+  // ?world=google3d: Google Photorealistic 3D Tiles (via Cesium ion) in place of the globe and
+  // our buildings, trees and grass. For comparing the look; the glider still flies on the
+  // Terrarium heights.
+  if (GOOGLE3D) {
+    viewer.scene.primitives.add(await createGooglePhotorealistic3DTileset());
+    viewer.scene.globe.show = false;
+  }
+  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low" && !GOOGLE3D, trees: params.get("trees") !== "0" && QUALITY !== "low" && !GOOGLE3D, water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4, osmFarRings: params.has("far") ? Number(params.get("far")) : QUALITY === "ultra" ? 5 : 3, osmSkylineRings: params.has("skyline") ? Number(params.get("skyline")) : QUALITY === "ultra" ? 8 : 6 });
   // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
   const grass =
-    osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
-      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { ...(photoQuadkeyUrl ? { photoUrl: photoQuadkeyUrl } : {}), cellM: 20, radiusM: QUALITY === "ultra" ? 55 : 38, density: QUALITY === "ultra" ? 20 : 11, maxHeightM: 60 })
+    osmTiles && !GOOGLE3D && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
+      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { ...(photoTileUrl ? { photoUrl: photoTileUrl } : {}), cellM: 20, radiusM: QUALITY === "ultra" ? 55 : 38, density: QUALITY === "ultra" ? 20 : 11, maxHeightM: 60 })
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;

@@ -7,6 +7,7 @@
  */
 import { lonLatToTile, tileToLonLat } from "@webflight/environment";
 import { fetchOsm, photoOffset, type AlignFootprint, type OsmTile } from "@webflight/scenery";
+import { tileUrl } from "./tile-url.ts";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -14,7 +15,7 @@ export interface AlignRequest {
   x: number;
   y: number;
   osmUrl: string;
-  /** Photo tiles, {quadkey} URL (Bing). */
+  /** Photo tiles: URL template (tile-url.ts). */
   photoUrl: string;
 }
 
@@ -43,18 +44,10 @@ function osm(url: string, x: number, y: number): Promise<OsmTile> {
   return t;
 }
 
-function quadkey(x: number, y: number, z: number): string {
-  let k = "";
-  for (let i = z; i > 0; i--) {
-    const m = 1 << (i - 1);
-    k += String((x & m ? 1 : 0) + (y & m ? 2 : 0));
-  }
-  return k;
-}
 
 async function lumTile(url: string, x: number, y: number): Promise<Float32Array | undefined> {
   try {
-    const r = await fetch(url.replace("{quadkey}", quadkey(x, y, PZ)));
+    const r = await fetch(tileUrl(url, x, y, PZ));
     if (!r.ok) return undefined;
     const b = await createImageBitmap(await r.blob());
     const c = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
