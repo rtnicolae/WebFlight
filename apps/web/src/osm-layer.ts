@@ -73,13 +73,11 @@ out vec3 v_positionEC;
 out vec3 v_normalEC;
 out vec4 v_color;
 out vec4 v_uvm;
-out vec3 v_positionWC;
 ${HAZE_VS}
 void main() {
   vec4 p = czm_computePosition();
   v_positionEC = (czm_modelViewRelativeToEye * p).xyz;
-  v_positionWC = p.xyz + czm_viewerPositionWC;
-  hazeVS(v_positionWC);
+  hazeVS(p.xyz + czm_viewerPositionWC, v_positionEC);
   v_normalEC = czm_normal * normal;
   v_color = color;
   v_uvm = uvm;
@@ -106,7 +104,6 @@ in vec3 v_positionEC;
 in vec3 v_normalEC;
 in vec4 v_color;
 in vec4 v_uvm;
-in vec3 v_positionWC;
 ${HAZE_FS}
 
 float hash1(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -136,14 +133,19 @@ void main() {
   czm_materialInput mi;
   mi.str = v_uvm.xyz;
   mi.positionToEyeEC = -v_positionEC;
+  // Beyond ~1.4 km (distant tiles, and the far parts of near ones) textures, facade detail and
+  // windows have faded out: what the textures average to there (brick: its mean colour), and
+  // the noise below is skipped.
 #ifdef FAR
-  // Distant towns: what the textures average to from ~1.4 km (brick: its mean colour).
-  czm_material tex;
-  tex.diffuse = mat > 7.5 && mat < 9.5 ? vec3(0.342, 0.268, 0.242) : vec3(1.0);
-  tex.shininess = 0.0;
+  const bool farFrag = true;
 #else
-  czm_material tex = czm_getMaterial(mi);
+  bool farFrag = d > 1400.0;
 #endif
+  czm_material tex;
+  if (farFrag) {
+    tex.diffuse = mat > 7.5 && mat < 9.5 ? vec3(0.342, 0.268, 0.242) : vec3(1.0);
+    tex.shininess = 0.0;
+  } else tex = czm_getMaterial(mi);
   vec3 base = v_color.rgb * tex.diffuse * (1.0 + clamp(tex.shininess, -0.35, 0.45));
 #ifdef FAR
   const float detail = 0.0;
@@ -163,13 +165,15 @@ void main() {
     float fs = fract(seed * 13.0), ws = fract(seed * 29.0);
     float fl = floor(v / floorH), fy = fract(v / floorH);
     // Dirt and weathering: darker towards the foot, soft vertical rain streaks.
-    float streak = vnoise(vec2(u * 0.9, v * 0.08 + seed * 31.0));
-    base *= mix(1.0, 0.86 + 0.14 * smoothstep(0.0, 2.5, v), detail);
-    base *= 1.0 - (brick ? 0.05 : 0.10) * detail * smoothstep(0.55, 0.95, streak);
+    if (detail > 0.0) {
+      float streak = vnoise(vec2(u * 0.9, v * 0.08 + seed * 31.0));
+      base *= mix(1.0, 0.86 + 0.14 * smoothstep(0.0, 2.5, v), detail);
+      base *= 1.0 - (brick ? 0.05 : 0.10) * detail * smoothstep(0.55, 0.95, streak);
+    }
     // Plinth: a stone/render base course.
     // Below the ground (the walls go 10 m down for slopes): earth, if coarse terrain shows it.
     if (v < -0.05) base = vec3(0.22, 0.2, 0.16);
-    else if (v < 0.55) base = mix(base, vec3(0.42, 0.41, 0.39) * (0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), detail * 0.85);
+    else if (v < 0.55 && detail > 0.0) base = mix(base, vec3(0.42, 0.41, 0.39) * (0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), detail * 0.85);
     // Contact shadow at the foot, eave shadow under the roof (houses).
     base *= mix(1.0, 0.72 + 0.28 * smoothstep(0.0, 0.9, v), detail);
     if (!block) base *= mix(1.0, 0.68 + 0.32 * smoothstep(0.0, 0.7, wallH - v), detail);
@@ -314,7 +318,7 @@ void main() {
   // Walls also get light bounced off the sunlit ground (without it, shaded walls went dull grey).
   float sky = 0.42 + 0.16 * dot(n, up) + 0.11 * (1.0 - abs(dot(n, up)));
   vec3 c = base * (sky * LOOK_AMBIENT + 0.62 * sun * czm_lightColor) + spec * czm_lightColor + emis + glow;
-  c = hazeFS(c, v_positionWC, v_positionEC);
+  c = hazeFS(c, v_positionEC);
   out_FragColor = vec4(c, 1.0);
 }`;
 
@@ -419,8 +423,8 @@ czm_material czm_getMaterial(czm_materialInput mi) {
  * far: a distant tile (≥ ~1.7 km): the same shader compiled without what has faded out by then
  * (facade detail, windows, textures), so it gives the same colours for a fraction of the work.
  */
-function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false): Primitive | undefined {
-  const m: Mesh | undefined = r.mesh;
+function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false, mesh: Mesh | undefined = r.mesh): Primitive | undefined {
+  const m = mesh;
   if (!m || !m.indices.length) return undefined;
   const pos = new Float64Array(m.positions);
   const geometry = new Geometry({
@@ -437,13 +441,16 @@ function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false): 
   const [lon, lat, h] = r.origin;
   return new Primitive({
     geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(lon, lat, h)) }),
-    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: VS, fragmentShaderSource: lookGlsl(far ? `#define FAR\n${FS}` : FS), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: lookGlsl(VS), fragmentShaderSource: lookGlsl(far ? `#define FAR\n${FS}` : FS), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
     asynchronous: false,
     compressVertices: false,
     allowPicking: false,
     shadows: shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED,
   });
 }
+
+/** Small parts of near buildings (balconies…) are drawn within this distance [m] of the glider. */
+const DETAIL_M = 1000;
 
 /** Versions of a tile's buildings: detailed, distant, skyline. */
 type Level = "b" | "f" | "s";
@@ -468,6 +475,11 @@ export class OsmLayer {
   /** The zoom-14 tile under the aircraft. */
   private at: [number, number] = [0, 0];
   private readonly lamps = new Map<string, PointPrimitiveCollection>();
+  /** Small parts of near tiles by quarter, with the quarter's extent [deg], drawn only when close. */
+  private readonly details = new Map<string, { p: Primitive; lon0: number; lon1: number; lat0: number; lat1: number }[]>();
+  /** Where the details were last shown for (lat, lon [deg]). */
+  private detailAt: [number, number] = [NaN, NaN];
+  private here: [number, number] = [0, 0];
 
   private constructor(
     private readonly viewer: Viewer,
@@ -494,6 +506,21 @@ export class OsmLayer {
     if (p) this.viewer.scene.primitives.add(p);
     this.tiles.set(key, p ?? null);
     this.ready.add(key);
+    // The small parts in quarters (see showDetails).
+    if (r.mesh?.parts && this.textures) {
+      const [lon0, lat1] = tileToLonLat(+xs, +ys, 14), [lon1, lat0] = tileToLonLat(+xs + 1, +ys + 1, 14);
+      const lonM = (lon0 + lon1) / 2, latM = (lat0 + lat1) / 2;
+      const quarters = r.mesh.parts.flatMap((part, i) => {
+        const dp = primitive(r, this.o.shadows, this.textures!, false, part);
+        if (!dp) return [];
+        this.viewer.scene.primitives.add(dp);
+        const east = i & 1, south = i & 2;
+        return [{ p: dp, lon0: east ? lonM : lon0, lon1: east ? lon1 : lonM, lat0: south ? lat0 : latM, lat1: south ? latM : lat1 }];
+      });
+      this.details.set(key, quarters);
+      this.detailAt = [NaN, NaN];
+      this.showDetails(...this.here);
+    }
     // Street lamps at night: warm points, small in the distance.
     if (r.lamps?.length && LOOK.day < 0.6) {
       const pts = new PointPrimitiveCollection();
@@ -510,7 +537,26 @@ export class OsmLayer {
     return this.pending.size;
   }
 
+  /**
+   * Balconies, rooftop units, parapets and lamp posts are most of a town's triangles, drawn
+   * once for the view and again for each shadow cascade; beyond ~1 km they are a pixel or two.
+   * Each quarter tile's are drawn while the glider is within DETAIL_M of it.
+   */
+  private showDetails(latDeg: number, lonDeg: number): void {
+    const [la, lo] = this.detailAt;
+    const kx = 111_320 * Math.cos((latDeg * Math.PI) / 180), ky = 111_132;
+    if (Math.hypot((lonDeg - lo) * kx, (latDeg - la) * ky) < 25) return; // moved less than 25 m
+    this.detailAt = [latDeg, lonDeg];
+    for (const quarters of this.details.values())
+      for (const q of quarters) {
+        const dx = Math.max(q.lon0 - lonDeg, 0, lonDeg - q.lon1) * kx, dy = Math.max(q.lat0 - latDeg, 0, latDeg - q.lat1) * ky;
+        q.p.show = Math.hypot(dx, dy) < DETAIL_M;
+      }
+  }
+
   private drop(k: string): void {
+    for (const q of this.details.get(k) ?? []) this.viewer.scene.primitives.remove(q.p);
+    this.details.delete(k);
     const p = this.tiles.get(k);
     if (p) this.viewer.scene.primitives.remove(p);
     this.tiles.delete(k);
@@ -580,6 +626,8 @@ export class OsmLayer {
 
   update(latDeg: number, lonDeg: number): void {
     if (!this.url) return;
+    this.here = [latDeg, lonDeg];
+    this.showDetails(latDeg, lonDeg);
     const [bx, by] = lonLatToTile(lonDeg, latDeg, 14).map(Math.floor) as [number, number];
     const [tx, ty] = lonLatToTile(lonDeg, latDeg, 16).map(Math.floor) as [number, number];
     const key = `${tx}/${ty}`;

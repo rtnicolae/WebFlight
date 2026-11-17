@@ -147,6 +147,8 @@ export interface Mesh {
    * (facade details need to know where the wall ends; a balcony's own height).
    */
   uvm: Float32Array;
+  /** With buildingMesh's `detailPart`: the small parts (balconies, rooftop units, parapets, lamp posts), by part. */
+  parts?: Mesh[];
 }
 
 class MeshBuilder {
@@ -358,11 +360,23 @@ export function simplifyRing(ring: [number, number][], tolM: number): [number, n
  * walls and roofs (same colours), without balconies, parapets, rooftop units, lamp posts and
  * sheds (under 25 m²).
  * `roofColour`: a roof's colour [0–255] (from the aerial photo), instead of one from the palette.
+ * `detailPart`: the small parts (balconies, rooftop units, parapets, lamp posts) go into
+ * separate meshes (`parts`), by the part this gives for a building's (or lamp's) position, so
+ * the renderer can draw them only where they are close enough to be seen.
  */
-export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = [], o: { far?: boolean; simplifyM?: number; minAreaM2?: number; roofColour?: (poly: OsmPolygon) => readonly number[] | undefined } = {}): Mesh {
+export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = [], o: { far?: boolean; simplifyM?: number; minAreaM2?: number; roofColour?: (poly: OsmPolygon) => readonly number[] | undefined; detailPart?: { count: number; of: (lonDeg: number, latDeg: number) => number } } = {}): Mesh {
   const m = new MeshBuilder();
+  const parts = o.detailPart ? Array.from({ length: o.detailPart.count }, () => new MeshBuilder()) : undefined;
+  // Where the small parts of what is at lon, lat go (carrying the building's seed and height).
+  const detail = (lon: number, lat: number): MeshBuilder => {
+    if (!parts) return m;
+    const d = parts[o.detailPart!.of(lon, lat)]!;
+    d.seed = m.seed;
+    d.wallH = m.wallH;
+    return d;
+  };
   const far = o.far ?? false;
-  if (!far) for (const l of lamps) lampPost(m, frame, ground, l);
+  if (!far) for (const l of lamps) lampPost(detail(...l.pole), frame, ground, l);
   for (const poly of polys) {
     // Outlines whose parts are mapped separately (the parts are drawn instead).
     if (poly.properties["hide_3d"]) continue;
@@ -389,6 +403,7 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     const h1 = base + Math.max(2.5, tall) - Number(poly.properties["render_min_height"] ?? 0);
     m.wallH = h1 - base;
     const block = m.wallH > BLOCK_WALL_M;
+    const dm = detail(poly.rings[0]![0]![0], poly.rings[0]![0]![1]);
     const pitch = windowPitch(m.seed, block);
     const balconies = block && finish.kind !== "glass" && !far ? balconyStyle(r) : undefined;
     let nBalc = 0;
@@ -414,7 +429,7 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
         const a0 = vert(ax, ay, h0, u0), b0 = vert(bx, by, h0, u0 + l), b1 = vert(bx, by, h1, u0 + l), a1 = vert(ax, ay, h1, u0);
         m.tri(a0, b0, b1);
         m.tri(a0, b1, a1);
-        if (balconies && windows && l >= 9 && nBalc < 400) nBalc += balconyStack(m, frame, ax, ay, dx / l, dy / l, nx, ny, l, u0, pitch, base, m.wallH, balconies, r);
+        if (balconies && windows && l >= 9 && nBalc < 400) nBalc += balconyStack(dm, frame, ax, ay, dx / l, dy / l, nx, ny, l, u0, pitch, base, m.wallH, balconies, r);
       }
     }
     const rect = rings.length === 1 && outer.length <= 14 && tall <= 14 ? footprintRect(outer) : undefined;
@@ -424,11 +439,13 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
       const pal = FLAT[Math.floor(rRoof() * FLAT.length)]!;
       flatRoof(m, frame, rings, h1, photoRoof ?? pal, rRoof() < 0.35 ? 4 : 3);
       if (far) continue;
-      if (h1 - base >= 4) parapet(m, frame, rings, ccw, base, h1, wall);
-      if (areaM2 > 180 && rings.length === 1) rooftopUnits(m, frame, outer, h1, areaM2, rRoof);
+      if (h1 - base >= 4) parapet(dm, frame, rings, ccw, base, h1, wall);
+      if (areaM2 > 180 && rings.length === 1) rooftopUnits(dm, frame, outer, h1, areaM2, rRoof);
     }
   }
-  return m.build();
+  const mesh = m.build();
+  if (parts) mesh.parts = parts.map((p) => p.build());
+  return mesh;
 }
 
 interface BalconyStyle {

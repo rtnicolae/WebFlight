@@ -155,7 +155,10 @@ async function build(req: OsmRequest): Promise<void> {
     const buildings = req.skyline ? osm.buildings.filter((b) => skyline(b, frame)) : osm.buildings;
     // Kept ~1.2 m inside the outline (eaves, the street, shadows beside the walls).
     const roofColour = photo ? roofColours(photo, pz, dLon, dLat, 1.2, buildings) : undefined;
-    const mesh = buildingMesh(buildings, frame, ground, osm.lamps, { far: req.far ?? false, ...(req.far ? { simplifyM: req.skyline ? 2 : 1 } : {}), ...(roofColour ? { roofColour } : {}) });
+    // Near the glider the small parts (balconies, rooftop units, parapets, lamp posts) come
+    // in quarters of the tile (west/east × north/south), drawn only when close (osm-layer.ts).
+    const detailPart = req.far ? undefined : { count: 4, of: (lon: number, lat: number) => (lon >= clon ? 1 : 0) + (lat < clat ? 2 : 0) };
+    const mesh = buildingMesh(buildings, frame, ground, osm.lamps, { far: req.far ?? false, ...(req.far ? { simplifyM: req.skyline ? 2 : 1 } : {}), ...(roofColour ? { roofColour } : {}), ...(detailPart ? { detailPart } : {}) });
     const lamps = new Float64Array(osm.lamps.length * 3);
     // The glow sits at the lamp head: 1.55 m from the pole towards the street.
     osm.lamps.forEach((l, i) => {
@@ -164,7 +167,8 @@ async function build(req: OsmRequest): Promise<void> {
       lamps.set([lon + dLon, lat + dLat, ground(...l.pole) + LAMP_HEIGHT_M - 0.25], i * 3);
     });
     const out: OsmResult = { id: req.id, origin, mesh, lamps };
-    (self as unknown as Worker).postMessage(out, [mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer, mesh.indices.buffer, mesh.uvm.buffer]);
+    const buffers = (x: Mesh) => [x.positions.buffer, x.normals.buffer, x.colors.buffer, x.indices.buffer, x.uvm.buffer];
+    (self as unknown as Worker).postMessage(out, [...buffers(mesh), ...(mesh.parts ?? []).flatMap(buffers)]);
   } else {
     const [e0, n1] = frame.en(lon0, lat0), [e1, n0] = frame.en(lon1, lat1);
     const forest = treeInstances(osm.forests, frame, ground, { spacingM: req.spacingM, bounds: { e0, n0, e1, n1 }, max: 6000 });

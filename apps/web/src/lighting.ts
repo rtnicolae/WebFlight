@@ -77,30 +77,30 @@ export function lookGlsl(src: string): string {
  * fog: the atmosphere's scattering along the ray from the eye, coloured with the globe's
  * settings from scene.ts, after sunset the twilight haze below), so buildings kilometres
  * away fade into the air exactly like the fields around them (a fixed haze colour made a
- * distant town stand out pale lilac against the ground). Through lookGlsl.
- * Vertex shader: hazeVS(positionWC). Fragment shader: color = hazeFS(color, positionWC, positionEC).
+ * distant town stand out pale lilac against the ground). The haze colour changes slowly
+ * across a surface: it is worked out per vertex, as Cesium does for the ground; only the
+ * blend is per pixel. Through lookGlsl.
+ * Vertex shader: hazeVS(positionWC, positionEC). Fragment shader: color = hazeFS(color, positionEC).
  */
 export const HAZE_VS = `
-out vec3 v_hazeRayleigh;
-out vec3 v_hazeMie;
-out float v_hazeOpacity;
-void hazeVS(vec3 positionWC) {
-  czm_computeGroundAtmosphereScattering(positionWC, czm_lightDirectionWC, v_hazeRayleigh, v_hazeMie, v_hazeOpacity);
-}`;
-export const HAZE_FS = `
-in vec3 v_hazeRayleigh;
-in vec3 v_hazeMie;
-in float v_hazeOpacity;
-vec3 hazeFS(vec3 color, vec3 positionWC, vec3 positionEC) {
-  vec3 r = czm_applyHSBShift(v_hazeRayleigh, HAZE_HSB, true);
-  vec3 m = czm_applyHSBShift(v_hazeMie, HAZE_HSB, true);
-  vec3 fogColor = czm_computeAtmosphereColor(positionWC, czm_lightDirectionWC, r, m, v_hazeOpacity).rgb * (HAZE_INTENSITY / czm_atmosphereLightIntensity);
+out vec3 v_hazeColor;
+void hazeVS(vec3 positionWC, vec3 positionEC) {
+  vec3 r, m;
+  float o;
+  czm_computeGroundAtmosphereScattering(positionWC, czm_lightDirectionWC, r, m, o);
+  r = czm_applyHSBShift(r, HAZE_HSB, true);
+  m = czm_applyHSBShift(m, HAZE_HSB, true);
+  vec3 fogColor = czm_computeAtmosphereColor(positionWC, czm_lightDirectionWC, r, m, o).rgb * (HAZE_INTENSITY / czm_atmosphereLightIntensity);
   fogColor *= clamp(dot(normalize(czm_viewerPositionWC), czm_lightDirectionWC), HAZE_MIN_BRIGHTNESS, 1.0);
 #if HAZE_TONEMAP
   fogColor = czm_inverseGamma(czm_pbrNeutralTonemapping(fogColor));
 #endif
-  fogColor = mix(fogColor, HAZE_BASE + HAZE_SUN * pow(max(dot(normalize(positionEC), czm_lightDirectionEC), 0.0), 6.0), HAZE_K);
-  return czm_fog(length(positionEC), color, fogColor, czm_fogVisualDensityScalar);
+  v_hazeColor = mix(fogColor, HAZE_BASE + HAZE_SUN * pow(max(dot(normalize(positionEC), czm_lightDirectionEC), 0.0), 6.0), HAZE_K);
+}`;
+export const HAZE_FS = `
+in vec3 v_hazeColor;
+vec3 hazeFS(vec3 color, vec3 positionEC) {
+  return czm_fog(length(positionEC), color, v_hazeColor, czm_fogVisualDensityScalar);
 }`;
 
 /** A model's environment (image-based) light follows the time of day. */
