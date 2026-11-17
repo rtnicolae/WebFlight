@@ -1,13 +1,15 @@
 /*
  * Disk cache for everything the sim downloads that does not change: map, terrain and photo
  * tiles from the tile servers, and the app's own heavy static files (aircraft, textures,
- * trees, CesiumJS assets, the flight model, airfield data). Cache first: once a tile has been
- * fetched it comes from disk, on this visit and the next, also offline.
+ * trees, CesiumJS assets, the flight model, airfield data). Tiles: cache first (a tile URL
+ * never changes what it holds). The app's own files: asked of the server each time with the
+ * HTTP cache's validators (a quick "not modified" when unchanged), the stored copy offline;
+ * cache first kept a rebuilt aircraft bundle from ever reaching the page.
  *
  * Not cached: the page and its scripts (so a new deploy is picked up), weather (changes), and
  * anything that is not a successful GET.
  */
-const VERSION = "v1";
+const VERSION = "v2";
 const TILES = `webflight-tiles-${VERSION}`;
 const STATIC = `webflight-static-${VERSION}`;
 /** Tile servers whose URLs name immutable content (a tile, a dated planet build, a fixed mosaic). */
@@ -55,6 +57,17 @@ self.addEventListener("fetch", (e) => {
   if (!name) return;
   e.respondWith((async () => {
     const cache = await caches.open(name);
+    if (name === STATIC) {
+      try {
+        const res = await fetch(req, { cache: "no-cache" });
+        if (res.ok) e.waitUntil(cache.put(req, res.clone()).catch(() => {}));
+        return res;
+      } catch (err) {
+        const hit = await cache.match(req, { ignoreVary: true });
+        if (hit) return hit;
+        throw err;
+      }
+    }
     const hit = await cache.match(req, { ignoreVary: true });
     if (hit) return hit;
     const res = await fetch(req);
