@@ -10,7 +10,7 @@ import { ChaseCamera } from "./camera.ts";
 import { Hud } from "./hud.ts";
 import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
-import { addRunway, createViewer, ThermalLayer } from "./scene.ts";
+import { addRunway, createViewer, followShadows, ThermalLayer } from "./scene.ts";
 import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, highResPhotoAt, photoQuadkeyUrl, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import { soaringFrom, sunPosition } from "@webflight/environment";
@@ -41,6 +41,7 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
  *   dynres=1          lower the resolution to keep ≥ 40 fps, down to 60% (default: fixed)
  *   pin=<metres>      keep the ground within that radius of the glider loaded (default: off)
+ *   shadowdist=M      how far shadows reach [m] (default: 1–4 km with the height above ground)
  *   far=N             distant buildings out to ±N zoom-14 tiles, ~1.7 km each (default 3, ultra 5; 0: off)
  *   skyline=N         beyond those, blocks and large buildings out to ±N tiles (default 6, ultra 8; 0: off)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
@@ -86,7 +87,7 @@ async function main(): Promise<void> {
 
   // The renderer draws the same Terrarium heights the worker flies on.
   const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
-  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: params.has("sharpen") ? Number(params.get("sharpen")) : 0 });
+  const viewer = createViewer(document.getElementById("cesium")!, { time: TIME, shadows: params.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: params.has("sharpen") ? Number(params.get("sharpen")) : 0, ...(params.has("shadowdist") ? { shadowDistanceM: Number(params.get("shadowdist")) } : {}) });
   const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
   setLook(sun.elevationDeg);
   applyLighting(viewer, sun, F.latDeg, F.lonDeg);
@@ -243,6 +244,7 @@ async function main(): Promise<void> {
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
+    followShadows(viewer, g("position/h-agl-ft") * M_PER_FT);
     // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).
     pinGround(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/geod-alt-ft") * M_PER_FT + 4);
     // Grass follows the glider, not the camera: looking around rebuilds nothing.

@@ -33,6 +33,8 @@ export interface LookOptions {
   quality?: "low" | "high" | "ultra";
   /** Contrast-adaptive sharpening, 0 (off) to 1. */
   sharpen?: number;
+  /** How far shadows reach [m] (default: with the glider's height, see followShadows). */
+  shadowDistanceM?: number;
 }
 
 /**
@@ -63,6 +65,20 @@ void main() {
   vec3 o = (c + (a + b + d + e) * w) / (1.0 + 4.0 * w);
   out_FragColor = vec4(max(o, vec3(0.0)), c4.a);
 }`;
+
+let fixedShadowReach = false;
+
+/** How far shadows reach [m] at a height above the ground [m]: ~the ground in view, 1–4 km. */
+export function shadowReachFor(aglM: number): number {
+  return Math.min(4000, Math.max(1000, 1000 + 3 * aglM));
+}
+
+/** Shadows reach as far as the ground the glider sees at its height (unless ?shadowdist= fixed them). */
+export function followShadows(viewer: Viewer, aglM: number): void {
+  if (fixedShadowReach || !viewer.shadows) return;
+  const want = Math.round(shadowReachFor(aglM) / 50) * 50;
+  if (viewer.scene.shadowMap.maximumDistance !== want) viewer.scene.shadowMap.maximumDistance = want;
+}
 
 export function createViewer(container: HTMLElement, opts: LookOptions): Viewer {
   const viewer = new Viewer(container, {
@@ -131,7 +147,17 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
     const sm = scene.shadowMap;
     sm.softShadows = true;
     sm.size = 2048;
-    sm.maximumDistance = 800;
+    // How far shadows reach follows the glider's height (followShadows); a fixed 800 m left
+    // every building in view without one from a few hundred metres up, where all the ground
+    // in view is further than that. Cesium splits the range into 4 cascades; with a small model
+    // close by (the glider) it caps their depths at 25 / 150 / 700 m, which at a few km would
+    // stretch the middle ones and blur the shadows round the glider. Capped tighter (internal,
+    // so guarded): ~0–25, 25–85, 85–235 m, then the rest, about as sharp near as before; only
+    // the last cascade is coarser, where things are far away.
+    fixedShadowReach = opts.shadowDistanceM !== undefined;
+    sm.maximumDistance = opts.shadowDistanceM ?? shadowReachFor(0);
+    const caps = (sm as unknown as { _maximumCascadeDistances?: number[] })._maximumCascadeDistances;
+    if (caps?.length === 4) caps.splice(0, 3, 25, 60, 150);
     sm.darkness = 0.35;
     // More bias than Cesium's defaults: walls nearly edge-on to the sun showed diagonal
     // stripes (shadow acne). Internal, so guarded.

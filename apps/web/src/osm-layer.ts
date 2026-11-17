@@ -4,7 +4,7 @@
  * osm-worker.ts; each tile becomes one Primitive with per-vertex colours and a small
  * sun-lit shader, so a town is a handful of draw calls.
  *  - buildings: zoom-14 tiles (~1.7 km) within ±1 tile; beyond, out to ±`farRings` tiles
- *    (±3: ~5–7 km), the light version (buildingMesh's `far`, a simpler shader, no shadows),
+ *    (±3: ~5–7 km), the light version (buildingMesh's `far`, a simpler shader),
  *    so towns in the distance stand up from the plain instead of lying flat in the photo;
  *    built by a second worker so they never hold up the tiles round the glider. Beyond, to
  *    ±`skylineRings` (±6: ~10–11 km), the skyline: blocks of flats and large halls, the
@@ -488,9 +488,9 @@ export class OsmLayer {
       if (kind === want) for (const l of LEVELS) l !== kind && this.drop(`${l}/${xs}/${ys}`);
       else if (want && this.ready.has(`${want}/${xs}/${ys}`)) return this.drop(key);
     }
-    // Distant tiles start beyond the shadows' reach (scene.ts): they neither cast nor receive.
+    // The skyline lies beyond the shadows' reach (4 km at most, scene.ts): no shadows there.
     const near = kind === "b";
-    const p = r.trees ? (this.atlas ? treeImpostors(this.atlas, r.origin, r.trees, this.o.shadows) : undefined) : this.textures ? primitive(r, this.o.shadows && near, this.textures, !near) : undefined;
+    const p = r.trees ? (this.atlas ? treeImpostors(this.atlas, r.origin, r.trees, this.o.shadows) : undefined) : this.textures ? primitive(r, this.o.shadows && kind !== "s", this.textures, !near) : undefined;
     if (p) this.viewer.scene.primitives.add(p);
     this.tiles.set(key, p ?? null);
     this.ready.add(key);
