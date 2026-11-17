@@ -274,8 +274,13 @@ void main() {
     if (min(pm.x, pm.y) < 0.05 * mix(1.0, 3.0, smoothstep(150.0, 600.0, d))) { base = vec3(0.55, 0.57, 0.6); spec = 0.0; }
   }
   float sun = max(dot(n, czm_lightDirectionEC), 0.0);
-  float sky = 0.56 + 0.14 * dot(n, up);
-  vec3 c = base * (sky * LOOK_AMBIENT + 0.75 * sun * czm_lightColor) + spec * czm_lightColor + emis + glow;
+  // Sky light plus sun, scaled so a roof in full sun comes to ~1.1x its colour (it was ~1.4x:
+  // mid-brown tiles rendered bright salmon, brighter and more saturated than the roofs in the
+  // aerial photo beside them, so towns read as flat orange speckle). Walls keep their
+  // sun-to-shade ratio; shade is a little deeper, which gives blocks their volume.
+  // Walls also get light bounced off the sunlit ground (without it, shaded walls went dull grey).
+  float sky = 0.42 + 0.16 * dot(n, up) + 0.11 * (1.0 - abs(dot(n, up)));
+  vec3 c = base * (sky * LOOK_AMBIENT + 0.62 * sun * czm_lightColor) + spec * czm_lightColor + emis + glow;
   c = mix(c, vec3(0.70, 0.78, 0.86) * LOOK_AMBIENT, clamp((d - 1500.0) / 9000.0, 0.0, 0.45));
   out_FragColor = vec4(c, 1.0);
 }`;
