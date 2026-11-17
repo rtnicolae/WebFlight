@@ -85,10 +85,13 @@ void bubbles(int i) {
   float R = u_c[i].w, H = u_d[i].x, seed = u_d[i].z;
   for (int k = 0; k < BUBBLES; k++) {
     vec3 rn = hash3(seed + float(k) * 7.13);
-    vec2 c = k == 0 ? vec2(0.0) : (rn.xy * 2.0 - 1.0) * R * 0.6;
+    // Tower centres within a disc of 0.65 R (a square reached 0.85 R at its corners, and the
+    // towers there poked out of the ray-test sphere: a straight cut down the cloud's side).
+    float ang = 6.2831853 * rn.y;
+    vec2 c = k == 0 ? vec2(0.0) : sqrt(rn.x) * R * 0.65 * vec2(cos(ang), sin(ang));
     // Sphere centres low enough that each reaches below the base: the level cut there is
     // the flat underside; the tops stay round.
-    float br = R * (k == 0 ? 0.62 : 0.32 + 0.22 * rn.x);
+    float br = R * (k == 0 ? 0.62 : 0.32 + 0.22 * fract(rn.x * 7.31));
     float cz = k == 0 ? H * 0.38 : min(br * 0.85, H * (0.15 + 0.35 * rn.z));
     g_b[k] = vec4(c, cz, br);
   }
@@ -159,7 +162,7 @@ void main() {
     if (i >= u_n) break;
     float R = u_c[i].w, H = u_d[i].x;
     vec3 ctr = u_c[i].xyz + u_up * (H * 0.5);
-    // Bubbles reach ~1.2 R out with their noise (a straight cut where this was 1.15).
+    // Towers reach 0.65 R + 0.54 R × 1.07 (noise) ≈ 1.23 R out.
     float rad = length(vec2(R * 1.3, H * 0.6));
     float b = dot(ctr, dir);
     float disc = b * b - dot(ctr, ctr) + rad * rad;
@@ -190,6 +193,8 @@ void main() {
     float R = u_c[i].w, H = u_d[i].x;
     float a0 = t0s[h], a1 = t1s[h];
     bubbles(i);
+    // Even steps (half steps inside the cloud smoothed the faint screen-door pattern on big
+    // clouds but halved the frame rate: 88 → 47 fps).
     float dt = max((a1 - a0) / u_steps, R * 0.015);
     float t = a0 + dt * jit;
     for (int it = 0; it < 64; it++) {
