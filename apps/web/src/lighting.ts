@@ -3,8 +3,8 @@
  *  - day: Cesium's sun, white;
  *  - low sun: the sun's light turns orange and weakens, the sky light turns cool, the ground
  *    dims a little, clouds go warm;
- *  - after sunset: Cesium's sky lit from just above the horizon at the sun's bearing (a glow
- *    over the sunset) and darkened as the sun sinks; the ground lit by the sky (blue-grey);
+ *  - twilight: our own sky (twilight-sky.ts), the light from the glow over the sunset, the
+ *    ground lit by the sky (blue-grey), a dim haze (in the earth's shadow);
  *  - night: a faint blue light, a dark ground, dark buildings with lit windows, dark clouds,
  *    stars.
  * Cesium does not darken the ground near the camera at night (its day/night shading fades
@@ -13,7 +13,8 @@
  * LOOK now: the ground through a sky-light term in Cesium's ground shader, models through
  * their image-based lighting, our shaders through the GLSL constants in lookGlsl().
  */
-import { Cartesian2, Cartesian3, Color, DirectionalLight, PostProcessStage, SunLight, Transforms, type ImageryLayer, type Model, type Viewer } from "cesium";
+import { Cartesian2, Cartesian3, Color, DirectionalLight, SunLight, Transforms, type ImageryLayer, type Model, type Viewer } from "cesium";
+import { addTwilightSky } from "./twilight-sky.ts";
 
 const smooth = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -78,35 +79,37 @@ function groundSkyLight(el: number): number[] {
   return mix3(night, dusk, smooth(-12, -2, el)).map((v) => v * (1 - smooth(0, 8, el)));
 }
 
-/**
- * Twilight sky colour (sky pixels only: nothing drawn there). Cesium's sky has no ozone, whose
- * absorption keeps the real twilight sky blue; with the sun low its sky goes teal overhead and
- * olive at the horizon. Green is held below the larger of red and blue, the rest is cooled.
- */
-const TWILIGHT_SKY_FS = `
-uniform sampler2D colorTexture;
-uniform sampler2D depthTexture;
-uniform float amount;
-in vec2 v_textureCoordinates;
-void main() {
-  vec4 c = texture(colorTexture, v_textureCoordinates);
-  if (texture(depthTexture, v_textureCoordinates).r < 1.0) { out_FragColor = c; return; }
-  vec3 g = c.rgb;
-  g.g = min(g.g, max(g.r, g.b) * 0.94);
-  g *= vec3(0.9, 0.95, 1.12);
-  out_FragColor = vec4(mix(c.rgb, g, amount), c.a);
-}`;
 
-/** Cesium's ground shader lights the photo only with the scene's light; add the sky's. */
-function patchGroundLight(scene: Viewer["scene"], sky: number[]): void {
+/**
+ * The haze after sunset. The air near the ground is in the earth's shadow then, but Cesium
+ * colours it as if lit by our light just above the horizon, with its strong forward glow:
+ * the valley haze shone pink in front of mountains that should stand dark against the sunset.
+ * So from sunset on the haze is a dim blue-grey, a little warmer towards the sunset.
+ * k: how much of it replaces Cesium's haze colour.
+ */
+function twilightHaze(el: number): { base: number[]; sun: number[]; k: number } {
+  const base = mix3([0.03, 0.035, 0.05], [0.21, 0.23, 0.3], smooth(-12, -2, el));
+  const sun = [0.26, 0.15, 0.09].map((v) => v * smooth(-10, -1, el));
+  return { base, sun, k: 1 - smooth(-4, 2, el) };
+}
+
+const vec3 = (v: number[]) => `vec3(${v.map((x) => x.toFixed(4)).join(", ")})`;
+
+/** Cesium's ground shader lights the photo only with the scene's light: add the sky's, and set the haze after sunset. */
+function patchGround(scene: Viewer["scene"], sky: number[], haze: { base: number[]; sun: number[]; k: number }): void {
   type Internals = { _surfaceShaderSet?: { baseFragmentShaderSource?: { sources: string[] } } };
   const globe = scene.globe as unknown as Internals;
-  const LINE = "vec4 finalColor = vec4(color.rgb * czm_lightColor * diffuseIntensity, color.a);";
-  const add = `vec3(${sky.map((v) => v.toFixed(4)).join(", ")})`;
+  const LIGHT = "vec4 finalColor = vec4(color.rgb * czm_lightColor * diffuseIntensity, color.a);";
+  const FOG = "finalColor = vec4(czm_fog(v_distance, finalColor.rgb, fogColor.rgb, czm_fogVisualDensityScalar), finalColor.a);";
+  const light = `vec4 finalColor = vec4(color.rgb * (czm_lightColor * diffuseIntensity + ${vec3(sky)}), color.a);`;
+  const fog =
+    haze.k > 0
+      ? `fogColor.rgb = mix(fogColor.rgb, ${vec3(haze.base)} + ${vec3(haze.sun)} * pow(max(dot(normalize(v_positionEC), czm_lightDirectionEC), 0.0), 6.0), ${haze.k.toFixed(4)});\n            ${FOG}`
+      : FOG;
   const patch = () => {
     const src = globe._surfaceShaderSet?.baseFragmentShaderSource;
     if (!src) return;
-    src.sources = src.sources.map((s) => (s.includes(LINE) ? s.replaceAll(LINE, `vec4 finalColor = vec4(color.rgb * (czm_lightColor * diffuseIntensity + ${add}), color.a);`) : s));
+    src.sources = src.sources.map((s) => (s.includes(LIGHT) || s.includes(FOG) ? s.replaceAll(LIGHT, light).replace(FOG, fog) : s));
   };
   patch();
   // Cesium rebuilds the base source when the globe's setup changes: patch again before drawing.
@@ -119,11 +122,9 @@ function patchGroundLight(scene: Viewer["scene"], sky: number[]): void {
 
 export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevationDeg: number }, latDeg: number, lonDeg: number): void {
   const scene = viewer.scene, el = sun.elevationDeg;
-  // Cesium's sky and haze take their light from the scene's light (not the sun): with the sun
-  // below the horizon its sky is black at once, where the real one keeps a glow over the
-  // sunset for half an hour. So from 5° up down to night the light comes from the sun's
-  // bearing but no lower than just above the horizon (the sky then draws a sunset there), and
-  // the sky is darkened as the sun sinks.
+  // Cesium's sky and haze take their light from the scene's light (not the sun). Below 5° the
+  // light comes from the sun's bearing but no lower than just above the horizon (from the
+  // glow over the sunset, after sunset), its colour turning to the sky's.
   scene.globe.dynamicAtmosphereLightingFromSun = false;
   if (el >= 5) {
     // The sun: white from ~25° up, warmer below.
@@ -145,18 +146,14 @@ export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevati
       k = 0.22 + 0.33 * t;
     }
     scene.light = new DirectionalLight({ direction: Cartesian3.negate(worldDir(latDeg, lonDeg, sun.azimuthDeg, liftedEl), new Cartesian3()), color: new Color(c[0]! * k, c[1]! * k, c[2]! * k, 1), intensity: 1 });
-    if (scene.skyAtmosphere) {
-      const dark = 1 - smooth(-14, 0, el);
-      scene.skyAtmosphere.brightnessShift = 0.04 - 0.75 * dark;
-      scene.skyAtmosphere.saturationShift = 0.05 + 0.15 * dark;
+    // From +2° to −10° our own twilight sky (twilight-sky.ts); after that Cesium's, darkened.
+    if (!addTwilightSky(viewer, sun)) {
+      if (scene.skyAtmosphere) scene.skyAtmosphere.brightnessShift = 0.04 - 0.75 * (1 - smooth(-14, 0, el));
+      // Stars once it is dark enough to see them.
+      if (scene.skyBox) scene.skyBox.show = el < -10;
     }
-    scene.postProcessStages.add(new PostProcessStage({ fragmentShader: TWILIGHT_SKY_FS, uniforms: { amount: 1 - smooth(-2, 5, el) } }));
-    // Stars once it is dark enough to see them.
-    if (scene.skyBox) scene.skyBox.show = el < -10;
-    // The haze darkens with the sky, not to black.
-    scene.fog.minimumBrightness = 0.08 + 0.17 * smooth(-12, -2, el) * (1 - smooth(0, 5, el));
   }
-  patchGroundLight(scene, LOOK.groundSky);
+  patchGround(scene, LOOK.groundSky, twilightHaze(el));
   // Ground imagery (every layer, also those added later): its light comes from the ground
   // shader (sun plus sky above); only the colour fades at night.
   const dim = (l: ImageryLayer) => {
