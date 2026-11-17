@@ -3,7 +3,9 @@
  * rendered offline from the side and from above into public/trees/atlas.png) drawn as cards.
  * Per tree: a side card that turns about its vertical axis to face the camera, and a top card
  * at crown height; looking down (from a glider) the side card dithers out and the top card in.
- * The sim's sun lights them; the upper part sways in the wind.
+ * The sim's sun lights them. They stand still: a sway (crowns ±0.25 m, nearly in step across a
+ * whole forest, and twice as fast at 120 fps since it ran off the frame count) caught the eye
+ * far more than wind in real trees does.
  */
 import { lookGlsl } from "./lighting.ts";
 import {
@@ -70,9 +72,7 @@ void main() {
   vec3 offset;
   if (corner.z < 0.5) {
     vec3 right = normalize(cross(up, toCam));
-    float t = czm_frameNumber / 60.0;
-    float sway = corner.y * corner.y * 0.25 * sin(t * 1.3 + dot(world, vec3(0.013, 0.021, 0.017)));
-    offset = right * (corner.x * size.x + sway) + up * corner.y * size.y;
+    offset = right * corner.x * size.x + up * corner.y * size.y;
     v_fade = 1.0 - smoothstep(0.86, 0.98, elev);
     // A rounded crown's normal on the flat card: out to the sides, up towards the top, and
     // towards the viewer in the middle, so the tree has a sunlit and a shaded side.
