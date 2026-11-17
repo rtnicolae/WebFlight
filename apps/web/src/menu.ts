@@ -22,7 +22,7 @@ const LAUNCHES = [
 ] as const;
 
 /** What the menu remembers; the airfield as ident + position (the position selects its data tile). */
-type Pick = { field?: string; at?: string; launch: string; time: string; imagery: ImageryMode; quality: string };
+type Pick = { field?: string; at?: string; launch: string; time: string; imagery: ImageryMode; world: string; quality: string };
 
 function segmented(parent: HTMLElement, label: string, options: [string, string][], value: string, onPick: (v: string) => void): void {
   const sec = document.createElement("div");
@@ -60,6 +60,8 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
     launch: params.get("launch") ?? remembered.launch ?? "aerotow",
     time: params.get("time") ?? remembered.time ?? "now",
     imagery: (params.get("imagery") as ImageryMode | null) ?? remembered.imagery ?? "photo",
+    // Google 3D tiles (the default) or the globe with the aerial photo (main.ts).
+    world: params.get("world") ?? remembered.world ?? "google3d",
     quality: params.get("quality") ?? remembered.quality ?? "high",
   };
   const q = (extra: Record<string, string> = {}) =>
@@ -153,7 +155,10 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   wx.className = "menu-weather";
   wx.textContent = F.weatherText;
   opts.appendChild(wx);
-  segmented(opts, "Scenery", [["photo", "Photos"], ["painted", "Painted"]], pick.imagery, (v) => (pick.imagery = v as ImageryMode));
+  segmented(opts, "Scenery", [["google3d", "Google 3D"], ["photo", "Photos"], ["painted", "Painted"]], pick.world !== "globe" && pick.imagery === "photo" ? "google3d" : pick.imagery, (v) => {
+    pick.world = v === "google3d" ? "google3d" : "globe";
+    pick.imagery = (v === "google3d" ? "photo" : v) as ImageryMode;
+  });
   segmented(opts, "Quality", [["low", "Low"], ["high", "High"], ["ultra", "Ultra"]], pick.quality, (v) => (pick.quality = v));
   const go = document.createElement("button");
   go.className = "menu-fly";
@@ -163,7 +168,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   const foot = document.createElement("div");
   foot.className = "menu-foot";
   foot.innerHTML =
-    "Keyboard or gamepad. H shows the controls in flight, Esc comes back here.<br>Aircraft: FlightGear ASK 21 (GPL). Terrain: Mapzen Terrarium. Imagery: swisstopo, IGN, basemap.at, EOX Sentinel-2 cloudless. Maps: OpenStreetMap via OpenFreeMap. Airfields: OurAirports. Weather data by Open-Meteo.com.";
+    "Keyboard or gamepad. H shows the controls in flight, Esc comes back here.<br>Aircraft: FlightGear ASK 21 (GPL). Terrain: Mapzen Terrarium. Scenery: Google Photorealistic 3D Tiles; imagery: Bing Maps (both via Cesium ion), swisstopo, IGN, basemap.at, EOX Sentinel-2 cloudless. Maps: OpenStreetMap via OpenFreeMap. Airfields: OurAirports. Weather data by Open-Meteo.com.";
   panel.appendChild(foot);
   root.appendChild(panel);
 
@@ -174,7 +179,7 @@ export async function showMenu(params: URLSearchParams): Promise<void> {
   }
   function fly(): void {
     save();
-    location.assign(`?${q({ launch: pick.launch, imagery: pick.imagery, quality: pick.quality })}`);
+    location.assign(`?${q({ launch: pick.launch, imagery: pick.imagery, quality: pick.quality, ...(pick.world === "globe" ? { world: "globe" } : {}) })}`);
   }
   window.addEventListener("keydown", (e) => {
     if (e.key === "Enter") fly();

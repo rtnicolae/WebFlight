@@ -333,7 +333,8 @@ async function addAerial(viewer: Viewer, source: Exclude<AerialSource, "s2">): P
   if (inner?._imageUrlTemplate) photoTileUrl = inner._imageUrlTemplate.replace("{subdomain}", inner._imageUrlSubdomains?.[0] ?? "t0").replace("{culture}", "").replace(/^http:/, "https:");
 }
 
-export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimuthDeg: number; elevationDeg: number }): Promise<ImageryMode> {
+/** aerial: false when Google 3D tiles hide the globe (google3d.ts): no photo layer under them. */
+export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimuthDeg: number; elevationDeg: number }, opts: { aerial?: boolean } = {}): Promise<ImageryMode> {
   const layers = viewer.imageryLayers;
   if (mode === "photo" && !(await photoAvailable())) {
     console.warn("photo imagery unreachable; using painted terrain");
@@ -345,8 +346,7 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
   // (ground-detail.ts). ?aerial=s2 for Sentinel-2 with the synthesized detail and the national
   // orthophotos. The Cesium ion token comes from VITE_CESIUM_ION_TOKEN (apps/web/.env.local);
   // without one, Cesium's evaluation token.
-  // Google 3D tiles in place of the globe (google3d.ts): no photo layer under them.
-  if (mode === "photo" && new URLSearchParams(location.search).get("world") === "google3d") return mode;
+  if (mode === "photo" && opts.aerial === false) return mode;
   if (mode === "photo" && AERIAL !== "s2") {
     await addAerial(viewer, AERIAL);
     if (new URLSearchParams(location.search).get("gdetail") !== "0") addGroundDetail(viewer, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href);

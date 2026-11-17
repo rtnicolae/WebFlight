@@ -32,7 +32,13 @@ const MARKER = "czm_material material = czm_getMaterial(materialInput);";
 
 // Must not contain the words "slope" or "normalEC", not even in a comment: Cesium then
 // applies the material only on terrain with vertex normals (Globe.js), and ours has none.
-const SOURCE = /* glsl */ `
+/**
+ * The grain itself, shared with Google's 3D tiles (google3d.ts): wfFactor(c, w, d) is the
+ * brightness factor for photo colour c (display values) at ground position w [m east/north,
+ * modulo PERIOD] and distance d [m] from the camera. Uniforms: wfTex, wfFine, wfMid, wfMacro,
+ * wfStrength, wfGain.
+ */
+export const DETAIL_GLSL = /* glsl */ `
 // One texture holds the brightness of four ground photos: grass (red), dry grass (green),
 // soil (blue), gravel/concrete (alpha: grey ground, roads, yards, the photo's roofs and cars). Each channel divided by its mean (the smallest mip), contrast × gain: these
 // tileable photos are nearly uniform once mipmapped (15% spread at full size, 5% at 64 px,
@@ -44,21 +50,11 @@ vec4 wfRatio(vec2 w, float s1, float s2, float gain) {
   // Narrow range: brightening a saturated green much past 1.25 turns it neon.
   return clamp(1.0 + (0.5 * (a + b) / mean - 1.0) * gain, 0.7, 1.25);
 }
-vec3 wfDetail(vec3 c, czm_materialInput mi, vec3 posMC) {
-  vec3 rel = -mi.positionToEyeEC;
-  float d = length(rel);
+float wfFactor(vec3 c, vec2 w, float d) {
   float macroF = 1.0 - smoothstep(wfMacro.x, wfMacro.y, d);
-  if (macroF <= 0.0) return c;
+  if (macroF <= 0.0) return 1.0;
   float fineF = 1.0 - smoothstep(wfFine.x, wfFine.y, d);
   float midF = 1.0 - smoothstep(wfMid.x, wfMid.y, d);
-  // This pixel's offset from the camera in metres east/north (earth-centred frame, not the
-  // terrain normal: that tilts per triangle and would leave seams on hillsides).
-  vec3 relWC = transpose(czm_normal3D) * rel;
-  vec3 up = normalize(posMC);
-  vec3 east = normalize(vec3(-posMC.y, posMC.x, 0.0));
-  vec3 north = cross(up, east);
-  vec2 w = wfCam + vec2(dot(relWC, east), dot(relWC, north));
-
   vec3 hsb = czm_RGBToHSB(c);
   float h = hsb.x * 360.0;
   float coloured = smoothstep(0.06, 0.16, hsb.y);
@@ -74,11 +70,24 @@ vec3 wfDetail(vec3 c, czm_materialInput mi, vec3 posMC) {
   float mid = dot(wfRatio(w, 9.6, 12.8, wfGain.y), wn);
   float coarse = dot(wfRatio(w, 38.4, 51.2, wfGain.z), wn);
   float k = min(1.0, wsum);
-  if (wfDebug > 0.5) return vec3(fineF, midF, k);
-  float g = mix(1.0, fine, k * fineF * wfStrength.x)
-          * mix(1.0, mid, k * midF * wfStrength.y)
-          * mix(1.0, coarse, k * macroF * wfStrength.z);
-  return c * g;
+  return mix(1.0, fine, k * fineF * wfStrength.x)
+       * mix(1.0, mid, k * midF * wfStrength.y)
+       * mix(1.0, coarse, k * macroF * wfStrength.z);
+}
+`;
+
+const SOURCE = /* glsl */ `${DETAIL_GLSL}
+vec3 wfDetail(vec3 c, czm_materialInput mi, vec3 posMC) {
+  vec3 rel = -mi.positionToEyeEC;
+  float d = length(rel);
+  // This pixel's offset from the camera in metres east/north (earth-centred frame, not the
+  // terrain normal: that tilts per triangle and would leave seams on hillsides).
+  vec3 relWC = transpose(czm_normal3D) * rel;
+  vec3 up = normalize(posMC);
+  vec3 east = normalize(vec3(-posMC.y, posMC.x, 0.0));
+  vec3 north = cross(up, east);
+  vec2 w = wfCam + vec2(dot(relWC, east), dot(relWC, north));
+  return c * wfFactor(c, w, d);
 }
 czm_material czm_getMaterial(czm_materialInput materialInput) {
   czm_material m = czm_getDefaultMaterial(materialInput);
@@ -108,31 +117,85 @@ function patch(globe: Internals): boolean {
   return ok;
 }
 
-export function addGroundDetail(viewer: Viewer, texBase: string): void {
-  const scene = viewer.scene;
-  const globe = scene.globe as unknown as Internals & Cesium.Globe;
-  const uniforms: Record<string, unknown> = {
-    wfTex: Material.DefaultImageId,
-    wfCam: { x: 0, y: 0 },
-    // Fade distances [m] (full until x, gone by y) of the three scales: true scale (2.4 m
-    // repeats: the grain under the wheels), ×4 (clumps and patches), ×16 (field mottling).
-    wfFine: { x: 15, y: 80 },
-    wfMid: { x: 60, y: 400 },
-    wfMacro: { x: 300, y: 1500 },
+/** The grain's settings (the uniforms of DETAIL_GLSL besides wfTex and the camera). */
+export function detailSettings(): { fine: [number, number]; mid: [number, number]; macro: [number, number]; strength: [number, number, number]; gain: [number, number, number] } {
+  const o = {
+    // Fade distances [m] (full until the first, gone by the second) of the three scales: true
+    // scale (2.4 m repeats: the grain under the wheels), ×4 (clumps and patches), ×16 (field
+    // mottling).
+    fine: [15, 80] as [number, number],
+    mid: [60, 400] as [number, number],
+    macro: [300, 1500] as [number, number],
     // Strength of the fine, mid and coarse layers (chosen from full-resolution comparisons at
     // the Ghimbav ground start: stronger read as noisy camouflage with neon highlights).
-    wfStrength: { x: 0.6, y: 0.35, z: 0.25 },
+    strength: [0.6, 0.35, 0.25] as [number, number, number],
     // Contrast gain of each layer (restores some of what mipmapping averages away).
-    wfGain: { x: 1, y: 2, z: 2.5 },
-    // 1: draw the fine and mid fade (red, green) and how much texture applies (blue).
-    wfDebug: 0,
+    gain: [1, 2, 2.5] as [number, number, number],
   };
   // ?gd=fine,mid,coarse strengths[,fine,mid,coarse gains]: for tuning.
   const gd = new URLSearchParams(location.search).get("gd")?.split(",").map(Number);
   if (gd?.length && gd.every(Number.isFinite)) {
-    uniforms["wfStrength"] = { x: gd[0] ?? 0, y: gd[1] ?? 0, z: gd[2] ?? 0 };
-    if (gd.length >= 6) uniforms["wfGain"] = { x: gd[3]!, y: gd[4]!, z: gd[5]! };
+    o.strength = [gd[0] ?? 0, gd[1] ?? 0, gd[2] ?? 0];
+    if (gd.length >= 6) o.gain = [gd[3]!, gd[4]!, gd[5]!];
   }
+  return o;
+}
+
+/** The four photos' brightness packed into one RGBA texture's bytes (TEX_SIZE square). */
+export async function detailTexturePixels(texBase: string): Promise<{ data: Uint8Array; size: number }> {
+  const out = new ImageData(TEX_SIZE, TEX_SIZE);
+  const cv = new OffscreenCanvas(TEX_SIZE, TEX_SIZE);
+  const cx = cv.getContext("2d", { willReadFrequently: true })!;
+  for (let ch = 0; ch < TEXTURES.length; ch++) {
+    const r = await fetch(texBase + TEXTURES[ch]);
+    const bmp = await createImageBitmap(await r.blob());
+    cx.drawImage(bmp, 0, 0, TEX_SIZE, TEX_SIZE);
+    const px = cx.getImageData(0, 0, TEX_SIZE, TEX_SIZE).data;
+    for (let i = 0; i < px.length; i += 4) {
+      out.data[i + ch] = Math.round(0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]!);
+    }
+  }
+  return { data: new Uint8Array(out.data.buffer), size: TEX_SIZE };
+}
+
+/**
+ * Calls back before every frame with the camera's ground position [m east, north] modulo
+ * PERIOD, integrated in its local east/north frame (DETAIL_GLSL's wfCam).
+ */
+export function followCameraOnGround(scene: Viewer["scene"], cb: (east: number, north: number) => void): void {
+  const prev = new Cartesian3();
+  let have = false;
+  let ex = 0, ny = 0;
+  const d = new Cartesian3(), up = new Cartesian3(), east = new Cartesian3(), north = new Cartesian3();
+  scene.preRender.addEventListener(() => {
+    const p = scene.camera.positionWC;
+    if (have) {
+      Cartesian3.subtract(p, prev, d);
+      Cartesian3.normalize(p, up);
+      Cartesian3.normalize(Cartesian3.fromElements(-p.y, p.x, 0, east), east);
+      Cartesian3.cross(up, east, north);
+      ex = (((ex + Cartesian3.dot(d, east)) % PERIOD) + PERIOD) % PERIOD;
+      ny = (((ny + Cartesian3.dot(d, north)) % PERIOD) + PERIOD) % PERIOD;
+      cb(ex, ny);
+    }
+    Cartesian3.clone(p, prev);
+    have = true;
+  });
+}
+
+export function addGroundDetail(viewer: Viewer, texBase: string): void {
+  const scene = viewer.scene;
+  const globe = scene.globe as unknown as Internals & Cesium.Globe;
+  const st = detailSettings();
+  const uniforms: Record<string, unknown> = {
+    wfTex: Material.DefaultImageId,
+    wfCam: { x: 0, y: 0 },
+    wfFine: { x: st.fine[0], y: st.fine[1] },
+    wfMid: { x: st.mid[0], y: st.mid[1] },
+    wfMacro: { x: st.macro[0], y: st.macro[1] },
+    wfStrength: { x: st.strength[0], y: st.strength[1], z: st.strength[2] },
+    wfGain: { x: st.gain[0], y: st.gain[1], z: st.gain[2] },
+  };
   const material = new Material({ fabric: { type: "WebFlightGroundDetail", uniforms, source: SOURCE }, translucent: false });
   globe.material = material;
   if (!patch(globe)) {
@@ -156,18 +219,7 @@ export function addGroundDetail(viewer: Viewer, texBase: string): void {
   const context = (scene as unknown as { context: unknown }).context;
   void (async () => {
     try {
-      const out = new ImageData(TEX_SIZE, TEX_SIZE);
-      const cv = new OffscreenCanvas(TEX_SIZE, TEX_SIZE);
-      const cx = cv.getContext("2d", { willReadFrequently: true })!;
-      for (let ch = 0; ch < TEXTURES.length; ch++) {
-        const r = await fetch(texBase + TEXTURES[ch]);
-        const bmp = await createImageBitmap(await r.blob());
-        cx.drawImage(bmp, 0, 0, TEX_SIZE, TEX_SIZE);
-        const px = cx.getImageData(0, 0, TEX_SIZE, TEX_SIZE).data;
-        for (let i = 0; i < px.length; i += 4) {
-          out.data[i + ch] = Math.round(0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]!);
-        }
-      }
+      const { data } = await detailTexturePixels(texBase);
       const sampler = new C.Sampler({
         wrapS: C.TextureWrap.REPEAT,
         wrapT: C.TextureWrap.REPEAT,
@@ -176,7 +228,7 @@ export function addGroundDetail(viewer: Viewer, texBase: string): void {
         maximumAnisotropy: 8,
       });
       // Raw bytes, not an image: an image's alpha would be premultiplied into the other channels.
-      const tex = new C.Texture({ context, width: TEX_SIZE, height: TEX_SIZE, source: { arrayBufferView: new Uint8Array(out.data.buffer) }, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, sampler, flipY: false });
+      const tex = new C.Texture({ context, width: TEX_SIZE, height: TEX_SIZE, source: { arrayBufferView: data }, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, sampler, flipY: false });
       tex.generateMipmap(C.MipmapHint.NICEST);
       (material.uniforms as Record<string, unknown>).wfTex = tex;
     } catch (e) {
@@ -184,25 +236,9 @@ export function addGroundDetail(viewer: Viewer, texBase: string): void {
     }
   })();
 
-  // The camera's ground position modulo PERIOD, integrated in its local east/north frame.
-  const prev = new Cartesian3();
-  let have = false;
-  let ex = 0, ny = 0;
-  const d = new Cartesian3(), up = new Cartesian3(), east = new Cartesian3(), north = new Cartesian3();
-  scene.preRender.addEventListener(() => {
-    const p = scene.camera.positionWC;
-    if (have) {
-      Cartesian3.subtract(p, prev, d);
-      Cartesian3.normalize(p, up);
-      Cartesian3.normalize(Cartesian3.fromElements(-p.y, p.x, 0, east), east);
-      Cartesian3.cross(up, east, north);
-      ex = (((ex + Cartesian3.dot(d, east)) % PERIOD) + PERIOD) % PERIOD;
-      ny = (((ny + Cartesian3.dot(d, north)) % PERIOD) + PERIOD) % PERIOD;
-      const cam = (material.uniforms as { wfCam: { x: number; y: number } }).wfCam;
-      cam.x = ex;
-      cam.y = ny;
-    }
-    Cartesian3.clone(p, prev);
-    have = true;
+  followCameraOnGround(scene, (ex, ny) => {
+    const cam = (material.uniforms as { wfCam: { x: number; y: number } }).wfCam;
+    cam.x = ex;
+    cam.y = ny;
   });
 }

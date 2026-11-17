@@ -38,8 +38,9 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   imagery=photo (default; falls back to painted) | painted | grid | osm · shadows=0
  *   aerial=bing (default: Bing aerial photos via Cesium ion) | esri (Esri World Imagery) |
  *     google (Google satellite via Cesium ion) | s2 (Sentinel-2, synthesized detail)
- *   world=google3d    Google Photorealistic 3D Tiles instead of the globe and our 3D scenery
- *     (google3d.ts; g3dsse=N: their detail, default 8, lower is finer and slower)
+ *   world=google3d (default with imagery=photo: Google Photorealistic 3D Tiles in place of the
+ *     globe, our OSM buildings and trees; google3d.ts) | globe (the globe with the aerial photo)
+ *   g3dsse=N          Google 3D detail (default 8, quality=low 16; lower is finer and slower)
  *   gdetail=0         no close-range ground texture over the photos
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
@@ -62,8 +63,8 @@ if ("serviceWorker" in navigator) {
 }
 const DYNRES = params.get("dynres") === "1";
 const QUALITY = (["low", "high", "ultra"].includes(params.get("quality") ?? "") ? params.get("quality") : "high") as "low" | "high" | "ultra";
-const GOOGLE3D = params.get("world") === "google3d";
 const IMAGERY = (["photo", "painted", "grid", "osm"].includes(params.get("imagery") ?? "") ? params.get("imagery") : params.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
+const GOOGLE3D = params.get("world") !== "globe" && IMAGERY === "photo";
 
 async function startState(F: Flight): Promise<StartState> {
   if (AIR_START || !F.runway)
@@ -98,7 +99,17 @@ async function main(): Promise<void> {
   applyLighting(viewer, sun, F.latDeg, F.lonDeg);
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
   // 30 m strip is a smudge) draw ours.
-  const imageryReady = addImagery(viewer, IMAGERY, sun).then((mode) => {
+  // Google 3D tiles in place of the globe (google3d.ts); the globe with the photo if they can't
+  // be had.
+  let google3d: Google3D | undefined;
+  if (GOOGLE3D) {
+    try {
+      google3d = await Google3D.create(viewer, (lat, lon) => renderTerrain.heightAt(lat, lon), { screenSpaceError: params.has("g3dsse") ? Number(params.get("g3dsse")) : QUALITY === "low" ? 16 : 8, ...(params.get("gdetail") !== "0" ? { texBase: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href } : {}), ...(params.has("g3dgrade") ? { grade: Number(params.get("g3dgrade")) } : {}), ...(params.has("g3dreq") ? { maxRequests: Number(params.get("g3dreq")) } : {}) });
+    } catch (e) {
+      console.warn("Google 3D tiles unavailable; the globe with the aerial photo instead:", e);
+    }
+  }
+  const imageryReady = addImagery(viewer, IMAGERY, sun, { aerial: !google3d }).then((mode) => {
     // In photo mode the ground imagery shows the runway itself (orthophoto, or our detail tiles,
     // which paint it and take the time of day): an overlay on top would be lit differently.
     if (RUNWAY && (mode !== "photo" || params.get("detail") === "0" || params.get("runway") === "1")) addRunway(viewer, RUNWAY);
@@ -108,16 +119,14 @@ async function main(): Promise<void> {
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
-  // ?world=google3d: Google Photorealistic 3D Tiles (via Cesium ion) in place of the globe and
-  // our buildings, trees and grass. For comparing the look; the glider still flies on the
-  // Terrarium heights.
-  const google3d = GOOGLE3D ? await Google3D.create(viewer, (lat, lon) => renderTerrain.heightAt(lat, lon), params.has("g3dsse") ? { screenSpaceError: Number(params.get("g3dsse")) } : {}) : undefined;
-  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low" && !GOOGLE3D, trees: params.get("trees") !== "0" && QUALITY !== "low" && !GOOGLE3D, water: params.get("water") !== "0" && !GOOGLE3D, shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4, osmFarRings: params.has("far") ? Number(params.get("far")) : QUALITY === "ultra" ? 5 : 3, osmSkylineRings: params.has("skyline") ? Number(params.get("skyline")) : QUALITY === "ultra" ? 8 : 6 });
+  // With Google 3D: their buildings, trees and water; our grass near the glider (the tiles
+  // are a blur at the height of a cockpit). The glider still flies on the Terrarium heights.
+  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low" && !google3d, trees: params.get("trees") !== "0" && QUALITY !== "low" && !google3d, water: params.get("water") !== "0" && !google3d, shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4, osmFarRings: params.has("far") ? Number(params.get("far")) : QUALITY === "ultra" ? 5 : 3, osmSkylineRings: params.has("skyline") ? Number(params.get("skyline")) : QUALITY === "ultra" ? 8 : 6 });
   // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
   const grass =
-    osmTiles && !GOOGLE3D && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
+    osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
       ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { ...(photoTileUrl ? { photoUrl: photoTileUrl } : {}), cellM: 20, radiusM: QUALITY === "ultra" ? 55 : 38, density: QUALITY === "ultra" ? 20 : 11, maxHeightM: 60 })
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
@@ -254,7 +263,7 @@ async function main(): Promise<void> {
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
     followShadows(viewer, g("position/h-agl-ft") * M_PER_FT);
-    google3d?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
+    google3d?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/h-agl-ft") * M_PER_FT);
     // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).
     pinGround(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/geod-alt-ft") * M_PER_FT + 4);
     // Grass follows the glider, not the camera: looking around rebuilds nothing.

@@ -12,7 +12,8 @@ else comes from data for that place and time, fetched around the start point as 
 | Cloud base, thermal tops, strength, spacing, size | the weather: condensation level 125 m × (T − Td), boundary-layer depth, Deardorff w* from the sensible heat flux | — |
 | Where thermals are | terrain and sun: sunlit slopes and high ground trigger, shaded slopes don't (`triggerScore`) | per 6 km cell as its terrain tiles arrive |
 | Ridge lift | FlightGear's ridge lift from the terrain upwind, anywhere | — |
-| Terrain, imagery, water, buildings, trees | Terrarium, orthophotos / Sentinel-2, OpenFreeMap, swisstopo | streamed by view around the aircraft |
+| What you see: ground, buildings, trees, water | Google Photorealistic 3D Tiles via Cesium ion (the default; `google3d.ts`), or with `world=globe` the globe on Terrarium terrain with Bing aerial photos via Cesium ion and OpenFreeMap / swisstopo buildings and trees (`aerial=esri\|google\|s2` for other photos) | streamed by view around the aircraft |
+| What the glider flies on | Terrarium terrain heights (the 3D tiles are lowered onto them where the glider is: Google's heights are ellipsoidal, ours above sea level) | tiles around the aircraft |
 
 ## URL
 
@@ -23,7 +24,9 @@ else comes from data for that place and time, fetched around the start point as 
 ?lat=…&lon=…&hdg=…&agl=…            or start in the air anywhere (free flight)
 ```
 
-Overrides for testing: `rwy=04`, `wind=270@15`, `thermals=0`, `seed=N`.
+Overrides for testing: `rwy=04`, `wind=270@15`, `thermals=0`, `seed=N`. Scenery: `world=globe`
+(the globe with aerial photos instead of Google's 3D tiles), `g3dsse=N` (their detail, default
+8), `g3dgrade=0` (their photos as Google has them), `g3dreq=N` (tiles downloading at once).
 
 ## Rebuilding the airfield data
 
