@@ -13,7 +13,7 @@
  * LOOK now: the ground through a sky-light term in Cesium's ground shader, models through
  * their image-based lighting, our shaders through the GLSL constants in lookGlsl().
  */
-import { Cartesian2, Cartesian3, Color, DirectionalLight, SunLight, Transforms, type ImageryLayer, type Model, type Viewer } from "cesium";
+import { Cartesian2, Cartesian3, Color, CustomShader, DirectionalLight, SunLight, Transforms, UniformType, type ImageryLayer, type Model, type Viewer } from "cesium";
 import { addTwilightSky } from "./twilight-sky.ts";
 
 const smooth = (a: number, b: number, x: number) => {
@@ -113,6 +113,41 @@ export const ENVIRONMENT_MAP_ONCE = { maximumPositionEpsilon: Number.POSITIVE_IN
 /** A model's environment (image-based) light follows the time of day. */
 export function lightModel(m: Model): void {
   m.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(LOOK.ground, LOOK.ground);
+}
+
+/**
+ * The reflection on a glider's glossy surfaces (those with a clearcoat: gelcoat, canopy).
+ * Cesium's own environment map for reflections is soft and has no horizon, so a polished
+ * white glider looked matt. This adds the mirror image of a sky over the ground with a sharp
+ * horizon (bright along the top of the fuselage, the ground's colour lower down), Fresnel-
+ * weighted (4% looking straight at it, all at grazing angles), dimmed where the baked
+ * occlusion says the sky is hidden, coloured with the time of day. Cheap: a few lines per
+ * pixel of the glider.
+ */
+export function reflectionShader(): CustomShader {
+  const day = LOOK.day, amb = LOOK.ambient, g = LOOK.ground;
+  const c3 = (v: number[]) => new Cartesian3(v[0], v[1], v[2]);
+  return new CustomShader({
+    uniforms: {
+      u_zenith: { type: UniformType.VEC3, value: c3([0.22 * amb[0]! * day, 0.42 * amb[1]! * day, 0.82 * amb[2]! * day]) },
+      u_horizon: { type: UniformType.VEC3, value: c3([0.82 * amb[0]! * day + 0.03, 0.86 * amb[1]! * day + 0.03, 0.92 * amb[2]! * day + 0.05]) },
+      u_ground: { type: UniformType.VEC3, value: c3([0.3 * g, 0.33 * g, 0.24 * g]) },
+    },
+    fragmentShaderText: /* glsl */ `
+void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+#ifdef USE_CLEARCOAT
+  vec3 n = normalize(material.normalEC);
+  vec3 v = normalize(-fsInput.attributes.positionEC);
+  float nv = max(dot(n, v), 0.0);
+  vec3 r = czm_inverseViewRotation * reflect(-v, n);
+  float e = dot(normalize(r), normalize(czm_viewerPositionWC));
+  vec3 sky = mix(u_horizon, u_zenith, smoothstep(0.0, 0.6, e));
+  vec3 env = mix(u_ground * (0.75 + 0.25 * smoothstep(-0.5, 0.0, e)), sky, smoothstep(-0.015, 0.015, e));
+  float F = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
+  material.emissive += env * F * material.clearcoatFactor * material.occlusion * 0.9;
+#endif
+}`,
+  });
 }
 
 /** World direction (ECEF) of azimuth/elevation [deg] at a place. */

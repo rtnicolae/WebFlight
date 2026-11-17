@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildGlb } from "./glb.ts";
+import { improveExterior } from "./glider-look.ts";
 import { convertFgModel, type AnimationEntry } from "./fgmodel.ts";
 import { loadJsbsimFiles } from "./jsbsim-files.ts";
 import { getProp, readPropertyList, toPNode, type PNodeJson, type PropNode } from "./proplist.ts";
@@ -57,6 +58,8 @@ const num = (v: string | undefined): number => (v !== undefined && Number.isFini
 export interface BuildOptions {
   /** FGData cache for shared files (Aircraft/Generic, Instruments-3d, ...). */
   fgdataDir?: string;
+  /** Skip the exterior look step (glider-look.ts), e.g. for quick test builds. */
+  plainLook?: boolean;
 }
 
 export function buildBundle(aircraftDir: string, setFile: string, outRoot: string, opts: BuildOptions = {}): BundleManifest & { missingShared: string[] } {
@@ -81,6 +84,12 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
   const modelFile = path.join(aircraftDir, modelPath.startsWith(prefix) ? modelPath.slice(prefix.length) : modelPath);
   const model = convertFgModel(aircraftDir, modelFile, resolver);
   warnings.push(...model.warnings);
+  // The ASK 21's outside: 4K colour, baked occlusion, gelcoat clearcoat (glider-look.ts).
+  if (aircraft === "ASK21" && !opts.plainLook) {
+    const look = improveExterior(model.nodes, model.materials, model.images, "ASK21");
+    warnings.push(...look.warnings);
+    if (look.ms !== undefined) console.log(`exterior look: ${(look.ms / 1000).toFixed(1)} s, mean occlusion ${look.aoMean?.toFixed(3)}`);
+  }
   const glb = buildGlb(model.nodes, model.roots, model.materials, model.images);
   fs.writeFileSync(path.join(out, "model.glb"), glb);
 

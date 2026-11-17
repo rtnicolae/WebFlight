@@ -3,7 +3,7 @@
  * FG properties published by fg-host in the same snapshot (defaults from the manifest),
  * with texture (UV) animations and cockpit picking.
  */
-import { ENVIRONMENT_MAP_ONCE, lightModel } from "./lighting.ts";
+import { ENVIRONMENT_MAP_ONCE, lightModel, reflectionShader } from "./lighting.ts";
 import { Axis, Matrix3, Matrix4, Model, type ModelNode, type Scene } from "cesium";
 import { modelMatrixEcef, structuralToBodyFt, type BundleManifestCore, type SnapshotLayout } from "@webflight/fdm-core";
 import { AnimationRig, type PickEntry } from "./animations.ts";
@@ -64,6 +64,8 @@ export class AircraftView {
       environmentMapOptions: ENVIRONMENT_MAP_ONCE,
     });
     lightModel(this.model);
+    // Sky and horizon mirrored in the gelcoat and the canopy (?glossy=0: Cesium's alone).
+    if (new URLSearchParams(location.search).get("glossy") !== "0") this.model.customShader = reflectionShader();
     scene.primitives.add(this.model);
     await new Promise<void>((resolve) => {
       const m = this.model!;
