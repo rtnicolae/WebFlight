@@ -20,6 +20,10 @@ export interface CloudSpec {
   size: number;
   /** 0..1 opacity. */
   opacity: number;
+  /** Ground under it [m] (for its shadow). */
+  groundM?: number;
+  /** Detail 0..1 (default 1): far clouds, a few pixels across in the haze, get fewer puffs. */
+  lod?: number;
 }
 
 interface Puff {
@@ -140,7 +144,7 @@ export class CloudLayer {
     return { url: c.toDataURL("image/png"), px };
   })();
   private clouds: { spec: CloudSpec; puffs: Puff[]; centre: Cartesian3; enu: Matrix4 }[] = [];
-  private readonly layouts = new Map<string, { radiusM: number; puffs: Puff[] }>();
+  private readonly layouts = new Map<string, { radiusM: number; lod: number; puffs: Puff[] }>();
   private slots: Billboard[] = [];
   private lastSort = 0;
   /**
@@ -170,8 +174,8 @@ export class CloudLayer {
     this.clouds = specs.map((spec) => {
       seen.add(spec.id);
       let l = this.layouts.get(spec.id);
-      if (!l || l.radiusM !== spec.radiusM) {
-        l = { radiusM: spec.radiusM, puffs: this.layout(spec) };
+      if (!l || l.radiusM !== spec.radiusM || l.lod !== (spec.lod ?? 1)) {
+        l = { radiusM: spec.radiusM, lod: spec.lod ?? 1, puffs: this.layout(spec) };
         this.layouts.set(spec.id, l);
       }
       const centre = Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, spec.baseM);
@@ -228,7 +232,8 @@ export class CloudLayer {
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const r = spec.radiusM;
     const height = r * (0.55 + 0.45 * rnd());
-    const n = Math.round(22 + Math.min(34, r / 22));
+    const lod = spec.lod ?? 1;
+    const n = Math.max(5, Math.round((22 + Math.min(34, r / 22)) * lod));
     const puffs: Puff[] = [];
     const sun = this.sun;
     for (let k = 0; k < n; k++) {
@@ -248,7 +253,7 @@ export class CloudLayer {
     }
     // The flat base: wide, low, slightly darker puffs whose centres sit just above the base,
     // drawn first (lowest), so the cloud stands on a broad, level underside.
-    const baseCount = Math.round(6 + r / 120);
+    const baseCount = Math.max(2, Math.round((6 + r / 120) * lod));
     for (let k = 0; k < baseCount; k++) {
       const a = (k / baseCount) * Math.PI * 2 + rnd() * 0.5, reach = r * (0.45 + 0.6 * rnd());
       const g = 0.74 + 0.06 * rnd();

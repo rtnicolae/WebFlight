@@ -4,13 +4,13 @@ import { pinGroundToGlider } from "./ground-lod.ts";
 import { applyLighting, setLook } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
-import { advance, TerrariumTerrain } from "@webflight/environment";
+import { advance, TerrariumTerrain, ThermalSky } from "@webflight/environment";
 import { AircraftView } from "./aircraft.ts";
 import { ChaseCamera } from "./camera.ts";
 import { Hud } from "./hud.ts";
 import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
-import { addRunway, createViewer, followShadows, ThermalLayer } from "./scene.ts";
+import { addRunway, createViewer, followShadows, ThermalLayer, thermalView } from "./scene.ts";
 import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
@@ -152,7 +152,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     if (RUNWAY && (mode !== "photo" || params.get("detail") === "0" || params.get("runway") === "1")) addRunway(viewer, RUNWAY);
     return mode;
   });
-  const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, soaringFrom(F.weather).cumulus);
+  const cumulus = soaringFrom(F.weather).cumulus;
+  const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined);
+  if (google3d) life.onClose(() => google3d.setCloudShadows([], sun));
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
@@ -250,6 +252,19 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // Warm the renderer's terrain around the start at the zooms Cesium will ask for first, in
   // parallel, so its level-by-level refinement doesn't wait on one download per level.
   const start = await startState(F, params);
+  // Clouds to the horizon: the flight model's thermals reach ~20 km; the same sky model (same
+  // seed: the same thermals, cell by cell) out to ~50 km gives the clouds beyond (visual only).
+  let gliderAt = { latDeg: start.latDeg, lonDeg: start.lonDeg };
+  if (cumulus && F.environment.thermalSky) {
+    const farSky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 7, groundAt: (la, lo) => renderTerrain.heightAt(la, lo, 11) });
+    const e = F.environment, wind = { groundFromDeg: e.windFromDeg, groundKt: e.windKt, aloftFromDeg: e.aloftFromDeg ?? e.windFromDeg, aloftKt: e.aloftKt ?? e.windKt };
+    const tickFar = () => {
+      farSky.update(3, { ...gliderAt, altFt: 0 }, wind);
+      thermalLayer.setFar(farSky.thermals.map(thermalView));
+    };
+    tickFar();
+    setInterval(tickFar, 3000);
+  }
   hud.message(F.weatherText);
   const warm = Promise.all([[13, 5000], [12, 9000], [11, 16000], [10, 30000], [9, 60000], [8, 120000]].map(([z, r]) => renderTerrain.load(start.latDeg, start.lonDeg, r!, z!))).catch(() => {});
   setStatus("Starting flight model…");
@@ -303,6 +318,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
+    gliderAt = { latDeg: g("position/lat-geod-deg"), lonDeg: g("position/long-gc-deg") };
     followShadows(viewer, g("position/h-agl-ft") * M_PER_FT);
     google3d?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/h-agl-ft") * M_PER_FT);
     // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).

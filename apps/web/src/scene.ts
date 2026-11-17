@@ -16,6 +16,7 @@ import { LOOK } from "./lighting.ts";
 import type { TerrariumTerrain } from "@webflight/environment";
 import type { ThermalView } from "./protocol.ts";
 import { CloudLayer, type CloudSpec } from "./clouds.ts";
+import type { Thermal } from "@webflight/environment";
 import { VolumetricClouds } from "./vclouds.ts";
 
 const M_PER_DEG_LAT = 111_132;
@@ -263,14 +264,39 @@ export function terrariumTerrainProvider(terrain: TerrariumTerrain): TerrainProv
 /** Deepest terrain level (~55 m tiles at 45° N, a vertex every 0.8 m). Each level deeper quadruples the tiles to load near the camera. */
 export const MAX_TERRAIN_LEVEL = 19;
 
+/** A thermal as the layers draw it (from the sky model's Thermal; the worker sends the same). */
+export function thermalView(t: Thermal): ThermalView {
+  const time = t.cycleTimer / (25 * 60);
+  return {
+    id: t.id,
+    latDeg: t.spec.latDeg,
+    lonDeg: t.spec.lonDeg,
+    topM: t.spec.heightMslFt * 0.3048,
+    groundM: t.spec.groundElevFt * 0.3048,
+    radiusM: t.spec.diameterFt * 0.3048 * 0.5,
+    strengthMs: t.spec.strengthFps * 0.3048,
+    phase: time <= 0.2 ? "forming" : time <= 0.8 ? "formed" : time <= 1 ? "dying" : "dead",
+  };
+}
+
+/** Within this distance of the camera clouds are ray-marched volumes; beyond, sprites. */
+const VOLUME_M = 22_000;
+
 /**
- * A cumulus over each thermal (volumes, vclouds.ts; or sprites, clouds.ts): flat base at the thermal's cloud
- * base, growing while the thermal forms and fading as it dies, so clouds mark the lift as
- * real ones do. With `columns`, the lift columns are drawn too.
+ * A cumulus over each thermal: flat base at the thermal's cloud base, growing while the thermal
+ * forms and fading as it dies, so clouds mark the lift as real ones do. Near ones (within
+ * 22 km of the camera) are ray-marched volumes (vclouds.ts), farther ones sprite puffs
+ * (clouds.ts): out there, in the haze, the two look alike, and sprites cost next to nothing.
+ * The flight model's thermals reach ~20 km round the glider; setFar adds the same sky model's
+ * thermals farther out (visual only), so the sky is full to the horizon. quality=low or
+ * ?clouds=sprites: sprites throughout. With `columns`, the lift columns are drawn too.
  */
 export class ThermalLayer {
-  private readonly clouds: { set(specs: CloudSpec[]): void };
+  private readonly sprites: CloudLayer;
+  private readonly volumes?: VolumetricClouds;
   private readonly columns = new Map<string, Entity>();
+  private near: ThermalView[] = [];
+  private far: ThermalView[] = [];
 
   constructor(
     private readonly viewer: Viewer,
@@ -278,27 +304,19 @@ export class ThermalLayer {
     sun: { azimuthDeg: number; elevationDeg: number } = { azimuthDeg: 230, elevationDeg: 40 },
     /** Whether the day's thermals are marked by cumulus (else blue: no clouds drawn). */
     private readonly cumulus = true,
+    /** Gets every cloud on each change (their shadows on the ground: google3d.ts). */
+    private readonly shadows?: (clouds: CloudSpec[]) => void,
   ) {
     const az = (sun.azimuthDeg * Math.PI) / 180, el = (Math.max(5, sun.elevationDeg) * Math.PI) / 180;
-    // Ray-marched volumes (vclouds.ts, ~1.5 ms a frame); the sprite puffs with quality=low or
-    // ?clouds=sprites.
+    this.sprites = new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) });
     const q = new URLSearchParams(location.search);
-    this.clouds = q.get("clouds") === "sprites" || (q.get("quality") === "low" && q.get("clouds") !== "volume") ? new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) }) : new VolumetricClouds(viewer);
+    if (q.get("clouds") !== "sprites" && !(q.get("quality") === "low" && q.get("clouds") !== "volume")) this.volumes = new VolumetricClouds(viewer);
   }
 
+  /** The flight model's thermals (near the glider). */
   update(list: ThermalView[]): void {
-    this.clouds.set(
-      (this.cumulus ? list : []).map((t) => ({
-        id: t.id,
-        latDeg: t.latDeg,
-        lonDeg: t.lonDeg,
-        baseM: t.topM,
-        // Cumulus are wider than the thermal feeding them.
-        radiusM: Math.max(300, t.radiusM * 2.2),
-        size: t.phase === "formed" ? 1 : t.phase === "forming" ? 0.6 : t.phase === "dying" ? 0.75 : 0,
-        opacity: t.phase === "dying" ? 0.55 : t.phase === "dead" ? 0 : 1,
-      })),
-    );
+    this.near = list;
+    this.refresh();
     if (!this.showColumns) return;
     list.forEach((t) => {
       let col = this.columns.get(t.id);
@@ -312,6 +330,40 @@ export class ThermalLayer {
       }
       col.show = t.phase === "formed" || t.phase === "forming";
     });
+  }
+
+  /** Thermals beyond the flight model's reach: clouds only. */
+  setFar(list: ThermalView[]): void {
+    this.far = list;
+    this.refresh();
+  }
+
+  private refresh(): void {
+    const ids = new Set(this.near.map((t) => t.id));
+    const all = this.cumulus ? [...this.near, ...this.far.filter((t) => !ids.has(t.id))] : [];
+    const specs: CloudSpec[] = all.map((t) => ({
+      id: t.id,
+      latDeg: t.latDeg,
+      lonDeg: t.lonDeg,
+      baseM: t.topM,
+      groundM: t.groundM,
+      // Cumulus are wider than the thermal feeding them.
+      radiusM: Math.max(300, t.radiusM * 2.2),
+      size: t.phase === "formed" ? 1 : t.phase === "forming" ? 0.6 : t.phase === "dying" ? 0.75 : 0,
+      opacity: t.phase === "dying" ? 0.55 : t.phase === "dead" ? 0 : 1,
+    }));
+    if (this.volumes) {
+      const cam = this.viewer.camera.positionWC, p = new Cartesian3();
+      const near: CloudSpec[] = [], far: CloudSpec[] = [];
+      for (const c of specs) {
+        if (Cartesian3.distance(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, p), cam) <= VOLUME_M) near.push(c);
+        // Out there a cloud is a few pixels in the haze: a fifth of the puffs.
+        else far.push({ ...c, lod: 0.2 });
+      }
+      this.volumes.set(near);
+      this.sprites.set(far);
+    } else this.sprites.set(specs);
+    this.shadows?.(specs);
   }
 }
 

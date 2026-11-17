@@ -19,12 +19,12 @@
  * Ghimbav), vsync off: 124 fps with these, 161 with the sprite puffs (~1.5 ms a frame); the
  * same from above the tops.
  */
-import { Cartesian2, Cartesian3, Cartesian4, PostProcessStage, type Viewer } from "cesium";
+import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PostProcessStage, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import { LOOK } from "./lighting.ts";
 
-/** Most clouds drawn (the nearest). */
-const MAX = 40;
+/** Most clouds drawn (the nearest in view). */
+const MAX = 96;
 
 const FS = /* glsl */ `
 uniform sampler2D colorTexture;
@@ -242,7 +242,7 @@ export class VolumetricClouds {
         u_ambTop: new Cartesian3(0.7 * amb[0]!, 0.76 * amb[1]!, 0.88 * amb[2]!),
         u_ambBase: new Cartesian3(0.36 * amb[0]!, 0.39 * amb[1]!, 0.46 * amb[2]!),
         u_haze: new Cartesian3(0.72 * LOOK.ground, 0.78 * LOOK.ground, 0.86 * LOOK.ground),
-        u_fade: new Cartesian2(12_000, 60_000),
+        u_fade: new Cartesian2(15_000, 70_000),
         u_sigma: 0.045,
         u_steps: 40,
       },
@@ -269,13 +269,22 @@ export class VolumetricClouds {
     const fs = (this.viewer.scene as unknown as { frameState: { frameNumber: number } }).frameState;
     if (fs.frameNumber === this.stamp) return;
     this.stamp = fs.frameNumber;
-    const cam = this.viewer.camera.positionWC;
+    const camera = this.viewer.camera, cam = camera.positionWC;
     Cartesian3.normalize(cam, this.up);
+    // Only those in view (the ones behind cost a sphere test per pixel for nothing).
+    const cull = camera.frustum.computeCullingVolume(cam, camera.directionWC, camera.upWC);
+    const bs = new BoundingSphere();
     Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, this.up, this.east), this.east);
     Cartesian3.cross(this.up, this.east, this.north);
     const near = this.clouds
       .map((c) => ({ c, d: Cartesian3.distance(c.base, cam) }))
-      .filter((x) => x.d < 70_000)
+      .filter((x) => {
+        if (x.d > 70_000) return false;
+        const R = x.c.radius * x.c.spec.size, H = x.c.height * x.c.spec.size;
+        Cartesian3.add(x.c.base, Cartesian3.multiplyByScalar(this.up, H * 0.5, bs.center), bs.center);
+        bs.radius = Math.hypot(R * 1.15, H * 0.55) * 1.1;
+        return cull.computeVisibility(bs) !== Intersect.OUTSIDE;
+      })
       .sort((a, b) => a.d - b.d)
       .slice(0, MAX);
     this.n = near.length;

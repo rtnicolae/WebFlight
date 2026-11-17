@@ -9,12 +9,12 @@
  * to be Bing via Cesium ion, a metered session on every visit to this screen).
  */
 import { HeadingPitchRange, Cartesian3, Credit, ImageryLayer, JulianDate, Matrix4, UrlTemplateImageryProvider, Math as CMath, type Viewer } from "cesium";
-import { advance, loadAirfieldIndex, searchAirfields, soaringFrom, sunPosition, type TerrariumTerrain, ThermalSky, type Thermal } from "@webflight/environment";
+import { advance, loadAirfieldIndex, searchAirfields, soaringFrom, sunPosition, type TerrariumTerrain, ThermalSky } from "@webflight/environment";
 import type { Google3D } from "./google3d.ts";
 import { S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import type { Lifetime } from "./lifetime.ts";
 import { applyLighting, setLook } from "./lighting.ts";
-import { ThermalLayer } from "./scene.ts";
+import { ThermalLayer, thermalView } from "./scene.ts";
 import { Scenery } from "./scenery.ts";
 import type { ThermalView } from "./protocol.ts";
 import { resolveFlight } from "./world.ts";
@@ -225,26 +225,14 @@ export async function showMenu(params: URLSearchParams, env: MenuEnv): Promise<v
     env.life.onClose(() => viewer.imageryLayers.remove(s2));
   }
   // The day's thermals and cumulus, streamed in as their terrain loads (as in flight).
-  const layer = new ThermalLayer(viewer, false, sun, soaringFrom(F.weather).cumulus);
+  const layer = new ThermalLayer(viewer, false, sun, soaringFrom(F.weather).cumulus, env.google3d ? (clouds) => env.google3d!.setCloudShadows(clouds, sun) : undefined);
+  if (env.google3d) env.life.onClose(() => env.google3d!.setCloudShadows([], sun));
   if (F.environment.thermalSky) {
-    const sky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 3, groundAt: (la, lo) => terrain.heightAt(la, lo, 11) });
-    const view = (t: Thermal): ThermalView => {
-      const time = t.cycleTimer / (25 * 60);
-      return {
-        id: t.id,
-        latDeg: t.spec.latDeg,
-        lonDeg: t.spec.lonDeg,
-        topM: t.spec.heightMslFt * 0.3048,
-        groundM: t.spec.groundElevFt * 0.3048,
-        radiusM: t.spec.diameterFt * 0.3048 * 0.5,
-        strengthMs: t.spec.strengthFps * 0.3048,
-        phase: time <= 0.2 ? "forming" : time <= 0.8 ? "formed" : time <= 1 ? "dying" : "dead",
-      };
-    };
+    const sky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 6, groundAt: (la, lo) => terrain.heightAt(la, lo, 11) });
     const wind = { groundFromDeg: F.environment.windFromDeg, groundKt: F.environment.windKt, aloftFromDeg: F.environment.aloftFromDeg ?? F.environment.windFromDeg, aloftKt: F.environment.aloftKt ?? F.environment.windKt };
     const tick = () => {
       sky.update(2, { latDeg: F.latDeg, lonDeg: F.lonDeg, altFt: 0 }, wind);
-      layer.update(sky.thermals.map(view));
+      layer.update(sky.thermals.map(thermalView));
     };
     tick();
     setInterval(tick, 2000);

@@ -24,6 +24,9 @@
  *    gravel grain as on our photo ground (ground-detail.ts) is multiplied onto their level
  *    surfaces near the camera (not walls; level found from the screen-space slope of the
  *    surface), keeping the photo's colour.
+ *  - Cloud shadows. The cumulus (scene.ts ThermalLayer) are projected along the sun onto a
+ *    soft map round the camera (512 px over 50 km, redrawn every 2 s or 3 km), which darkens
+ *    the tiles under them.
  *  - Shadows. The photos already carry the sun's shadows: the tiles only receive ours (the
  *    glider's), they don't cast into the shadow map (Brașov at 300 m: 103 fps, casting too 81).
  *  - Detail. At Cesium's default (screen-space error 16) the forests near the glider are
@@ -37,10 +40,15 @@
  * no caching beyond what Google allows, nothing derived from the content.
  */
 import { Cartesian2, Cartesian3, Cartographic, createGooglePhotorealistic3DTileset, CustomShader, RequestScheduler, DynamicAtmosphereLightingType, Ellipsoid, Math as CesiumMath, Matrix4, ShadowMode, TextureMagnificationFilter, TextureMinificationFilter, TextureUniform, UniformType, type Cesium3DTileset, type Viewer } from "cesium";
+import type { CloudSpec } from "./clouds.ts";
 import { DETAIL_GLSL, detailSettings, detailTexturePixels, followCameraOnGround } from "./ground-detail.ts";
 import { LOOK } from "./lighting.ts";
 
 type GroundFn = (latDeg: number, lonDeg: number) => number | undefined;
+
+/** The cloud shadow map: pixels, and metres across (centred on the camera when drawn). */
+const SHADOW_PX = 512;
+const SHADOW_M = 50_000;
 
 /** The light the photos are dimmed and tinted with (1 at midday). */
 function photoLight(viewer: Viewer): Cartesian3 {
@@ -94,6 +102,10 @@ export class Google3D {
         wfMacro: { type: UniformType.VEC2, value: new Cartesian2(...st.macro) },
         wfStrength: { type: UniformType.VEC3, value: new Cartesian3(...st.strength) },
         wfGain: { type: UniformType.VEC3, value: new Cartesian3(...st.gain) },
+        u_cloudShadow: { type: UniformType.SAMPLER_2D, value: new TextureUniform({ typedArray: new Uint8Array([0, 0, 0, 255]), width: 1, height: 1, repeat: false }) },
+        u_shadowCentre: { type: UniformType.VEC2, value: new Cartesian2() },
+        u_shadowSize: { type: UniformType.FLOAT, value: SHADOW_M },
+        u_shadowK: { type: UniformType.FLOAT, value: 0 },
       },
       fragmentShaderText: `${DETAIL_GLSL}
 // Google's photos run grey-green on grass and blue-magenta on bare fields round here: green
@@ -128,11 +140,23 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     // The grain works on display values; the material is linear.
     c *= pow(mix(1.0, wfFactor(czm_linearToSrgb(c), w, d), level), 2.2);
   }
+  // Under a cloud: the cloud shadow map, in metres east/north of the camera.
+  if (u_shadowK > 0.0) {
+    vec3 relW = czm_inverseViewRotation * rel;
+    vec3 e = normalize(vec3(-upW.y, upW.x, 0.0));
+    vec3 nn = cross(upW, e);
+    vec2 uv = (vec2(dot(relW, e), dot(relW, nn)) - u_shadowCentre) / u_shadowSize + 0.5;
+    if (uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0) c *= 1.0 - u_shadowK * texture(u_cloudShadow, uv).r;
+  }
   material.diffuse = c * u_photoLight;
 }`,
     });
     tileset.customShader = shader;
-    followCameraOnGround(viewer.scene, (e, n) => shader.setUniform("wfCam", new Cartesian2(e, n)));
+    let g3: Google3D | undefined;
+    followCameraOnGround(viewer.scene, (e, n) => {
+      shader.setUniform("wfCam", new Cartesian2(e, n));
+      g3?.followShadow();
+    });
     if (opts.texBase)
       void detailTexturePixels(opts.texBase)
         .then(({ data, size }) =>
@@ -145,7 +169,7 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     const scene = viewer.scene;
     scene.primitives.add(tileset);
     scene.globe.show = false;
-    const g3 = new Google3D(viewer, tileset, groundAt);
+    g3 = new Google3D(viewer, tileset, groundAt);
     g3.relight();
     return g3;
   }
@@ -163,6 +187,75 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     a.brightnessShift = g.atmosphereBrightnessShift + (-0.6 - g.atmosphereBrightnessShift) * k;
     // …and darkened with the light like the globe's (else the haze glows grey at night).
     a.dynamicLighting = !g.dynamicAtmosphereLighting ? DynamicAtmosphereLightingType.NONE : g.dynamicAtmosphereLightingFromSun ? DynamicAtmosphereLightingType.SUNLIGHT : DynamicAtmosphereLightingType.SCENE_LIGHT;
+  }
+
+  private shadowAt: Cartesian3 | undefined;
+  private shadowT = -1e9;
+  private readonly shadowCanvas = new OffscreenCanvas(SHADOW_PX, SHADOW_PX);
+
+  /**
+   * The clouds' shadows on the ground (each cloud a soft disc, moved away from the sun by its
+   * height over the ground ÷ tan(sun elevation)). At most every 2 s, or after 3 km.
+   */
+  setCloudShadows(clouds: CloudSpec[], sun: { azimuthDeg: number; elevationDeg: number }): void {
+    const shader = this.tileset.customShader as CustomShader | undefined;
+    if (!shader) return;
+    // Under a cumulus the sunlit ground gets about a third of the light (the sky's): 0.65.
+    const k = 0.65 * Math.min(1, Math.max(0, (sun.elevationDeg - 2) / 10));
+    if (!clouds.length || k <= 0) {
+      shader.setUniform("u_shadowK", 0);
+      this.shadowAt = undefined;
+      return;
+    }
+    const now = performance.now(), cam = this.viewer.camera.positionWC;
+    if (now - this.shadowT < 2000 && this.shadowAt && Cartesian3.distance(cam, this.shadowAt) < 3000) return;
+    this.shadowT = now;
+    this.shadowAt = Cartesian3.clone(cam, this.shadowAt);
+    const up = Cartesian3.normalize(cam, new Cartesian3());
+    const east = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, up, new Cartesian3()), new Cartesian3());
+    const north = Cartesian3.cross(up, east, new Cartesian3());
+    const az = (sun.azimuthDeg * Math.PI) / 180, tanEl = Math.tan((Math.max(5, sun.elevationDeg) * Math.PI) / 180);
+    const g = this.shadowCanvas.getContext("2d")!;
+    g.globalCompositeOperation = "source-over";
+    g.fillStyle = "#000";
+    g.fillRect(0, 0, SHADOW_PX, SHADOW_PX);
+    g.globalCompositeOperation = "lighten"; // overlapping shadows: the darker, not the sum
+    const px = SHADOW_PX / SHADOW_M, d = new Cartesian3();
+    for (const c of clouds) {
+      if (c.size <= 0 || c.opacity <= 0) continue;
+      Cartesian3.subtract(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, d), cam, d);
+      const R = c.radiusM * 1.4 * c.size;
+      // The cloud's middle over the ground, cast away from the sun.
+      const h = c.baseM - (c.groundM ?? c.baseM - 1500) + R * 0.45;
+      const e = Cartesian3.dot(d, east) - (Math.sin(az) * h) / tanEl, n = Cartesian3.dot(d, north) - (Math.cos(az) * h) / tanEl;
+      // The footprint of the volume (vclouds.ts: towers out to ~1.2 R), soft at the rim.
+      const x = (0.5 + e / SHADOW_M) * SHADOW_PX, y = (0.5 + n / SHADOW_M) * SHADOW_PX, r = Math.max(2, R * 1.2 * px);
+      if (x < -r || y < -r || x > SHADOW_PX + r || y > SHADOW_PX + r) continue;
+      const v = Math.round(255 * c.opacity);
+      const grad = g.createRadialGradient(x, y, r * 0.75, x, y, r);
+      grad.addColorStop(0, `rgb(${v},${v},${v})`);
+      grad.addColorStop(1, "rgb(0,0,0)");
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    }
+    // Canvas rows top-down = texture rows bottom-up: row y is (0.5 + north / size) as drawn.
+    const img = g.getImageData(0, 0, SHADOW_PX, SHADOW_PX);
+    shader.setUniform("u_cloudShadow", new TextureUniform({ typedArray: new Uint8Array(img.data.buffer), width: SHADOW_PX, height: SHADOW_PX, repeat: false, minificationFilter: TextureMinificationFilter.LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
+    shader.setUniform("u_shadowK", k);
+    this.followShadow();
+  }
+
+  /** Each frame: where the shadow map's centre is, in metres east/north of the camera. */
+  followShadow(): void {
+    if (!this.shadowAt) return;
+    const cam = this.viewer.camera.positionWC;
+    const up = Cartesian3.normalize(cam, new Cartesian3());
+    const east = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, up, new Cartesian3()), new Cartesian3());
+    const north = Cartesian3.cross(up, east, new Cartesian3());
+    const d = Cartesian3.subtract(this.shadowAt, cam, new Cartesian3());
+    (this.tileset.customShader as CustomShader).setUniform("u_shadowCentre", new Cartesian2(Cartesian3.dot(d, east), Cartesian3.dot(d, north)));
   }
 
   /** Every frame, with the glider's position and height above our terrain. */
