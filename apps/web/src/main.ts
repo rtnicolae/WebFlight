@@ -41,6 +41,8 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
  *   dynres=1          lower the resolution to keep ≥ 40 fps, down to 60% (default: fixed)
  *   pin=<metres>      keep the ground within that radius of the glider loaded (default: off)
+ *   far=N             distant buildings out to ±N zoom-14 tiles, ~1.7 km each (default 3, ultra 5; 0: off)
+ *   skyline=N         beyond those, blocks and large buildings out to ±N tiles (default 6, ultra 8; 0: off)
  *   thermals=0 · seed=N (thermal placement) · columns=1 (draw lift columns)
  */
 const AIR_START = params.has("lat") && params.has("lon");
@@ -100,7 +102,7 @@ async function main(): Promise<void> {
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
-  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4 });
+  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", trees: params.get("trees") !== "0" && QUALITY !== "low", water: params.get("water") !== "0", shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4, osmFarRings: params.has("far") ? Number(params.get("far")) : QUALITY === "ultra" ? 5 : 3, osmSkylineRings: params.has("skyline") ? Number(params.get("skyline")) : QUALITY === "ultra" ? 8 : 6 });
   // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
@@ -281,7 +283,7 @@ async function main(): Promise<void> {
     );
   });
   // Expose for debugging and automated checks.
-  (window as unknown as { webflight: unknown }).webflight = { viewer, input, aircraft, cam, interaction, get layout() { return layout; }, get reader() { return reader; }, send };
+  (window as unknown as { webflight: unknown }).webflight = { viewer, input, aircraft, cam, interaction, scenery, get layout() { return layout; }, get reader() { return reader; }, send };
 }
 
 // An empty URL (or ?menu) shows the title screen; any other parameters start a flight.

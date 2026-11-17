@@ -33,6 +33,10 @@ export const LOOK = {
   cloud: [1, 1, 1],
   /** Sky light on the ground, added to the sun's (see groundSkyLight). */
   groundSky: [0, 0, 0],
+  /** The haze after sunset (see twilightHaze). */
+  haze: { base: [0, 0, 0], sun: [0, 0, 0], k: 0 },
+  /** The globe's atmosphere settings its ground haze is coloured with (set in applyLighting). */
+  globeAir: { intensity: 10, hsb: [0, 0, 0], minBrightness: 0.03, hdr: false },
 };
 
 /** Derive LOOK from the sun's elevation [deg]. Call before anything is drawn. */
@@ -45,16 +49,59 @@ export function setLook(sunElevationDeg: number): void {
   LOOK.ground = 0.16 + 0.84 * day * (0.7 + 0.3 * high);
   LOOK.cloud = mix3([0.1, 0.12, 0.18], mix3([1.0, 0.72, 0.58], [1, 1, 1], smooth(2, 20, el)), day);
   LOOK.groundSky = groundSkyLight(el);
+  LOOK.haze = twilightHaze(el);
 }
 
-/** GLSL constants for our shaders: replaces LOOK_AMBIENT (vec3) and LOOK_NIGHT (float). */
+/**
+ * GLSL constants for our shaders: replaces LOOK_AMBIENT (vec3), LOOK_GROUND_SKY (vec3),
+ * LOOK_NIGHT (float), and the HAZE_* constants of HAZE_VS / HAZE_FS.
+ */
 export function lookGlsl(src: string): string {
   const f = (v: number) => v.toFixed(4);
+  const a = LOOK.globeAir, h = LOOK.haze;
   return src
     .replaceAll("LOOK_AMBIENT", `vec3(${LOOK.ambient.map(f).join(", ")})`)
     .replaceAll("LOOK_GROUND_SKY", `vec3(${LOOK.groundSky.map(f).join(", ")})`)
-    .replaceAll("LOOK_NIGHT", f(1 - LOOK.day));
+    .replaceAll("LOOK_NIGHT", f(1 - LOOK.day))
+    .replaceAll("HAZE_INTENSITY", f(a.intensity))
+    .replaceAll("HAZE_HSB", vec3(a.hsb))
+    .replaceAll("HAZE_MIN_BRIGHTNESS", f(a.minBrightness))
+    .replaceAll("HAZE_TONEMAP", a.hdr ? "0" : "1")
+    .replaceAll("HAZE_BASE", vec3(h.base))
+    .replaceAll("HAZE_SUN", vec3(h.sun))
+    .replaceAll("HAZE_K", f(h.k));
 }
+
+/**
+ * Haze on our own geometry, the same as Cesium puts on the ground next to it (GlobeFS.glsl's
+ * fog: the atmosphere's scattering along the ray from the eye, coloured with the globe's
+ * settings from scene.ts, after sunset the twilight haze below), so buildings kilometres
+ * away fade into the air exactly like the fields around them (a fixed haze colour made a
+ * distant town stand out pale lilac against the ground). Through lookGlsl.
+ * Vertex shader: hazeVS(positionWC). Fragment shader: color = hazeFS(color, positionWC, positionEC).
+ */
+export const HAZE_VS = `
+out vec3 v_hazeRayleigh;
+out vec3 v_hazeMie;
+out float v_hazeOpacity;
+void hazeVS(vec3 positionWC) {
+  czm_computeGroundAtmosphereScattering(positionWC, czm_lightDirectionWC, v_hazeRayleigh, v_hazeMie, v_hazeOpacity);
+}`;
+export const HAZE_FS = `
+in vec3 v_hazeRayleigh;
+in vec3 v_hazeMie;
+in float v_hazeOpacity;
+vec3 hazeFS(vec3 color, vec3 positionWC, vec3 positionEC) {
+  vec3 r = czm_applyHSBShift(v_hazeRayleigh, HAZE_HSB, true);
+  vec3 m = czm_applyHSBShift(v_hazeMie, HAZE_HSB, true);
+  vec3 fogColor = czm_computeAtmosphereColor(positionWC, czm_lightDirectionWC, r, m, v_hazeOpacity).rgb * (HAZE_INTENSITY / czm_atmosphereLightIntensity);
+  fogColor *= clamp(dot(normalize(czm_viewerPositionWC), czm_lightDirectionWC), HAZE_MIN_BRIGHTNESS, 1.0);
+#if HAZE_TONEMAP
+  fogColor = czm_inverseGamma(czm_pbrNeutralTonemapping(fogColor));
+#endif
+  fogColor = mix(fogColor, HAZE_BASE + HAZE_SUN * pow(max(dot(normalize(positionEC), czm_lightDirectionEC), 0.0), 6.0), HAZE_K);
+  return czm_fog(length(positionEC), color, fogColor, czm_fogVisualDensityScalar);
+}`;
 
 /** A model's environment (image-based) light follows the time of day. */
 export function lightModel(m: Model): void {
@@ -153,7 +200,9 @@ export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevati
       if (scene.skyBox) scene.skyBox.show = el < -10;
     }
   }
-  patchGround(scene, LOOK.groundSky, twilightHaze(el));
+  patchGround(scene, LOOK.groundSky, LOOK.haze);
+  const g = scene.globe;
+  LOOK.globeAir = { intensity: g.atmosphereLightIntensity, hsb: [g.atmosphereHueShift, g.atmosphereSaturationShift, g.atmosphereBrightnessShift], minBrightness: scene.fog.minimumBrightness, hdr: scene.highDynamicRange };
   // Ground imagery (every layer, also those added later): its light comes from the ground
   // shader (sun plus sky above); only the colour fades at night.
   const dim = (l: ImageryLayer) => {

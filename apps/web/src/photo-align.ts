@@ -75,6 +75,12 @@ export function osmShift(x: number, y: number): Promise<[number, number]> {
   return p;
 }
 
+/** The shift if already measured, else [0, 0], without measuring: for towns far away, where a few metres don't show. */
+export function osmShiftIfKnown(x: number, y: number): [number, number] {
+  const e = stored[`${x}/${y}`];
+  return ENABLED && photoQuadkeyUrl && e?.s ? e.s : [0, 0];
+}
+
 /** The same for the zoom-14 tile under a position. */
 export function osmShiftAt(latDeg: number, lonDeg: number): Promise<[number, number]> {
   const [x, y] = lonLatToTile(lonDeg, latDeg, 14);

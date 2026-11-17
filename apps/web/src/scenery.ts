@@ -55,6 +55,9 @@ export interface SceneryOptions {
   /** OSM trees elsewhere: spacing [m] and zoom-16 cells around the aircraft. */
   osmTreeSpacingM?: number;
   osmTreeRings?: number;
+  /** Zoom-14 tiles (~1.7 km) around the aircraft with distant OSM buildings, and with their skyline. */
+  osmFarRings?: number;
+  osmSkylineRings?: number;
 }
 
 /**
@@ -92,6 +95,10 @@ async function waterSource(): Promise<{ url: string; global: boolean }> {
 export class Scenery {
   private readonly waterTiles = new Map<string, GroundPrimitive | null>();
   private osm: OsmLayer | undefined;
+  /** OSM tiles still being built (for tests and screenshots). */
+  get osmPending(): number {
+    return this.osm?.pendingCount ?? 0;
+  }
   private centres: Record<number, string> = {};
   private water: { url: string; global: boolean } | undefined;
 
@@ -150,6 +157,8 @@ export class Scenery {
         shadows: o.shadows,
         treeSpacingM: o.osmTreeSpacingM ?? 10,
         treeRings: o.osmTreeRings ?? 2,
+        farRings: o.osmFarRings ?? 0,
+        skylineRings: o.osmSkylineRings ?? 0,
         covered: inSwitzerland,
       }).then((l) => {
         this.osm = l;

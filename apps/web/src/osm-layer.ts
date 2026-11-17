@@ -3,7 +3,13 @@
  * Switzerland, where swisstopo's surveyed 3D tiles are used instead). Meshes are built in
  * osm-worker.ts; each tile becomes one Primitive with per-vertex colours and a small
  * sun-lit shader, so a town is a handful of draw calls.
- *  - buildings: zoom-14 tiles (~1.7 km) within ±1 tile
+ *  - buildings: zoom-14 tiles (~1.7 km) within ±1 tile; beyond, out to ±`farRings` tiles
+ *    (±3: ~5–7 km), the light version (buildingMesh's `far`, a simpler shader, no shadows),
+ *    so towns in the distance stand up from the plain instead of lying flat in the photo;
+ *    built by a second worker so they never hold up the tiles round the glider. Beyond, to
+ *    ±`skylineRings` (±6: ~10–11 km), the skyline: blocks of flats and large halls, the
+ *    buildings that still show that far. Roofs take their colours from the aerial photo
+ *    (osm-worker.ts);
  *  - trees: zoom-16 cells (~430 m) within ±`treeRings` cells, nearest first
  */
 import {
@@ -32,9 +38,10 @@ import * as Cesium from "cesium";
 import { lonLatToTile, tileToLonLat } from "@webflight/environment";
 import type { Mesh } from "@webflight/scenery";
 import type { OsmRequest, OsmResult } from "./osm-worker.ts";
-import { LOOK, lookGlsl } from "./lighting.ts";
+import { HAZE_FS, HAZE_VS, LOOK, lookGlsl } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
-import { osmShift } from "./photo-align.ts";
+import { photoQuadkeyUrl } from "./imagery.ts";
+import { osmShift, osmShiftIfKnown } from "./photo-align.ts";
 import { loadTreeAtlas, treeImpostors, type TreeAtlas } from "./tree-impostors.ts";
 
 export interface OsmLayerOptions {
@@ -44,6 +51,10 @@ export interface OsmLayerOptions {
   /** Tree spacing [m] and how many zoom-16 cells around the aircraft get trees. */
   treeSpacingM: number;
   treeRings: number;
+  /** Zoom-14 tiles around the aircraft with distant buildings (0: none beyond ±1). */
+  farRings: number;
+  /** …and beyond those, out to this many, the skyline: blocks and large buildings only. */
+  skylineRings: number;
   /** Where another source already provides buildings/trees (swisstopo). */
   covered: (latDeg: number, lonDeg: number) => boolean;
 }
@@ -62,9 +73,13 @@ out vec3 v_positionEC;
 out vec3 v_normalEC;
 out vec4 v_color;
 out vec4 v_uvm;
+out vec3 v_positionWC;
+${HAZE_VS}
 void main() {
   vec4 p = czm_computePosition();
   v_positionEC = (czm_modelViewRelativeToEye * p).xyz;
+  v_positionWC = p.xyz + czm_viewerPositionWC;
+  hazeVS(v_positionWC);
   v_normalEC = czm_normal * normal;
   v_color = color;
   v_uvm = uvm;
@@ -91,6 +106,8 @@ in vec3 v_positionEC;
 in vec3 v_normalEC;
 in vec4 v_color;
 in vec4 v_uvm;
+in vec3 v_positionWC;
+${HAZE_FS}
 
 float hash1(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float vnoise(vec2 p) {
@@ -119,9 +136,20 @@ void main() {
   czm_materialInput mi;
   mi.str = v_uvm.xyz;
   mi.positionToEyeEC = -v_positionEC;
+#ifdef FAR
+  // Distant towns: what the textures average to from ~1.4 km (brick: its mean colour).
+  czm_material tex;
+  tex.diffuse = mat > 7.5 && mat < 9.5 ? vec3(0.342, 0.268, 0.242) : vec3(1.0);
+  tex.shininess = 0.0;
+#else
   czm_material tex = czm_getMaterial(mi);
+#endif
   vec3 base = v_color.rgb * tex.diffuse * (1.0 + clamp(tex.shininess, -0.35, 0.45));
+#ifdef FAR
+  const float detail = 0.0;
+#else
   float detail = 1.0 - smoothstep(350.0, 1400.0, d); // facade detail fades with distance
+#endif
   float spec = 0.0;
   vec3 emis = vec3(0.0), glow = vec3(0.0); // lit windows at night; their average far away
   bool brick = mat > 7.5 && mat < 9.5;
@@ -183,7 +211,11 @@ void main() {
       if (block && !brick) frameCol = fs > 0.5 ? vec3(0.62, 0.63, 0.64) : vec3(0.86, 0.86, 0.84);
       // Windows resolve to a few pixels from ~200 m: fade them into the facade's average
       // tone (glass darkens it by its share of the wall) instead of letting them speckle.
+#ifdef FAR
+      const float wd = 0.0;
+#else
       float wd = 1.0 - smoothstep(160.0, 480.0, d);
+#endif
       if (!door) base *= 1.0 - (1.0 - wd) * 0.55 * (hi.x - lo.x) * (hi.y - lo.y);
       // …and at night their average glow.
       if (!door) glow = (1.0 - wd) * LOOK_NIGHT * 0.4 * (hi.x - lo.x) * (hi.y - lo.y) * vec3(1.0, 0.74, 0.42);
@@ -282,7 +314,7 @@ void main() {
   // Walls also get light bounced off the sunlit ground (without it, shaded walls went dull grey).
   float sky = 0.42 + 0.16 * dot(n, up) + 0.11 * (1.0 - abs(dot(n, up)));
   vec3 c = base * (sky * LOOK_AMBIENT + 0.62 * sun * czm_lightColor) + spec * czm_lightColor + emis + glow;
-  c = mix(c, vec3(0.70, 0.78, 0.86) * LOOK_AMBIENT, clamp((d - 1500.0) / 9000.0, 0.0, 0.45));
+  c = hazeFS(c, v_positionWC, v_positionEC);
   out_FragColor = vec4(c, 1.0);
 }`;
 
@@ -383,7 +415,11 @@ czm_material czm_getMaterial(czm_materialInput mi) {
   return (buildingMaterial = m);
 }
 
-function primitive(r: OsmResult, shadows: boolean, tex: Textures): Primitive | undefined {
+/**
+ * far: a distant tile (≥ ~1.7 km): the same shader compiled without what has faded out by then
+ * (facade detail, windows, textures), so it gives the same colours for a fraction of the work.
+ */
+function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false): Primitive | undefined {
   const m: Mesh | undefined = r.mesh;
   if (!m || !m.indices.length) return undefined;
   const pos = new Float64Array(m.positions);
@@ -401,7 +437,7 @@ function primitive(r: OsmResult, shadows: boolean, tex: Textures): Primitive | u
   const [lon, lat, h] = r.origin;
   return new Primitive({
     geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(lon, lat, h)) }),
-    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: VS, fragmentShaderSource: lookGlsl(FS), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: VS, fragmentShaderSource: lookGlsl(far ? `#define FAR\n${FS}` : FS), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
     asynchronous: false,
     compressVertices: false,
     allowPicking: false,
@@ -409,40 +445,79 @@ function primitive(r: OsmResult, shadows: boolean, tex: Textures): Primitive | u
   });
 }
 
+/** Versions of a tile's buildings: detailed, distant, skyline. */
+type Level = "b" | "f" | "s";
+const LEVELS: Level[] = ["b", "f", "s"];
+
+const newWorker = () => new Worker(new URL("./osm-worker.ts", import.meta.url), { type: "module" });
+
 export class OsmLayer {
-  private readonly worker = new Worker(new URL("./osm-worker.ts", import.meta.url), { type: "module" });
-  /** key → primitive (null while building or empty). */
+  private readonly worker = newWorker();
+  /** Distant buildings: their own worker (and queue). */
+  private farWorker: Worker | undefined;
+  /** key → primitive (null while building or empty). Keys: b/x/y buildings, f/x/y distant buildings, s/x/y skyline, t/x/y trees. */
   private readonly tiles = new Map<string, Primitive | null>();
+  /** Keys whose result has come (the primitive may still be null: nothing there). */
+  private readonly ready = new Set<string>();
   private readonly pending = new Map<number, string>();
   private nextId = 1;
   private url: string | undefined;
   private atlas: TreeAtlas | undefined;
   private textures: Textures | undefined;
   private lastKey = "";
+  /** The zoom-14 tile under the aircraft. */
+  private at: [number, number] = [0, 0];
   private readonly lamps = new Map<string, PointPrimitiveCollection>();
 
   private constructor(
     private readonly viewer: Viewer,
     private readonly o: OsmLayerOptions,
   ) {
-    this.worker.onmessage = (e: MessageEvent<OsmResult>) => {
-      const key = this.pending.get(e.data.id);
-      this.pending.delete(e.data.id);
-      if (!key || !this.tiles.has(key)) return; // dropped meanwhile
-      const p = e.data.trees ? (this.atlas ? treeImpostors(this.atlas, e.data.origin, e.data.trees, this.o.shadows) : undefined) : this.textures ? primitive(e.data, this.o.shadows, this.textures) : undefined;
-      if (p) this.viewer.scene.primitives.add(p);
-      this.tiles.set(key, p ?? null);
-      // Street lamps at night: warm points, small in the distance.
-      if (e.data.lamps?.length && LOOK.day < 0.6) {
-        const pts = new PointPrimitiveCollection();
-        const k = 1 - LOOK.day / 0.6, col = new Color(1, 0.78, 0.46, 0.95 * k);
-        const size = new NearFarScalar(40, 1.6, 6000, 0.3);
-        for (let i = 0; i < e.data.lamps.length; i += 3)
-          pts.add({ position: Cartesian3.fromDegrees(e.data.lamps[i]!, e.data.lamps[i + 1]!, e.data.lamps[i + 2]!), pixelSize: 4, color: col, scaleByDistance: size });
-        this.viewer.scene.primitives.add(pts);
-        this.lamps.set(key, pts);
-      }
-    };
+    this.worker.onmessage = (e: MessageEvent<OsmResult>) => this.received(e.data);
+  }
+
+  private received(r: OsmResult): void {
+    const key = this.pending.get(r.id);
+    this.pending.delete(r.id);
+    if (!key || !this.tiles.has(key)) return; // dropped meanwhile
+    // One version of a tile's buildings at a time. The one wanted now replaces the others
+    // when it comes; one no longer wanted only stands in until the wanted one is there.
+    const [kind, xs, ys] = key.split("/") as [string, string, string];
+    if (kind !== "t") {
+      const want = this.wantedVersion(+xs, +ys);
+      if (kind === want) for (const l of LEVELS) l !== kind && this.drop(`${l}/${xs}/${ys}`);
+      else if (want && this.ready.has(`${want}/${xs}/${ys}`)) return this.drop(key);
+    }
+    // Distant tiles start beyond the shadows' reach (scene.ts): they neither cast nor receive.
+    const near = kind === "b";
+    const p = r.trees ? (this.atlas ? treeImpostors(this.atlas, r.origin, r.trees, this.o.shadows) : undefined) : this.textures ? primitive(r, this.o.shadows && near, this.textures, !near) : undefined;
+    if (p) this.viewer.scene.primitives.add(p);
+    this.tiles.set(key, p ?? null);
+    this.ready.add(key);
+    // Street lamps at night: warm points, small in the distance.
+    if (r.lamps?.length && LOOK.day < 0.6) {
+      const pts = new PointPrimitiveCollection();
+      const k = 1 - LOOK.day / 0.6, col = new Color(1, 0.78, 0.46, 0.95 * k);
+      const size = new NearFarScalar(40, 1.6, 6000, 0.3);
+      for (let i = 0; i < r.lamps.length; i += 3) pts.add({ position: Cartesian3.fromDegrees(r.lamps[i]!, r.lamps[i + 1]!, r.lamps[i + 2]!), pixelSize: 4, color: col, scaleByDistance: size });
+      this.viewer.scene.primitives.add(pts);
+      this.lamps.set(key, pts);
+    }
+  }
+
+  /** Tiles still being built (for tests and screenshots). */
+  get pendingCount(): number {
+    return this.pending.size;
+  }
+
+  private drop(k: string): void {
+    const p = this.tiles.get(k);
+    if (p) this.viewer.scene.primitives.remove(p);
+    this.tiles.delete(k);
+    this.ready.delete(k);
+    const l = this.lamps.get(k);
+    if (l) this.viewer.scene.primitives.remove(l);
+    this.lamps.delete(k);
   }
 
   static async create(viewer: Viewer, o: OsmLayerOptions): Promise<OsmLayer | undefined> {
@@ -456,17 +531,51 @@ export class OsmLayer {
     return l;
   }
 
-  private request(key: string, req: Req): void {
+  private request(key: string, req: Req, ring = 0): void {
     if (this.tiles.has(key)) return;
     this.tiles.set(key, null);
     const id = this.nextId++;
     this.pending.set(id, key);
     // Moved onto the aerial photo (photo-align.ts); trees by their zoom-14 tile's measurement.
+    // Distant towns only by a measurement already made (a few metres don't show kilometres
+    // away), except the next ring out, measured ahead so its buildings don't jump when the
+    // detailed version replaces the distant one.
     const [x14, y14] = req.kind === "buildings" ? [req.x, req.y] : [req.x >> 2, req.y >> 2];
-    void osmShift(x14, y14).then((shift) => {
-      if (this.tiles.has(key)) this.worker.postMessage({ ...req, id, url: this.url, shift } as OsmRequest);
+    const far = req.kind === "buildings" && !!req.far;
+    const worker = far ? (this.farWorker ??= this.spawnFar()) : this.worker;
+    const shift = far && ring > 2 ? Promise.resolve(osmShiftIfKnown(x14, y14)) : osmShift(x14, y14);
+    void shift.then((shift) => {
+      // Roofs coloured from the aerial photo, when the ground is Bing's.
+      const photo = req.kind === "buildings" && photoQuadkeyUrl ? { photoUrl: photoQuadkeyUrl } : {};
+      if (this.tiles.has(key)) worker.postMessage({ ...req, ...photo, id, url: this.url, shift } as OsmRequest);
       else this.pending.delete(id);
     });
+  }
+
+  private spawnFar(): Worker {
+    const w = newWorker();
+    w.onmessage = (e: MessageEvent<OsmResult>) => this.received(e.data);
+    return w;
+  }
+
+  /** How many zoom-14 tiles out buildings reach. */
+  private reach(): number {
+    return Math.max(1, this.o.farRings, this.o.skylineRings);
+  }
+
+  /**
+   * Which version of zoom-14 tile x, y should be drawn now: b detailed (±1), f distant (to
+   * ±farRings), s skyline (to ±skylineRings), each kept a ring further once it is there, so
+   * flying along a tile edge doesn't swap them back and forth.
+   */
+  private wantedVersion(x: number, y: number): Level | undefined {
+    const ring = Math.max(Math.abs(x - this.at[0]), Math.abs(y - this.at[1]));
+    const has = (l: Level) => this.tiles.has(`${l}/${x}/${y}`);
+    const F = this.o.farRings, S = this.o.skylineRings;
+    if (ring <= 1 || (ring === 2 && has("b"))) return "b";
+    if (ring <= F || (ring === F + 1 && has("f"))) return "f";
+    if (ring <= S || (ring === S + 1 && has("s"))) return "s";
+    return undefined;
   }
 
   update(latDeg: number, lonDeg: number): void {
@@ -476,21 +585,27 @@ export class OsmLayer {
     const key = `${tx}/${ty}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
+    this.at = [bx, by];
     const want = new Set<string>();
     const centre = (z: number, x: number, y: number) => {
       const [lon, lat] = tileToLonLat(x + 0.5, y + 0.5, z);
       return { lat, lon };
     };
     // Nearest first: the worker builds in request order.
-    const jobs: [number, string, Req][] = [];
+    const jobs: [number, string, Req, number][] = [];
+    const S = this.reach();
     if (this.o.buildings)
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dx = -1; dx <= 1; dx++) {
-          const x = bx + dx, y = by + dy, k = `b/${x}/${y}`;
+      for (let dy = -S; dy <= S; dy++)
+        for (let dx = -S; dx <= S; dx++) {
+          const x = bx + dx, y = by + dy, ring = Math.max(Math.abs(dx), Math.abs(dy));
           const c = centre(14, x, y);
           if (this.o.covered(c.lat, c.lon)) continue;
+          const v = this.wantedVersion(x, y);
+          if (!v) continue;
+          const k = `${v}/${x}/${y}`, d2 = dx * dx + dy * dy;
           want.add(k);
-          jobs.push([(dx * dx + dy * dy) * 16, k, { kind: "buildings", x, y }]);
+          // Near tiles first, then distant ones, then the skyline (each worker in this order).
+          jobs.push([v === "b" ? d2 * 16 : v === "f" ? d2 : 1000 + d2, k, { kind: "buildings", x, y, ...(v === "f" ? { far: true } : v === "s" ? { far: true, skyline: true } : {}) }, ring]);
         }
     if (this.o.trees) {
       const r = this.o.treeRings;
@@ -502,22 +617,20 @@ export class OsmLayer {
           want.add(k);
           // Sparser further out (far trees are small; the forest keeps its outline).
           const ring = Math.max(Math.abs(dx), Math.abs(dy));
-          jobs.push([dx * dx + dy * dy, k, { kind: "trees", x, y, spacingM: this.o.treeSpacingM * (1 + 0.6 * Math.max(0, ring - 1)) }]);
+          jobs.push([dx * dx + dy * dy, k, { kind: "trees", x, y, spacingM: this.o.treeSpacingM * (1 + 0.6 * Math.max(0, ring - 1)) }, ring]);
         }
     }
-    for (const [, k, req] of jobs.sort((a, b) => a[0] - b[0])) this.request(k, req);
+    for (const [, k, req, ring] of jobs.sort((a, b) => a[0] - b[0])) this.request(k, req, ring);
     // Drop what is now out of range (a margin of one tile/cell avoids churn at the edges).
-    for (const [k, p] of this.tiles) {
+    for (const k of [...this.tiles.keys()]) {
       if (want.has(k)) continue;
       const [kind, xs, ys] = k.split("/") as [string, string, string];
-      // Kept well past the loading range: flying back over them shows them at once.
-      const far = kind === "b" ? Math.max(Math.abs(+xs - bx), Math.abs(+ys - by)) > 3 : Math.max(Math.abs(+xs - tx), Math.abs(+ys - ty)) > this.o.treeRings + 4;
-      if (!far) continue;
-      if (p) this.viewer.scene.primitives.remove(p);
-      this.tiles.delete(k);
-      const l = this.lamps.get(k);
-      if (l) this.viewer.scene.primitives.remove(l);
-      this.lamps.delete(k);
+      const ring = kind === "t" ? Math.max(Math.abs(+xs - tx), Math.abs(+ys - ty)) : Math.max(Math.abs(+xs - bx), Math.abs(+ys - by));
+      // Kept past the loading range (flying back shows them at once), and buildings until the
+      // version of the tile wanted now is there to replace them.
+      const v = kind === "t" ? undefined : this.wantedVersion(+xs, +ys);
+      const gone = kind === "t" ? ring > this.o.treeRings + 4 : v ? this.ready.has(`${v}/${xs}/${ys}`) : ring > S + 1;
+      if (gone) this.drop(k);
     }
   }
 }

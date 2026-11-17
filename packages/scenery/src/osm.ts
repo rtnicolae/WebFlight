@@ -307,28 +307,68 @@ export function footprintRect(ring: [number, number][]): { corners: [number, num
   return { corners, fill: Math.abs(ringArea(ring)) / best.area, long: Math.max(l0, l1), short: Math.min(l0, l1) };
 }
 
+/** A closed ring (first = last) with the corners that stray less than `tolM` from it dropped (Douglas–Peucker). */
+export function simplifyRing(ring: [number, number][], tolM: number): [number, number][] {
+  const n = ring.length - 1;
+  if (n < 5) return ring;
+  // Split at the vertex farthest from the first, simplify both halves.
+  let far = 1, best = -1;
+  for (let i = 1; i < n; i++) {
+    const d = Math.hypot(ring[i]![0] - ring[0]![0], ring[i]![1] - ring[0]![1]);
+    if (d > best) (best = d), (far = i);
+  }
+  const keep = new Uint8Array(n + 1);
+  keep[0] = keep[far] = keep[n] = 1;
+  const stack: [number, number][] = [[0, far], [far, n]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    const [ax, ay] = ring[a]!, [bx, by] = ring[b]!;
+    const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1;
+    let worst = -1, at = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs((ring[i]![0] - ax) * dy - (ring[i]![1] - ay) * dx) / l;
+      if (d > worst) (worst = d), (at = i);
+    }
+    if (worst > tolM) {
+      keep[at] = 1;
+      stack.push([a, at], [at, b]);
+    }
+  }
+  const out = ring.filter((_, i) => keep[i]);
+  return out.length >= 4 ? out : ring;
+}
+
 /**
  * Extruded buildings with walls along the real footprints. Houses (low, roughly
  * rectangular, under ~25 m wide) get a hipped or gabled tile roof over their footprint's
  * rectangle; everything else a flat roof. The base sits on the lowest ground under the
  * footprint, so on slopes the uphill walls go into the ground instead of floating.
+ *
+ * `far`: the version for towns kilometres away, about a fifth of the triangles: the same
+ * walls and roofs (same colours), without balconies, parapets, rooftop units, lamp posts and
+ * sheds (under 25 m²).
+ * `roofColour`: a roof's colour [0–255] (from the aerial photo), instead of one from the palette.
  */
-export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = []): Mesh {
+export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = [], o: { far?: boolean; simplifyM?: number; minAreaM2?: number; roofColour?: (poly: OsmPolygon) => readonly number[] | undefined } = {}): Mesh {
   const m = new MeshBuilder();
-  for (const l of lamps) lampPost(m, frame, ground, l);
+  const far = o.far ?? false;
+  if (!far) for (const l of lamps) lampPost(m, frame, ground, l);
   for (const poly of polys) {
     // Outlines whose parts are mapped separately (the parts are drawn instead).
     if (poly.properties["hide_3d"]) continue;
-    const rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
+    let rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
+    if (o.simplifyM) rings = rings.map((r) => simplifyRing(r, o.simplifyM!)).filter((r, k) => k === 0 || r.length >= 4);
     const outer = rings[0]!;
     if (outer.length < 4) continue;
     const areaM2 = Math.abs(ringArea(outer));
-    if (areaM2 < 6) continue;
+    if (areaM2 < (o.minAreaM2 ?? (far ? 25 : 6))) continue;
     let base = Infinity;
     for (const [lon, lat] of poly.rings[0]!) base = Math.min(base, ground(lon, lat));
     base += Number(poly.properties["render_min_height"] ?? 0);
     const tall = Number(poly.properties["render_height"] ?? 5);
     const r = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]));
+    // The roof's own sequence: the same roof whether or not balconies drew numbers before it.
+    const rRoof = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]) ^ 0x9e3779b9);
     // Quantized so the renderer recovers it exactly (it hashes it per window).
     m.seed = Math.floor(r() * 500) / 512;
     const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r);
@@ -340,7 +380,7 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     m.wallH = h1 - base;
     const block = m.wallH > BLOCK_WALL_M;
     const pitch = windowPitch(m.seed, block);
-    const balconies = block && finish.kind !== "glass" ? balconyStyle(r) : undefined;
+    const balconies = block && finish.kind !== "glass" && !far ? balconyStyle(r) : undefined;
     let nBalc = 0;
     const ccw = ringArea(outer) > 0; // positive = counter-clockwise with y up (north)
     for (const ring of rings) {
@@ -368,11 +408,14 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
       }
     }
     const rect = rings.length === 1 && outer.length <= 14 && tall <= 14 ? footprintRect(outer) : undefined;
-    if (rect && rect.fill > 0.82 && rect.short <= 24 && rect.short >= 4) pitchedRoof(m, frame, rect, h1, r);
+    const photoRoof = o.roofColour?.(poly);
+    if (rect && rect.fill > 0.82 && rect.short <= 24 && rect.short >= 4) pitchedRoof(m, frame, rect, h1, rRoof, photoRoof);
     else {
-      flatRoof(m, frame, rings, h1, FLAT[Math.floor(r() * FLAT.length)]!, r() < 0.35 ? 4 : 3);
+      const pal = FLAT[Math.floor(rRoof() * FLAT.length)]!;
+      flatRoof(m, frame, rings, h1, photoRoof ?? pal, rRoof() < 0.35 ? 4 : 3);
+      if (far) continue;
       if (h1 - base >= 4) parapet(m, frame, rings, ccw, base, h1, wall);
-      if (areaM2 > 180 && rings.length === 1) rooftopUnits(m, frame, outer, h1, areaM2, r);
+      if (areaM2 > 180 && rings.length === 1) rooftopUnits(m, frame, outer, h1, areaM2, rRoof);
     }
   }
   return m.build();
@@ -541,8 +584,9 @@ function flatRoof(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][]
 }
 
 /** Hipped (or, one time in three, gabled) roof on a rectangle, 30–40° pitch, 0.4 m eaves. */
-function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof footprintRect>, h: number, r: () => number) {
-  const col = PITCHED[Math.floor(r() * PITCHED.length)]!;
+function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof footprintRect>, h: number, r: () => number, photo?: readonly number[]) {
+  const pal = PITCHED[Math.floor(r() * PITCHED.length)]!;
+  const col = photo ?? pal;
   let [c0, c1, c2, c3] = rect.corners as [[number, number], [number, number], [number, number], [number, number]];
   // Make c0→c1 the long side.
   if (Math.hypot(c1[0] - c0[0], c1[1] - c0[1]) < Math.hypot(c3[0] - c0[0], c3[1] - c0[1])) [c0, c1, c2, c3] = [c1, c2, c3, c0];
