@@ -69,9 +69,11 @@ in vec4 v_color;
 in float v_sway;
 in vec3 v_upEC;
 void main() {
-  // Light: sun on the blade (treated as facing up-ish), sky light, a little translucency.
+  // Lit like the ground under it (Cesium lights the ground with the scene's light at full
+  // strength, plus our sky light: lighting.ts), a little darker where the blade faces away
+  // from the light, a little translucency.
   float sun = max(dot(normalize(v_upEC), czm_lightDirectionEC), 0.0);
-  vec3 c = v_color.rgb * ((0.5 + 0.15 * v_sway) * LOOK_AMBIENT + 0.55 * sun * czm_lightColor);
+  vec3 c = v_color.rgb * (czm_lightColor + LOOK_GROUND_SKY) * (0.78 + 0.22 * sun + 0.15 * v_sway);
   out_FragColor = vec4(c, 1.0);
 }`;
 
