@@ -63,6 +63,20 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
   - cirrus (B7);
   - cloud streets.
 
+**Phase 4, started (3068ca1 and the commit after it):** our own water on Google's tiles (C5).
+- **Bodies:** OSM lakes and ponds, each a plane at Google's water level, measured by height picks with terrain sanity checks.
+- **Outline:** drawn 40 m past OSM's, so Google's shore forms the shoreline.
+- **Light:** sky reflection with Fresnel, the hills reflected below the terrain's horizon round each lake, footprint-faded ripples, and a glittering sun glint.
+- **Rivers:** off, because OSM maps whole gravel beds.
+- **Teal water:** no longer turned neon by the grade.
+- **Grass:** toned down under the grade.
+- **Still open from phase 4:**
+  - the airfield surface and markings;
+  - grass ground cover;
+  - near forests;
+  - ground materials;
+  - teal rims where Google's water reaches past an OSM polygon that isn't levelled yet.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.
