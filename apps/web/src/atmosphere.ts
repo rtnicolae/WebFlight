@@ -484,7 +484,7 @@ export class Atmosphere {
     if (!this.onceDone) {
       frameState.commandList.push(...this.cmds.once);
       this.onceDone = true;
-    }
+    } else if (++this.framesSince > 2 && performance.now() - this.ambientAt > 10_000) this.readAmbient();
     // (Compute commands go in the frame's command list; Cesium runs them first, in order.)
     frameState.commandList.push(...this.cmds.frame);
   }
@@ -505,19 +505,28 @@ export class Atmosphere {
 
   /**
    * The sky's light round the camera in scene units: at the zenith and along the horizon
-   * (averaged round it). Read back once, after the lookup tables are made (a frame in);
-   * undefined before.
+   * (averaged round it); undefined until read. Read back in update() (before anything is drawn
+   * that frame) a few frames in and every 10 s after (the camera moves: the first read came
+   * before it was in place, from a dark sky), kept even when it is zero (night).
+   * It used to be read from the clouds' uniform callback, inside their pass, every frame until
+   * non-zero: at night that was every frame, and the readback's framebuffer binding left
+   * Cesium's state wrong: the cloud pass drew black over the whole screen.
    */
   skyAmbient(): { top: number[]; horizon: number[] } | undefined {
-    if (this.ambientCache) return this.ambientCache;
-    if (!this.onceDone) return undefined;
-    const k = this.scale.x;
-    const top = this.readTexel("sky", 96, 0).slice(0, 3);
-    if (!(top[0]! > 0)) return undefined;
-    const hor = [0, 0, 0];
-    for (const x of [0, 48, 96, 144, 191]) this.readTexel("sky", x, 52).forEach((v, i) => i < 3 && (hor[i]! += v / 5));
-    this.ambientCache = { top: top.map((v) => v * k), horizon: hor.map((v) => v * k) };
     return this.ambientCache;
+  }
+  private framesSince = 0;
+  private ambientAt = -1e9;
+  /** Bumped each time the sky's light is read again. */
+  ambientVersion = 0;
+  private readAmbient(): void {
+    this.ambientAt = performance.now();
+    this.ambientVersion++;
+    const k = this.scale.x;
+    const top = this.readTexel("sky", 96, 0).slice(0, 3).map((v) => (Number.isFinite(v) ? Math.max(0, v) : 0));
+    const hor = [0, 0, 0];
+    for (const x of [0, 48, 96, 144, 191]) this.readTexel("sky", x, 52).forEach((v, i) => i < 3 && (hor[i]! += (Number.isFinite(v) ? Math.max(0, v) : 0) / 5));
+    this.ambientCache = { top: top.map((v) => v * k), horizon: hor.map((v) => v * k) };
   }
 
   /** Debugging: one texel of a lookup table (raw values). */
@@ -529,6 +538,9 @@ export class Atmosphere {
     gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, p);
     fb._unBind();
     fb.destroy();
+    // Cesium caches which framebuffer it has bound and skips binding it again: after ours it
+    // would draw into the wrong one.
+    (context as unknown as { _currentFramebuffer?: unknown })._currentFramebuffer = undefined;
     return Array.from(p);
   }
 

@@ -65,6 +65,9 @@ void main() {
   for (int k = 0; k < 4; k++) {
     vec2 o = vec2(k == 0 || k == 2 ? -1.0 : 1.0, k < 2 ? -1.0 : 1.0) * px;
     vec3 s = texture(colorTexture, v_textureCoordinates + o).rgb;
+    // A NaN or infinite pixel (a pass dividing by zero somewhere) would spread through the blur
+    // to the whole screen: dropped here.
+    if (any(isnan(s)) || any(isinf(s))) s = vec3(0.0);
     c += s * min(1.0, 16.0 / max(max(s.r, max(s.g, s.b)), 1e-4));
   }
   c *= 0.25;
@@ -111,6 +114,10 @@ in vec2 v_textureCoordinates;
 void main() {
   vec2 uv = v_textureCoordinates;
   vec4 f = texture(colorTexture, uv);
+#ifdef NAN_DEBUG
+  if (any(isnan(f.rgb)) || any(isinf(f.rgb))) { out_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
+#endif
+  if (any(isnan(f.rgb)) || any(isinf(f.rgb))) f.rgb = vec3(0.0);
   vec3 b = 0.6 * texture(u_bloomNear, uv).rgb + 0.4 * texture(u_bloomWide, uv).rgb;
   vec3 c = max((f.rgb + b * u_bloom) * u_exposure, vec3(0.0));
   // The grade, in linear light before the tonemap:
@@ -161,7 +168,7 @@ export class HdrFinish {
     const nearV = blur(nearH.name, 0, 0.25);
     const wideH = blur(nearV.name, 1, 0.125);
     const wideV = blur(wideH.name, 0, 0.125);
-    const finish = new PostProcessStage({ fragmentShader: FINISH_FS, uniforms: { u_bloomNear: nearV.name, u_bloomWide: wideV.name, u_exposure: () => st.exposure, u_bloom: () => st.bloom, u_grade: () => new Cartesian4(st.saturation, st.contrast, 1 - st.tone, st.vignette) } });
+    const finish = new PostProcessStage({ fragmentShader: (new URLSearchParams(location.search).get("nandbg") === "1" ? "#define NAN_DEBUG\n" : "") + FINISH_FS, uniforms: { u_bloomNear: nearV.name, u_bloomWide: wideV.name, u_exposure: () => st.exposure, u_bloom: () => st.bloom, u_grade: () => new Cartesian4(st.saturation, st.contrast, 1 - st.tone, st.vignette) } });
     this.stage = new PostProcessStageComposite({ stages: [bright, nearH, nearV, wideH, wideV, finish], inputPreviousStageTexture: false });
     viewer.scene.postProcessStages.add(this.stage);
   }
