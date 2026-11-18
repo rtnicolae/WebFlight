@@ -51,6 +51,8 @@ export const VOLUME_RANGE_M = 45_000;
 /** A cloud's size [m] and its towers: east, north, centre height, radius [m] (TOWERS × 4). */
 export interface CloudGeometry {
   radius: number;
+  /** Horizontal reach of the cloud from its centre [m]. */
+  reach: number;
   height: number;
   seed: number;
   towers: Float32Array;
@@ -78,7 +80,11 @@ export function cloudGeometry(spec: CloudSpec): CloudGeometry {
     const cz = k === 0 ? H * 0.38 : Math.min(br * 0.85, H * (0.15 + 0.35 * z));
     towers.set([k === 0 ? 0 : rr * R * 0.65 * Math.cos(a), k === 0 ? 0 : rr * R * 0.65 * Math.sin(a), cz, br], k * 4);
   }
-  return { radius: R, height: H, seed: (h % 997) * 0.0137, towers };
+  // How far out cloud can be: each tower's centre distance plus its radius, and the noise's
+  // reach beyond (density is zero where the towers' field is below −0.3).
+  let reach = 0;
+  for (let k = 0; k < TOWERS; k++) reach = Math.max(reach, Math.hypot(towers[k * 4]!, towers[k * 4 + 1]!) + towers[k * 4 + 3]! * 1.3);
+  return { radius: R, height: H, seed: (h % 997) * 0.0137, towers, reach };
 }
 
 const FS = /* glsl */ `${SCENE_DIST_GLSL}${AERIAL_GLSL}
@@ -90,7 +96,8 @@ uniform sampler3D u_shape;
 uniform sampler3D u_detail;
 uniform sampler2D u_towers;   // TOWERS × MAX: east, north, centre height, radius [m]
 uniform vec4 u_c[${MAX}];     // base centre relative to the camera (world axes) [m], radius [m]
-uniform vec4 u_d[${MAX}];     // height [m], opacity, noise offset, 0
+uniform vec4 u_d[${MAX}];     // height [m], opacity, noise offset, reach (bounding radius) [m]
+#define SLOTS 6
 uniform int u_n;
 uniform vec3 u_up;            // the camera's up (world)
 uniform vec3 u_E;             // and its east, north
@@ -121,7 +128,9 @@ float density(int i, vec3 q, bool detail) {
     vec4 b = g_b[k];
     // Wide clouds under the height cap: towers squashed to fit (round tops, not cut ones).
     float vz = min(1.0, (H - b.z) / (b.w * 1.05));
-    s = max(s, 1.0 - length(vec3(xy - b.xy, (h - b.z) * 1.05 / max(vz, 0.3))) / b.w);
+    // (Clamped at 0.3 before: low wide clouds had their tower tops sliced flat by the height
+    // cap, like pills.)
+    s = max(s, 1.0 - length(vec3(xy - b.xy, (h - b.z) * 1.05 / max(vz, 0.1))) / b.w);
   }
   if (s < -0.3) return 0.0;
   float hn = h / H;
@@ -164,30 +173,42 @@ void main() {
   float cosT = dot(dir, sun);
   float ph0 = phase2(cosT, 1.0), ph1 = phase2(cosT, 0.5), ph2 = phase2(cosT, 0.25);
 
-  // The clouds this ray passes through, nearest first (up to 4).
-  float t0s[4] = float[4](1e9, 1e9, 1e9, 1e9);
-  float t1s[4] = float[4](0.0, 0.0, 0.0, 0.0);
-  int ids[4] = int[4](0, 0, 0, 0);
+  // The clouds this ray passes through, nearest first (up to SLOTS), each by where the ray is
+  // inside its upright cylinder (radius: its towers' reach) between base and top. Bounding
+  // spheres were far looser: near the horizon four nearly empty ones filled the slots and the
+  // cloud really in view was dropped, cut along their arcs (dark triangles).
+  float t0s[SLOTS];
+  float t1s[SLOTS];
+  int ids[SLOTS];
+  for (int j = 0; j < SLOTS; j++) { t0s[j] = 1e9; t1s[j] = 0.0; ids[j] = 0; }
   int hits = 0;
+  vec2 dxy = vec2(dot(dir, u_E), dot(dir, u_N));
+  float dz = dot(dir, u_up), A = max(dot(dxy, dxy), 1e-9);
   for (int i = 0; i < ${MAX}; i++) {
     if (i >= u_n) break;
-    float R = u_c[i].w, H = u_d[i].x;
-    vec3 ctr = u_c[i].xyz + u_up * (H * 0.5);
-    // Towers reach 0.65 R + 0.54 R out, plus the noise's billows.
-    float rad = length(vec2(R * 1.3, H * 0.6));
-    float b = dot(ctr, dir);
-    float disc = b * b - dot(ctr, ctr) + rad * rad;
+    float H = u_d[i].x, Rc = u_d[i].w;
+    vec3 o = -u_c[i].xyz;
+    vec2 oxy = vec2(dot(o, u_E), dot(o, u_N));
+    float oz = dot(o, u_up);
+    float B = dot(oxy, dxy), disc = B * B - A * (dot(oxy, oxy) - Rc * Rc);
     if (disc <= 0.0) continue;
     float sq = sqrt(disc);
-    float a0 = max(b - sq, 0.0), a1 = min(b + sq, sceneT);
+    float a0 = (-B - sq) / A, a1 = (-B + sq) / A;
+    if (abs(dz) > 1e-6) {
+      float za = -oz / dz, zb = (H - oz) / dz;
+      a0 = max(a0, min(za, zb));
+      a1 = min(a1, max(za, zb));
+    } else if (oz < 0.0 || oz > H) continue;
+    a0 = max(a0, 0.0);
+    a1 = min(a1, sceneT);
     if (a1 <= a0) continue;
-    if (hits == 4 && a0 >= t0s[3]) continue;
-    int k = min(hits, 3);
-    for (int j = 3; j > 0; j--) {
+    if (hits == SLOTS && a0 >= t0s[SLOTS - 1]) continue;
+    int k = min(hits, SLOTS - 1);
+    for (int j = SLOTS - 1; j > 0; j--) {
       if (j <= k && t0s[j - 1] > a0) { t0s[j] = t0s[j - 1]; t1s[j] = t1s[j - 1]; ids[j] = ids[j - 1]; k = j - 1; }
     }
     t0s[k] = a0; t1s[k] = a1; ids[k] = i;
-    hits = min(hits + 1, 4);
+    hits = min(hits + 1, SLOTS);
   }
   if (hits == 0) { out_FragColor = vec4(0.0); return; }
 
@@ -198,7 +219,7 @@ void main() {
   // Per-pixel start offset against banding (the blend's filter smooths the pattern it leaves).
   float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   vec3 sunCol = czm_lightColor * u_light.y;
-  for (int h = 0; h < 4; h++) {
+  for (int h = 0; h < SLOTS; h++) {
     if (h >= hits || T < 0.02) break;
     int i = ids[h];
     float R = u_c[i].w, H = u_d[i].x;
@@ -431,9 +452,9 @@ export class VolumetricClouds {
       .map((c) => ({ c, d: Cartesian3.distance(c.base, cam) }))
       .filter((x) => {
         if (x.d > VOLUME_RANGE_M * 1.4) return false;
-        const R = x.c.geo.radius, H = x.c.geo.height;
+        const H = x.c.geo.height;
         Cartesian3.add(x.c.base, Cartesian3.multiplyByScalar(this.up, H * 0.5, bs.center), bs.center);
-        bs.radius = Math.hypot(R * 1.3, H * 0.6) * 1.1;
+        bs.radius = Math.hypot(x.c.geo.reach, H * 0.5) * 1.05;
         return cull.computeVisibility(bs) !== Intersect.OUTSIDE;
       })
       .sort((a, b) => a.d - b.d)
@@ -447,6 +468,7 @@ export class VolumetricClouds {
       this.d[i]!.x = c.geo.height;
       this.d[i]!.y = c.spec.opacity;
       this.d[i]!.z = c.geo.seed;
+      this.d[i]!.w = c.geo.reach;
       this.towerData.set(c.geo.towers, i * TOWERS * 4);
     });
     (this.tex.towers as { copyFrom(o: unknown): void }).copyFrom({ source: { width: TOWERS, height: MAX, arrayBufferView: this.towerData } });
