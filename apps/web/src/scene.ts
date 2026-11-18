@@ -76,11 +76,19 @@ export function shadowReachFor(aglM: number): number {
 }
 
 /** Shadows reach as far as the ground the glider sees at its height (unless ?shadowdist= fixed them). */
-export function followShadows(viewer: Viewer, aglM: number): void {
-  if (fixedShadowReach || !viewer.shadows) return;
+export function followShadows(viewer: Viewer, aglM: number, cockpit = false): void {
+  if (!viewer.shadows) return;
+  // Cascade depths (Cesium clamps them like this near a small model): from the cockpit the
+  // nearest is 2.5 m deep, so the canopy frame's shadow on the sill half a metre from the eye
+  // is sharp (with the chase view's 25 m one, ~1.7 cm a shadow texel, it fell in steps).
+  const caps = (viewer.scene.shadowMap as unknown as { _maximumCascadeDistances?: number[] })._maximumCascadeDistances;
+  const want3 = cockpit ? COCKPIT_CASCADES : CHASE_CASCADES;
+  if (caps?.length === 4 && caps[0] !== want3[0]) caps.splice(0, 3, ...want3);
+  if (fixedShadowReach) return;
   const want = Math.round(shadowReachFor(aglM) / 50) * 50;
   if (viewer.scene.shadowMap.maximumDistance !== want) viewer.scene.shadowMap.maximumDistance = want;
 }
+const CHASE_CASCADES = [25, 60, 150], COCKPIT_CASCADES = [2.5, 20, 100];
 
 export function createViewer(container: HTMLElement, opts: LookOptions): Viewer {
   const viewer = new Viewer(container, {
@@ -159,7 +167,7 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
     fixedShadowReach = opts.shadowDistanceM !== undefined;
     sm.maximumDistance = opts.shadowDistanceM ?? shadowReachFor(0);
     const caps = (sm as unknown as { _maximumCascadeDistances?: number[] })._maximumCascadeDistances;
-    if (caps?.length === 4) caps.splice(0, 3, 25, 60, 150);
+    if (caps?.length === 4) caps.splice(0, 3, ...CHASE_CASCADES);
     sm.darkness = 0.35;
     // More bias than Cesium's defaults: walls nearly edge-on to the sun showed diagonal
     // stripes (shadow acne). Internal, so guarded.

@@ -322,7 +322,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
     gliderAt = { latDeg: g("position/lat-geod-deg"), lonDeg: g("position/long-gc-deg") };
-    followShadows(viewer, g("position/h-agl-ft") * M_PER_FT);
+    followShadows(viewer, g("position/h-agl-ft") * M_PER_FT, cam.mode === "cockpit");
     google3d?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/h-agl-ft") * M_PER_FT);
     // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).
     pinGround(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/geod-alt-ft") * M_PER_FT + 4);
