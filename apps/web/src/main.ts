@@ -1,5 +1,5 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
-import { Cartographic, JulianDate } from "cesium";
+import { JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
 import { applyLighting, setLook } from "./lighting.ts";
 import "./style.css";
@@ -14,12 +14,12 @@ import { addRunway, createViewer, followShadows, ThermalLayer, thermalView } fro
 import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
-import { addImagery, highResPhotoAt, photoTileUrl, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
+import { addImagery, highResPhotoAt, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import { soaringFrom, sunPosition } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
-import { GrassLayer } from "./grass/grass-layer.ts";
+import { GrassField } from "./grass/grass-field.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
@@ -166,7 +166,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const osmTiles = await openFreeMapTiles();
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
-      ? new GrassLayer(viewer, osmTiles, S2CLOUDLESS, { ...(photoTileUrl ? { photoUrl: photoTileUrl } : {}), cellM: 20, radiusM: QUALITY === "ultra" ? 55 : 38, density: QUALITY === "ultra" ? 20 : 11, maxHeightM: 60 })
+      ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, ...(google3d ? { google3d } : {}) }, F.latDeg)
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
@@ -235,6 +235,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
         case "environment":
           thermalLayer.update(m.thermals);
           air = { windFromDeg: m.windFromDeg, windKt: m.windKt, thermalLiftMs: m.thermalLiftMs, ridgeLiftMs: m.ridgeLiftMs };
+          grass?.setWind(m.windFromDeg, m.windKt);
           break;
         case "messages":
           for (const l of m.lines) hud.message(l);
@@ -324,7 +325,11 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).
     pinGround(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/geod-alt-ft") * M_PER_FT + 4);
     // Grass follows the glider, not the camera: looking around rebuilds nothing.
-    if (grass) grass.update(Cartographic.fromDegrees(g("position/long-gc-deg"), g("position/lat-geod-deg"), g("position/h-agl-ft") * M_PER_FT), 0);
+    if (grass) {
+      const camC = viewer.camera.positionCartographic;
+      const camGround = renderTerrain.heightAt((camC.latitude * 180) / Math.PI, (camC.longitude * 180) / Math.PI);
+      grass.follow(g("position/lat-geod-deg"), g("position/long-gc-deg"), camGround === undefined ? 0 : camC.height - camGround);
+    }
     let launchText: string | undefined;
     if (LAUNCH) {
       const connected = g(LAUNCH === "winch" ? "/sim/hitches/winch/open" : "/sim/hitches/aerotow/open") === 0;
@@ -363,7 +368,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   if (DYNRES) life.onClose(() => (viewer.resolutionScale = 1));
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 }
 
