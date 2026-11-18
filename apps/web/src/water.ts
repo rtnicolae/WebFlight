@@ -261,6 +261,38 @@ void main() {
   out_FragColor = c;
 }`;
 
+/**
+ * After the reflections: water pixels averaged with their neighbours above and below (rippled
+ * water smears reflections vertically), only over water, more on a rougher surface (wind). It
+ * also hides the march's comb along reflected edges.
+ */
+const SMEAR_FS = /* glsl */ `${SCENE_DIST_GLSL}
+uniform sampler2D colorTexture;
+uniform sampler2D depthTexture;
+uniform sampler2D u_mask;
+uniform float u_rough;
+in vec2 v_textureCoordinates;
+bool isWater(vec2 q) {
+  vec4 m = texture(u_mask, q);
+  float d = wfSceneDist(depthTexture, q);
+  return m.r > 0.5 && abs(m.b - d) < 0.015 * d + 0.5;
+}
+void main() {
+  vec2 uv = v_textureCoordinates;
+  vec4 c = texture(colorTexture, uv);
+  if (!isWater(uv)) { out_FragColor = c; return; }
+  vec2 px = vec2(0.0, 1.0 / float(textureSize(colorTexture, 0).y)) * u_rough;
+  vec3 sum = c.rgb;
+  float w = 1.0;
+  for (int k = 1; k <= 3; k++) {
+    float wk = 1.0 - float(k) / 4.0;
+    vec2 a = uv + px * float(k), b = uv - px * float(k);
+    if (isWater(a)) { sum += texture(colorTexture, a).rgb * wk; w += wk; }
+    if (isWater(b)) { sum += texture(colorTexture, b).rgb * wk; w += wk; }
+  }
+  out_FragColor = vec4(sum / w, c.a);
+}`;
+
 interface Body {
   poly: WaterPolygon;
   /** Frame at the polygon's centre on the ellipsoid; the plane is raised by `level`. */
@@ -300,6 +332,7 @@ export class Water {
   /** Behind the loading screen: the levelling may take more of each frame. */
   loading = false;
   readonly reflect: PostProcessStage;
+  readonly smear: PostProcessStage;
   /** The reflection pass's mask target (drawing-buffer sized) and its program. */
   private mask: { tex: unknown; fb: unknown; w: number; h: number; clear: unknown } | undefined;
 
@@ -334,7 +367,13 @@ export class Water {
       },
     });
     viewer.scene.postProcessStages.add(this.reflect);
-    if (new URLSearchParams(location.search).get("wssr") === "0") this.reflect.enabled = false;
+    this.smear = new PostProcessStage({
+      fragmentShader: SMEAR_FS,
+      pixelDatatype: C.PixelDatatype.HALF_FLOAT,
+      uniforms: { u_mask: () => this.mask?.tex ?? null, u_rough: () => 1.2 + 2.5 * this.wind.strength },
+    });
+    viewer.scene.postProcessStages.add(this.smear);
+    if (new URLSearchParams(location.search).get("wssr") === "0") this.reflect.enabled = this.smear.enabled = false;
   }
 
   /** The day's wind: from [deg], speed [kt]. */
