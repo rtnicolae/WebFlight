@@ -22,7 +22,7 @@
  * Ghimbav), vsync off: 124 fps with these, 161 with the sprite puffs (~1.5 ms a frame); the
  * same from above the tops.
  */
-import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
+import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PixelDatatype, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import { LOOK } from "./lighting.ts";
 
@@ -291,9 +291,15 @@ export class VolumetricClouds {
   constructor(private readonly viewer: Viewer) {
     const amb = LOOK.ambient;
     const self = this;
+    // In HDR (hdr.ts) the march's light is linear radiance going into a linear scene, kept
+    // above white in half floats; the haze colour below is given in display values.
+    const hdr = viewer.scene.highDynamicRange;
+    const lin = (v: number) => (hdr ? Math.pow(v, 2.2) : v);
+    const pixelDatatype = hdr ? PixelDatatype.HALF_FLOAT : PixelDatatype.UNSIGNED_BYTE;
     const march = new PostProcessStage({
       // Half resolution in each direction: a quarter of the pixels to march.
       textureScale: 0.5,
+      pixelDatatype,
       fragmentShader: FS,
       uniforms: {
         u_c: () => (self.refresh(), self.c),
@@ -306,13 +312,13 @@ export class VolumetricClouds {
         // A little less sky light than the sun's: sunlit faces stand out from the shaded ones.
         u_ambTop: new Cartesian3(0.6 * amb[0]!, 0.67 * amb[1]!, 0.8 * amb[2]!),
         u_ambBase: new Cartesian3(0.3 * amb[0]!, 0.33 * amb[1]!, 0.4 * amb[2]!),
-        u_haze: new Cartesian3(0.72 * LOOK.ground, 0.78 * LOOK.ground, 0.86 * LOOK.ground),
+        u_haze: new Cartesian3(lin(0.72 * LOOK.ground), lin(0.78 * LOOK.ground), lin(0.86 * LOOK.ground)),
         u_fade: new Cartesian2(15_000, 70_000),
         u_sigma: 0.045,
         u_steps: 40,
       },
     });
-    const blend = new PostProcessStage({ fragmentShader: BLEND_FS, uniforms: { u_clouds: march.name } });
+    const blend = new PostProcessStage({ fragmentShader: BLEND_FS, pixelDatatype, uniforms: { u_clouds: march.name } });
     this.stage = new PostProcessStageComposite({ stages: [march, blend], inputPreviousStageTexture: false });
     viewer.scene.postProcessStages.add(this.stage);
   }

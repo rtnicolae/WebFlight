@@ -69,7 +69,7 @@ void main() {
   ${disc ? `float cs = dot(d, ${v3(sunDir)});
   col = mix(col, vec3(1.0, 0.86, 0.62), smoothstep(0.999986, 0.99999, cs));
   col += vec3(1.0, 0.7, 0.4) * 0.35 * pow(max(cs, 0.0), 600.0);` : ""}
-  out_FragColor = vec4(col, 1.0);
+  out_FragColor = czm_gammaCorrect(vec4(col, 1.0));
 }`;
   const VS = `
 in vec3 position3DHigh;

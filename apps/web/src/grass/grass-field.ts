@@ -269,7 +269,8 @@ void main() {
   // (Dry tips bleach paler.)
   vec3 col = mix(v_col, v_col * mix(vec3(1.12, 1.15, 0.8), vec3(1.14, 1.1, 0.98), v_dry), smoothstep(0.5, 1.0, t));
   vec3 c = col * (sun * diff * 0.9 + sky) * ao + col * mix(vec3(1.05, 1.15, 0.55), vec3(1.1, 0.95, 0.6), v_dry) * sun * back * 0.7 + sun * spec;
-  out_FragColor = vec4(c, 1.0);
+  // Display values; linear in HDR (czm_gammaCorrect).
+  out_FragColor = czm_gammaCorrect(vec4(c, 1.0));
 }`;
 
 export interface GrassFieldOptions {

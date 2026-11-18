@@ -21,6 +21,7 @@ import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
 import { GrassField } from "./grass/grass-field.ts";
 import { DynamicResolution } from "./dynres.ts";
+import { disableHdr, enableHdr, HdrFinish } from "./hdr.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
@@ -46,9 +47,10 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *     globe, our OSM buildings and trees; google3d.ts) | globe (the globe with the aerial photo)
  *   g3dsse=N          Google 3D detail (default 8, quality=low 16; lower is finer and slower)
  *   gdetail=0         no close-range ground texture over the photos
- *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
+ *   quality=low | high (default: shadows, FXAA; HDR in flight) | ultra (+ 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
  *   dynres=0 | <scale> fixed render scale (default: 1.0–1.5× following the frame time, dynres.ts)
+ *   hdr=0             LDR (default: HDR with bloom and our tonemap, hdr.ts; exposure=, bloom= tune it)
  *   pin=<metres>      keep the ground within that radius of the glider loaded (default: off)
  *   shadowdist=M      how far shadows reach [m] (default: 1–4 km with the height above ground)
  *   far=N             distant buildings out to ±N zoom-14 tiles, ~1.7 km each (default 3, ultra 5; 0: off)
@@ -143,6 +145,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   viewer.clock.currentTime = JulianDate.fromDate(TIME);
   const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
   setLook(sun.elevationDeg);
+  // HDR for the flight (hdr.ts), before the lighting and the clouds read it. ?hdr=0: off.
+  const hdr = params.get("hdr") !== "0" && QUALITY !== "low" && enableHdr(viewer);
+  if (hdr) life.onClose(() => disableHdr(viewer));
   applyLighting(viewer, sun, F.latDeg, F.lonDeg);
   google3d?.relight();
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
@@ -156,6 +161,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const cumulus = soaringFrom(F.weather).cumulus;
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined);
   if (google3d) life.onClose(() => google3d.setCloudShadows([], sun));
+  // After the clouds: bloom, exposure, tonemap (?exposure=, ?bloom= for tuning).
+  const hdrFinish = hdr ? new HdrFinish(viewer, { ...(params.has("exposure") ? { exposure: Number(params.get("exposure")) } : {}), ...(params.has("bloom") ? { bloom: Number(params.get("bloom")) } : {}) }) : undefined;
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
@@ -363,7 +370,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

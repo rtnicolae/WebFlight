@@ -70,6 +70,8 @@ function photoLight(viewer: Viewer): Cartesian3 {
  * (a WeakMap on Cesium's attribute objects; tile geometry never changes). Internal API, so
  * guarded: without it picks work as before.
  */
+/** The fog's light on the tiles in HDR, relative to LDR (see relight). */
+const HDR_FOG = 0.45;
 let readbackCached = false;
 function cachePickReadback(): void {
   if (readbackCached) return;
@@ -227,7 +229,10 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   relight(): void {
     const scene = this.viewer.scene, g = scene.globe, a = scene.atmosphere;
     (this.tileset.customShader as CustomShader | undefined)?.setUniform("u_photoLight", photoLight(this.viewer));
-    a.lightIntensity = g.atmosphereLightIntensity;
+    // In HDR the fog colour is blended in before the tonemap (in LDR after it): much brighter,
+    // so scaled down to match (hdr.ts). ?hdrfog= for tuning.
+    const hdrFog = Number(new URLSearchParams(location.search).get("hdrfog") ?? HDR_FOG);
+    a.lightIntensity = g.atmosphereLightIntensity * (scene.highDynamicRange ? hdrFog : 1);
     a.hueShift = g.atmosphereHueShift;
     // After sunset our ground's haze turns to a dark blue-grey (lighting.ts twilightHaze);
     // Cesium's would glow orange on the far ridges: greyed and darkened as far.
