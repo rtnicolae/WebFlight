@@ -65,6 +65,7 @@ uniform sampler2D u_mask, u_params, u_height, u_corr;
 uniform vec2 u_gpatch;      // the field centre's global patch index
 uniform vec3 u_cam;         // camera, field metres
 uniform vec4 u_ring;        // r0, r1, blades per patch, density at full
+uniform float u_seg;        // segments per blade in this ring
 uniform vec4 u_wind;        // direction (x, y), strength 0–1, time [s]
 uniform float u_fade;       // 0–1 with the camera's height
 out vec3 v_positionEC;
@@ -73,6 +74,7 @@ out vec3 v_nEC;
 out vec3 v_sideEC;
 out vec2 v_tu;              // t, across (−1 … 1)
 out float v_kind;           // 0 blade, 1 seed stalk, 2 flower
+out float v_dry;            // 0 lush … 1 dry
 
 const float HALF = ${(FIELD_M / 2).toFixed(1)};
 float h11(vec3 p) { p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yzx + 33.33); return fract((p.x + p.y) * p.z); }
@@ -139,7 +141,9 @@ void main() {
   float flowerField = smoothstep(0.55, 0.85, vnoise(world * 0.05 + 11.0));
   // Flowers and seed stalks: one blade of a tuft (with tufts: a tuft's share is K times a blade's).
   float kShare = min(1.0, TUFT_K * 0.6);
-  if (blade < 0.5 && meadow > 0.5 && r4 < (0.012 + 0.05 * flowerField) * kShare) kind = 2.0;
+  // (Flowers only where blades have segments enough to show a head (else the colour runs down
+  // the whole blade: purple grass), fewer in dry grass.)
+  if (u_seg > 2.5 && blade < 0.5 && meadow > 0.5 && r4 < (0.012 + 0.05 * flowerField) * kShare * (0.3 + 0.7 * lush)) kind = 2.0;
   else if (blade < 0.5 && meadow > 0.5 && r4 < 0.11 * kShare) kind = 1.0;
   float H = mix(0.07 + 0.08 * r5, (0.2 + 0.32 * r5) * (0.55 + 0.75 * tallPatch), meadow);
   if (kind > 0.5) H *= 1.25;
@@ -181,11 +185,17 @@ void main() {
   v_kind = kind;
   // Colour: the ground's, varied per blade and in patches (drier, lusher).
   // Grass is lighter and yellower than Sentinel-2's 10 m average of it (soil, shade in it).
-  vec3 c = m.rgb * vec3(1.18, 1.24, 0.95) + vec3(0.02, 0.03, 0.0);
+  float dry = max(smoothstep(0.45, 0.9, vnoise(world * 0.09 + 5.0)) * meadow * 0.6, 1.0 - lush);
+  vec3 c = m.rgb * mix(vec3(1.18, 1.24, 0.95), vec3(1.04, 1.0, 0.92), dry) + vec3(0.02, 0.03, 0.0) * (1.0 - dry);
   c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.15);
-  float dry = max(smoothstep(0.45, 0.9, vnoise(world * 0.09 + 5.0)) * meadow, (1.0 - lush) * 0.75);
-  c = mix(c, vec3(0.62, 0.6, 0.32), dry * (0.35 + 0.4 * r4));
+  // Dry blades: straw, a third of them dead grey-brown; partly dry tufts keep green near the
+  // root (the new growth), going straw towards the tips.
+  vec3 straw = b3 > 0.68 ? vec3(0.5, 0.45, 0.34) : mix(vec3(0.76, 0.66, 0.42), vec3(0.68, 0.6, 0.38), b2);
+  float partial = clamp(dry * (1.0 - dry) * 4.0, 0.0, 1.0);
+  float dryHere = dry * (0.55 + 0.35 * r4) * mix(1.0, smoothstep(0.0, 0.7, a_tpl.x), partial);
+  c = mix(c, straw, dryHere);
   c = mix(c, vec3(0.16, 0.28, 0.08), (1.0 - dry) * 0.25 * r5);
+  v_dry = dry;
   // Per-blade brightness: lively close up, calmer further out (speckle at 20 m).
   c *= 1.0 + ((TUFT_K > 1.0 ? 0.5 * (r2 + b2) : r2) - 0.5) * 0.3 * (1.0 - 0.7 * smoothstep(4.0, 25.0, d));
   if (kind > 1.5) {
@@ -204,6 +214,7 @@ in vec3 v_nEC;
 in vec3 v_sideEC;
 in vec2 v_tu;
 in float v_kind;
+in float v_dry;
 void main() {
   vec3 V = normalize(-v_positionEC);
   vec3 n = normalize(v_nEC);
@@ -213,18 +224,21 @@ void main() {
   vec3 L = czm_lightDirectionEC;
   float t = v_tu.x;
   // Shade of the grass above: dark roots, lit tips.
-  float ao = mix(0.55, 1.0, smoothstep(0.0, 0.7, t));
+  // (Dry tufts stand sparse on open ground: less shade from the grass round them.)
+  float ao = mix(mix(0.55, 0.72, v_dry), 1.0, smoothstep(0.0, 0.7, t));
   float ndl = dot(n, L);
   float diff = max(ndl, 0.0) * 0.6 + 0.4;
   // Light through the blade, seen against the sun.
-  float back = pow(max(dot(-V, L), 0.0), 3.0) * (0.35 + 0.65 * t) * (v_kind > 1.5 && t > 0.86 ? 0.2 : 1.0);
+  // Dry blades are thin and papery: less light through them, and warm.
+  float back = pow(max(dot(-V, L), 0.0), 3.0) * (0.35 + 0.65 * t) * (v_kind > 1.5 && t > 0.86 ? 0.2 : 1.0) * mix(1.0, 0.55, v_dry);
   vec3 H = normalize(L + V);
-  float spec = pow(max(dot(n, H), 0.0), 40.0) * 0.12 * t;
+  float spec = pow(max(dot(n, H), 0.0), 40.0) * 0.12 * t * mix(1.0, 0.45, v_dry);
   vec3 sun = czm_lightColor;
   vec3 sky = LOOK_AMBIENT * 0.5 + LOOK_GROUND_SKY;
   // Tips catch more light and go yellow-green.
-  vec3 col = mix(v_col, v_col * vec3(1.12, 1.15, 0.8), smoothstep(0.5, 1.0, t));
-  vec3 c = col * (sun * diff * 0.9 + sky) * ao + col * vec3(1.05, 1.15, 0.55) * sun * back * 0.7 + sun * spec;
+  // (Dry tips bleach paler.)
+  vec3 col = mix(v_col, v_col * mix(vec3(1.12, 1.15, 0.8), vec3(1.14, 1.1, 0.98), v_dry), smoothstep(0.5, 1.0, t));
+  vec3 c = col * (sun * diff * 0.9 + sky) * ao + col * mix(vec3(1.05, 1.15, 0.55), vec3(1.1, 0.95, 0.6), v_dry) * sun * back * 0.7 + sun * spec;
   out_FragColor = vec4(c, 1.0);
 }`;
 
@@ -279,6 +293,16 @@ export class GrassField {
     this.kx = 111_320 * Math.cos((latDeg * Math.PI) / 180);
     this.worker.onmessage = (e: MessageEvent<FieldResult & { error?: string }>) => this.received(e.data);
     viewer.scene.primitives.add(this);
+  }
+
+  /** The maps round the glider are in (grass can be drawn). */
+  get ready(): boolean {
+    return !!this.field;
+  }
+
+  /** Not wanted now (the camera too high above the ground). */
+  get idle(): boolean {
+    return this.fade <= 0;
   }
 
   /** The day's wind: from [deg], speed [kt]. */
@@ -504,6 +528,7 @@ export class GrassField {
         u_ring: () => new Cesium.Cartesian4(ring.r0, ring.r1, per, D0),
         u_wind: () => new Cesium.Cartesian4(w.dir.x, w.dir.y, w.strength, t),
         u_fade: () => fade,
+        u_seg: () => ring.segments,
       };
       frameState.commandList.push(rb.cmd);
     });

@@ -194,22 +194,37 @@ async function build(q: FieldRequest): Promise<FieldResult> {
       const [lon, lat] = frame.lonLat(e, n);
       const [r, g, b] = satAt(lon, lat);
       // The ground's colour decides: saturated green is lush grass; the same hue washed out
-      // (low saturation) is degraded grass, sparse and dry; brown or grey with no green in it
-      // (soil, ploughed land, gravel) has none.
+      // (low saturation) is degraded grass, sparse and dry; yellow (dry meadow, hay, stubble) has
+      // sparse dry tufts; brown or grey (soil, ploughed land, gravel) has none.
       const green = g - (r + b) / 2;
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b), sat = mx > 0 ? (mx - mn) / mx : 0;
       const smooth = (a0: number, a1: number, x: number) => {
         const t = Math.min(1, Math.max(0, (x - a0) / (a1 - a0)));
         return t * t * (3 - 2 * t);
       };
-      const hasGreen = smooth(-2, 6, green);
-      const lush = smooth(0.12, 0.32, sat) * smooth(2, 12, green);
-      const cov = (A[(cy * R + i) * 4]! / 255) * hasGreen * (0.3 + 0.7 * lush);
+      // Hue [deg] (0 when grey).
+      let hue = 0;
+      if (mx > mn) {
+        const d = mx - mn;
+        hue = mx === r ? 60 * (((g - b) / d) % 6) : mx === g ? 60 * ((b - r) / d + 2) : 60 * ((r - g) / d + 4);
+        if (hue < 0) hue += 360;
+      }
+      const lum = 0.3 * r + 0.59 * g + 0.11 * b;
+      const greenHue = smooth(62, 76, hue) * (1 - smooth(170, 190, hue));
+      const yellowHue = smooth(36, 46, hue) * (1 - smooth(62, 76, hue));
+      const hasGreen = smooth(-2, 6, green) * Math.max(greenHue, 0.15);
+      const lush = smooth(0.12, 0.32, sat) * smooth(2, 12, green) * greenHue;
+      const yellow = yellowHue * smooth(0.12, 0.22, sat) * smooth(60, 90, lum);
+      // Mown airfield grass is kept: there wherever it isn't paved, denser where greener.
+      const mownHere = M[(cy * R + i) * 4]! / 255;
+      const cov = (A[(cy * R + i) * 4]! / 255) * Math.max(hasGreen * (0.3 + 0.7 * lush), 0.28 * yellow, mownHere * (0.55 + 0.45 * Math.max(hasGreen, lush)));
       const o = (j * R + i) * 4;
-      // Towards lush grass: Sentinel-2's pixels mix in soil and shade.
-      mask[o] = Math.min(255, r * 1.15 * 0.4 + 98 * 0.6);
-      mask[o + 1] = Math.min(255, g * 1.25 * 0.4 + 128 * 0.6);
-      mask[o + 2] = Math.min(255, b * 0.95 * 0.4 + 56 * 0.6);
+      // Colour: towards lush grass where it is green (Sentinel-2's pixels mix in soil and shade),
+      // towards straw where it is dry.
+      const gK = Math.max(lush, hasGreen * 0.5) * (1 - yellow * 0.8);
+      const dryC = [r * 0.35 + 176 * 0.65, g * 0.35 + 156 * 0.65, b * 0.35 + 100 * 0.65];
+      const lushC = [r * 1.15 * 0.4 + 98 * 0.6, g * 1.25 * 0.4 + 128 * 0.6, b * 0.95 * 0.4 + 56 * 0.6];
+      for (let k = 0; k < 3; k++) mask[o + k] = Math.min(255, dryC[k]! + (lushC[k]! - dryC[k]!) * gK);
       mask[o + 3] = Math.round(255 * cov);
       params[o] = M[(cy * R + i) * 4]!;
       params[o + 1] = Math.round(255 * lush);
