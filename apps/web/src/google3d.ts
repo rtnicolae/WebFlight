@@ -42,6 +42,7 @@
  */
 import { Cartesian2, Cartesian3, Cartographic, createGooglePhotorealistic3DTileset, CustomShader, RequestScheduler, DynamicAtmosphereLightingType, Ellipsoid, Math as CesiumMath, Matrix4, ShadowMode, TextureMagnificationFilter, TextureMinificationFilter, TextureUniform, UniformType, type Cesium3DTileset, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
+import * as CesiumAll from "cesium";
 import { DETAIL_GLSL, detailSettings, detailTexturePixels, followCameraOnGround } from "./ground-detail.ts";
 import { LOOK } from "./lighting.ts";
 
@@ -60,6 +61,33 @@ function photoLight(viewer: Viewer): Cartesian3 {
   return new Cartesian3(t[0], t[1], t[2]);
 }
 
+/**
+ * Cesium picks 3D tiles on the CPU from their triangles, and in WebGL2 reads them back from
+ * the GPU for every pick (ModelReader → buffer.getBufferData, no cache): a pipeline stall,
+ * ~6 ms a pick inside a frame against 0.5 ms between frames. The wheels' and the grass's
+ * height picks on the tiles round the glider doubled frames on the ground several times a
+ * second. Each tile's positions and indices are now read once and kept while it is loaded
+ * (a WeakMap on Cesium's attribute objects; tile geometry never changes). Internal API, so
+ * guarded: without it picks work as before.
+ */
+let readbackCached = false;
+function cachePickReadback(): void {
+  if (readbackCached) return;
+  readbackCached = true;
+  const R = (CesiumAll as unknown as { ModelReader?: Record<string, ((o: object) => unknown) | undefined> }).ModelReader;
+  if (!R) return;
+  for (const k of ["readAttributeAsTypedArray", "readIndicesAsTypedArray"]) {
+    const orig = R[k];
+    if (typeof orig !== "function") continue;
+    const cache = new WeakMap<object, unknown>();
+    R[k] = (o: object) => {
+      let v = cache.get(o);
+      if (v === undefined) cache.set(o, (v = orig.call(R, o)));
+      return v;
+    };
+  }
+}
+
 export class Google3D {
   /** Lowered by this much [m] now (tiles above our terrain). */
   offsetM = 0;
@@ -68,8 +96,15 @@ export class Google3D {
   private wideAt: [number, number] | undefined;
   private wideM: number | undefined;
   private measuring = false;
-  private nearT = 0;
   private lastNear = -1e9;
+  /**
+   * The measurement under the glider, one tile pick a frame (a pick costs ~0.4 ms; the 5–11 of
+   * a measurement in one frame, every 250 ms, doubled every fourth frame on the ground:
+   * 59 → 76 fps, 95th-percentile frame 34 → 15 ms without them).
+   */
+  private near: { ring: boolean; k: number; vals: number[] } | undefined;
+  private nearLast: { lat: number; lon: number; m: number } | undefined;
+  private nearIdleUntil = 0;
   private lastFrame = performance.now();
 
   private constructor(
@@ -182,6 +217,7 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     const scene = viewer.scene;
     scene.primitives.add(tileset);
     scene.globe.show = false;
+    cachePickReadback();
     g3 = new Google3D(viewer, tileset, groundAt);
     g3.relight();
     return g3;
@@ -282,10 +318,8 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
       void this.measureWide(latDeg, lonDeg).finally(() => (this.measuring = false));
     }
     // On the ground: the tiles round the glider.
-    if (aglM < 5 && now - this.nearT > 250) {
-      this.nearT = now;
-      this.measureNear(latDeg, lonDeg);
-    }
+    if (aglM < 5) this.nearStep(latDeg, lonDeg, now);
+    else this.near = undefined;
     // Blend towards the target.
     if (this.targetM === undefined) return;
     const d = this.targetM - this.offsetM;
@@ -309,32 +343,41 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   }
 
   /**
-   * Median of Google minus ours at the glider and 6 points 12 m round it, from the tiles drawn
-   * now, each within 15 m of the wide figure (a coarse tile can answer kilometres off; the
-   * geoid moves only a few metres over a flight). It used to wait for every tile in view to
-   * load: ~20 s at a ground start, with the glider 2.5 m under the ground meanwhile.
+   * Median of Google minus ours under the glider (its spot and 4 points 1.5 m round it: the
+   * wheels stand there; the median of a 12 m ring left the main wheel 11 cm in Google's bumpier
+   * ground), else 6 points 12 m round it, from the tiles drawn now, each within 15 m of the wide
+   * figure (a coarse tile can answer kilometres off; the geoid moves only a few metres over a
+   * flight). One point a frame; parked with the same answer, a round a second.
    */
-  private measureNear(latDeg: number, lonDeg: number): void {
-    if (this.wideM === undefined) return;
+  private nearStep(latDeg: number, lonDeg: number, now: number): void {
+    if (this.wideM === undefined || now < this.nearIdleUntil) return;
     const kx = 111_320 * Math.cos((latDeg * Math.PI) / 180), ky = 110_540;
-    // Under the glider (its spot and 1.5 m round it: the wheels stand there; the median of a
-    // 12 m ring left the main wheel 11 cm in Google's bumpier ground), else the ring.
-    const at = (r: number, a: number) => {
-      const lat = latDeg + (r * Math.sin(a)) / ky, lon = lonDeg + (r * Math.cos(a)) / kx;
-      const h = this.tileset.getHeight(Cartographic.fromDegrees(lon, lat), this.viewer.scene), o = this.groundAt(lat, lon);
-      if (h === undefined || o === undefined || !Number.isFinite(h)) return undefined;
+    let n = this.near;
+    if (!n) n = this.near = { ring: false, k: 0, vals: [] };
+    const count = n.ring ? 6 : 5;
+    const r = n.ring ? 12 : n.k === 0 ? 0 : 1.5, a = n.ring ? (n.k * Math.PI) / 3 : ((n.k - 1) * Math.PI) / 2;
+    // Round the glider where it is now (it moves during a round on a take-off run).
+    const lat = latDeg + (r * Math.sin(a)) / ky, lon = lonDeg + (r * Math.cos(a)) / kx;
+    const h = this.tileset.getHeight(Cartographic.fromDegrees(lon, lat), this.viewer.scene), o = this.groundAt(lat, lon);
+    if (h !== undefined && o !== undefined && Number.isFinite(h)) {
       const di = h + this.offsetM - o;
-      return Math.abs(di - this.wideM!) < 15 ? di : undefined;
-    };
-    const med = (v: (number | undefined)[]) => {
-      const d = v.filter((x): x is number => x !== undefined).sort((x, y) => x - y);
-      return d.length ? { m: d[Math.floor(d.length / 2)]!, n: d.length } : undefined;
-    };
-    const near = med([at(0, 0), ...[0, 1, 2, 3].map((k) => at(1.5, (k * Math.PI) / 2))]);
-    const ring = near && near.n >= 3 ? near : med([0, 1, 2, 3, 4, 5].map((k) => at(12, (k * Math.PI) / 3)));
-    if (!ring || ring.n < 3) return;
-    this.lastNear = performance.now();
-    this.aim(ring.m);
+      if (Math.abs(di - this.wideM) < 15) n.vals.push(di);
+    }
+    if (++n.k < count) return;
+    // A round done.
+    this.near = undefined;
+    const v = n.vals.sort((x, y) => x - y);
+    if (v.length < 3) {
+      if (!n.ring) this.near = { ring: true, k: 0, vals: [] };
+      return;
+    }
+    const m = v[Math.floor(v.length / 2)]!;
+    const last = this.nearLast;
+    const parked = last && distanceM(last.lat, last.lon, latDeg, lonDeg) < 0.3 && Math.abs(last.m - m) < 0.01;
+    this.nearLast = { lat: latDeg, lon: lonDeg, m };
+    if (parked) this.nearIdleUntil = now + 1000;
+    this.lastNear = now;
+    this.aim(m);
   }
 
   /** Whether the tiles in view are in and the height offset is set (a flight can start). */
