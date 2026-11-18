@@ -17,6 +17,22 @@ Audit of 18 November 2026, branch `mac/msfs-look` at e44fdab.
 - **Pipeline options**, switched at runtime in 3 views: render scale, HDR and MSAA.
 - **Not committed:** the screenshots. They show Google's tiles, which are display-only under Google's terms.
 
+## Progress
+**18 Nov 2026.** Phase 0 is done, and phase 1 except MSAA.
+
+| Item | Status |
+|---|---|
+| D1 grass vanishing | Fixed (63875dd). Cause: the ground correction sampled the tiles round the glider before they could answer, then clamped to a field-wide median. |
+| E1 canopy seam and milky haze | Fixed (f809425). The outer glass is hidden from the cockpit; the model has two glass layers. |
+| E2 cockpit | Shadow steps fixed (fe175f1): a 2.5 m nearest cascade in the cockpit. The olive panels are the model's colour, not holes. |
+| C2 streaky grain | Fixed (17c0e27): near-only on Google's tiles. |
+| C3 colour | Better (17c0e27): vegetation +20% saturation, mauve soil turned brown. |
+| A4 ground stutter | Fixed (5e52466). Cause: Cesium reads tile geometry back from the GPU on every pick; now cached. Parked fps 59 → 76, P95 frame 34 → 15 ms. |
+| A1 resolution | Dynamic 1.0–1.5× (6e5cea0). |
+| A2 HDR | HDR with bloom and our tonemap after the clouds (52343a0). The clouds are white now. |
+
+Still open from phase 1: 4× MSAA (5–10%), and a real sun disc with glare. The bloom is in.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.
