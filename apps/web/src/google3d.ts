@@ -18,12 +18,13 @@
  *  - Light. The photos carry midday light. Away from midday they are dimmed and tinted like
  *    our ground (LOOK.ground, the sky's light and the sun's colour): warm and dimmer in the
  *    evening, dark blue at night.
- *  - Colour. Google's photos here run grey-green on grass and blue-magenta on bare fields:
- *    vegetation is made a little more saturated and the cast is taken out (?g3dgrade=0..1).
+ *  - Colour. Google's photos here run grey-green on grass and blue-magenta to mauve on bare
+ *    fields: vegetation is made a little yellower and richer, the cast taken out and washed-out
+ *    pinks turned brown (?g3dgrade=0..1).
  *  - Close up. From a cockpit on the runway the tiles are a smear: the same grass, soil and
  *    gravel grain as on our photo ground (ground-detail.ts) is multiplied onto their level
  *    surfaces near the camera (not walls; level found from the screen-space slope of the
- *    surface), keeping the photo's colour.
+ *    surface), keeping the photo's colour; within ~120 m only (their photos have the rest).
  *  - Cloud shadows. The cumulus (scene.ts ThermalLayer) are projected along the sun onto a
  *    soft map round the camera (512 px over 50 km, redrawn every 2 s or 3 km), which darkens
  *    the tiles under them.
@@ -88,7 +89,13 @@ export class Google3D {
       dynamicScreenSpaceError: true,
       dynamicScreenSpaceErrorDensity: 1e-3,
     });
+    // The grain on Google's tiles: only near the camera. Their photos already carry the clumps
+    // and field mottling the globe's aerial photo lacked; the ×4 and ×16 layers (to 400 m and
+    // 1.5 km, contrast ×2 and ×2.5) only added a streaky repeating pattern over fields seen
+    // from 60–300 m. The true-scale grain stays (the runway under the wheels), the ×4 one
+    // faint and short, the ×16 one off. (?gd= still overrides, for tuning.)
     const st = detailSettings();
+    if (!new URLSearchParams(location.search).has("gd")) Object.assign(st, { fine: [10, 60], mid: [30, 120], macro: [100, 130], strength: [0.6, 0.2, 0], gain: [1, 1.2, 1] });
     const white = () => new TextureUniform({ typedArray: new Uint8Array([255, 255, 255, 255]), width: 1, height: 1 });
     const shader = new CustomShader({
       uniforms: {
@@ -108,19 +115,25 @@ export class Google3D {
         u_shadowK: { type: UniformType.FLOAT, value: 0 },
       },
       fragmentShaderText: `${DETAIL_GLSL}
-// Google's photos run grey-green on grass and blue-magenta on bare fields round here: green
-// vegetation a little more saturated and yellower, the cast taken out (display values in and
-// out).
+// Google's photos run grey-green on grass and blue-magenta to mauve on bare fields round here:
+// greens a little yellower and richer, the blue cast taken out, washed-out pinks (bare soil,
+// not red roofs: those are saturated) turned towards a warm brown (display values in and out).
+// At +55% saturation on vegetation (before) the forests read as moss and the town parks neon.
 vec3 wfGrade(vec3 s) {
   vec3 hsb = czm_RGBToHSB(s);
   float h = hsb.x * 360.0;
   float veg = smoothstep(50.0, 70.0, h) * (1.0 - smoothstep(170.0, 190.0, h));
-  float tint = smoothstep(220.0, 250.0, h) * (1.0 - smoothstep(330.0, 350.0, h));
+  float tint = smoothstep(220.0, 250.0, h) * (1.0 - smoothstep(290.0, 310.0, h));
+  float mauve = max(smoothstep(285.0, 315.0, h), 1.0 - smoothstep(10.0, 24.0, h)) * (1.0 - smoothstep(0.3, 0.45, hsb.y));
   // Greens towards a natural yellow-green (95°): saturating the photos' blue-greens alone
   // turned the grass teal.
-  hsb.x = (h + (95.0 - h) * 0.45 * veg * u_grade) / 360.0;
-  hsb.y = clamp(hsb.y * (1.0 + u_grade * (0.55 * veg - 0.6 * tint)), 0.0, 1.0);
-  hsb.z *= 1.0 + u_grade * 0.05 * veg;
+  h += (95.0 - h) * 0.35 * veg * u_grade;
+  // Pinks towards 28° (brown), through 0° (h above 180 counts as negative).
+  float hp = h > 180.0 ? h - 360.0 : h;
+  h = mix(h, hp + (28.0 - hp) * 0.6, mauve * u_grade);
+  hsb.x = fract(h / 360.0 + 1.0);
+  hsb.y = clamp(hsb.y * (1.0 + u_grade * (0.2 * veg - 0.6 * tint + 0.15 * mauve)), 0.0, 1.0);
+  hsb.z *= 1.0 + u_grade * 0.04 * veg;
   return czm_HSBToRGB(hsb);
 }
 void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
