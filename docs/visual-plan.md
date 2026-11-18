@@ -45,6 +45,24 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
   - a stronger inversion line (it shows only as a pale band from above).
 - **Tuning:** `?vis=`, `?apk=`, `?skyk=`; `?atm=0` brings back the old sky.
 
+**Grade, same day (14190a1):** the haze reduced, plus a cinematic grade: saturation 1.35, contrast 1.22, teal shadows and warm highlights, a light vignette.
+
+**Phase 3, same day:** clouds v2 (5921e3a and the commit after it).
+- **Shape:** Perlin–Worley shape and Worley detail in 3D textures, made in a worker. Each cloud's towers are laid out in JS and shared with its shadow.
+- **Light:**
+  - three multiple-scattering octaves;
+  - sky light read back from the atmosphere;
+  - the atmosphere's haze applied to the clouds.
+- **Range:** volumes reach 45 km and sprites only beyond, so B4 (the lilac band) is gone.
+- **Shadows:** cast tower by tower, lumpy; drawn without a canvas readback (B5).
+- **Bounds:** tight cylinders and 6 slots, with no cut-off clouds.
+- **Cost:** about 10 fps under the cloud base, none above the clouds.
+- **Still open from phase 3:**
+  - temporal reconstruction (the edges are fine at 1.0×, unverified at other scales);
+  - decaying evening cumulus (B6);
+  - cirrus (B7);
+  - cloud streets.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.
