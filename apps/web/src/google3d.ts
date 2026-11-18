@@ -160,7 +160,8 @@ export class Google3D {
 vec3 wfGrade(vec3 s) {
   vec3 hsb = czm_RGBToHSB(s);
   float h = hsb.x * 360.0;
-  float veg = smoothstep(50.0, 70.0, h) * (1.0 - smoothstep(170.0, 190.0, h));
+  // (Up to ~150°: teal lake water, 160–190°, was boosted into neon green with them.)
+  float veg = smoothstep(50.0, 70.0, h) * (1.0 - smoothstep(140.0, 158.0, h));
   float tint = smoothstep(220.0, 250.0, h) * (1.0 - smoothstep(290.0, 310.0, h));
   float mauve = max(smoothstep(285.0, 315.0, h), 1.0 - smoothstep(10.0, 24.0, h)) * (1.0 - smoothstep(0.3, 0.45, hsb.y));
   // Greens towards a natural yellow-green (95°): saturating the photos' blue-greens alone

@@ -24,6 +24,7 @@ import { DynamicResolution } from "./dynres.ts";
 import { disableHdr, enableHdr, HdrFinish } from "./hdr.ts";
 import { Atmosphere, relativeHumidity } from "./atmosphere.ts";
 import { setOwnSky } from "./twilight-sky.ts";
+import { Water } from "./water.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
@@ -52,6 +53,7 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   quality=low | high (default: shadows, FXAA; HDR in flight) | ultra (+ 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
  *   dynres=0 | <scale> fixed render scale (default: 1.0–1.5× following the frame time, dynres.ts)
+ *   water3d=0         Google's photo of lakes instead of our water (water.ts; wglint= glint strength)
  *   hdr=0             LDR (default: HDR with bloom, a cinematic grade and our tonemap, hdr.ts;
  *                     exposure=, bloom=, saturation=, contrast=, tone=, vignette= tune it)
  *   pin=<metres>      keep the ground within that radius of the glider loaded (default: off)
@@ -186,6 +188,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
+  // Our water on Google's tiles (water.ts): with our sky only. ?water3d=0: Google's photo.
+  const water = google3d && atmosphere && osmTiles && params.get("water3d") !== "0" ? new Water(viewer, google3d, atmosphere, osmTiles, (la, lo, z) => renderTerrain.heightAt(la, lo, z)) : undefined;
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
       ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, tuft: params.has("grasstuft") ? Number(params.get("grasstuft")) : 6, ...(google3d ? { google3d } : {}) }, F.latDeg)
@@ -258,6 +262,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
           thermalLayer.update(m.thermals);
           air = { windFromDeg: m.windFromDeg, windKt: m.windKt, thermalLiftMs: m.thermalLiftMs, ridgeLiftMs: m.ridgeLiftMs };
           grass?.setWind(m.windFromDeg, m.windKt);
+          water?.setWind(m.windFromDeg, m.windKt);
           break;
         case "messages":
           for (const l of m.lines) hud.message(l);
@@ -336,6 +341,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));
+    water?.follow(g("position/lat-geod-deg"), g("position/long-gc-deg"));
     gliderAt = { latDeg: g("position/lat-geod-deg"), lonDeg: g("position/long-gc-deg") };
     followShadows(viewer, g("position/h-agl-ft") * M_PER_FT, cam.mode === "cockpit");
     google3d?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/h-agl-ft") * M_PER_FT);
@@ -384,7 +390,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, atmosphere, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, atmosphere, water, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

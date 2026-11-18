@@ -104,6 +104,31 @@ vec4 aerial(vec2 uv, float d) {
 }
 `;
 
+/**
+ * GLSL: the sky's radiance (scene units) in a world direction, from the sky table, for other
+ * passes (the water's reflection). Uniforms from Atmosphere.skyUniforms().
+ */
+export const SKY_LOOKUP_GLSL = /* glsl */ `
+uniform sampler2D u_wsky;
+uniform float u_wcamR;
+uniform vec3 u_wsunL;
+uniform vec3 u_weast;
+uniform vec3 u_wnorth;
+uniform vec3 u_wup;
+uniform float u_wskyk;
+vec3 wfSkyRadiance(vec3 dirWC) {
+  const float B = ${BOT.toFixed(1)}, P = 3.14159265358979;
+  vec3 d = vec3(dot(dirWC, u_weast), dot(dirWC, u_wnorth), dot(dirWC, u_wup));
+  float r = u_wcamR;
+  float beta = acos(sqrt(max(r * r - B * B, 0.0)) / r), zh = P - beta;
+  // Below the horizon: the horizon's (water reflects the sky down to it).
+  float vz = min(acos(clamp(d.z, -1.0, 1.0)), zh - 0.002);
+  float v = 0.5 * (1.0 - sqrt(max(1.0 - vz / zh, 0.0)));
+  float az = acos(clamp(dot(normalize(d.xy + vec2(1e-7, 0.0)), normalize(u_wsunL.xy + vec2(1e-7, 0.0))), -1.0, 1.0));
+  return texture(u_wsky, vec2(az / P, v)).rgb * u_wskyk;
+}
+`;
+
 const COMMON = /* glsl */ `
 const float PI = 3.14159265358979;
 const float BOT = ${BOT.toFixed(1)};
@@ -462,6 +487,15 @@ export class Atmosphere {
     }
     // (Compute commands go in the frame's command list; Cesium runs them first, in order.)
     frameState.commandList.push(...this.cmds.frame);
+  }
+
+  /**
+   * For SKY_LOOKUP_GLSL elsewhere (the water's reflection): the sky table and the camera's
+   * frame, current for this frame.
+   */
+  skyUniforms(): Record<string, () => unknown> {
+    const u = this.u;
+    return { u_wsky: () => this.tex.sky, u_wcamR: () => u.camR, u_wsunL: () => u.sunL, u_weast: () => u.east, u_wnorth: () => u.north, u_wup: () => u.up, u_wskyk: () => this.scale.x };
   }
 
   /** The aerial-perspective volume (for AERIAL_GLSL elsewhere). */
