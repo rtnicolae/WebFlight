@@ -304,19 +304,29 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   private measureNear(latDeg: number, lonDeg: number): void {
     if (this.wideM === undefined) return;
     const kx = 111_320 * Math.cos((latDeg * Math.PI) / 180), ky = 110_540;
-    const d: number[] = [];
-    for (let i = -1; i < 6; i++) {
-      const a = (i * Math.PI) / 3, r = i < 0 ? 0 : 12;
+    // Under the glider (its spot and 1.5 m round it: the wheels stand there; the median of a
+    // 12 m ring left the main wheel 11 cm in Google's bumpier ground), else the ring.
+    const at = (r: number, a: number) => {
       const lat = latDeg + (r * Math.sin(a)) / ky, lon = lonDeg + (r * Math.cos(a)) / kx;
       const h = this.tileset.getHeight(Cartographic.fromDegrees(lon, lat), this.viewer.scene), o = this.groundAt(lat, lon);
-      if (h === undefined || o === undefined || !Number.isFinite(h)) continue;
+      if (h === undefined || o === undefined || !Number.isFinite(h)) return undefined;
       const di = h + this.offsetM - o;
-      if (Math.abs(di - this.wideM) < 15) d.push(di);
-    }
-    if (d.length < 4) return;
-    d.sort((x, y) => x - y);
+      return Math.abs(di - this.wideM!) < 15 ? di : undefined;
+    };
+    const med = (v: (number | undefined)[]) => {
+      const d = v.filter((x): x is number => x !== undefined).sort((x, y) => x - y);
+      return d.length ? { m: d[Math.floor(d.length / 2)]!, n: d.length } : undefined;
+    };
+    const near = med([at(0, 0), ...[0, 1, 2, 3].map((k) => at(1.5, (k * Math.PI) / 2))]);
+    const ring = near && near.n >= 3 ? near : med([0, 1, 2, 3, 4, 5].map((k) => at(12, (k * Math.PI) / 3)));
+    if (!ring || ring.n < 3) return;
     this.lastNear = performance.now();
-    this.aim(d[Math.floor(d.length / 2)]!);
+    this.aim(ring.m);
+  }
+
+  /** Whether the tiles in view are in and the height offset is set (a flight can start). */
+  get settled(): boolean {
+    return this.wideM !== undefined && this.targetM !== undefined && this.tileset.tilesLoaded && Math.abs(this.targetM - this.offsetM) < 0.02;
   }
 
   /** The 20th percentile of Google minus ours at 25 points within ~1 km. */

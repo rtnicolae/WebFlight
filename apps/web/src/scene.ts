@@ -353,6 +353,11 @@ export class ThermalLayer {
     });
   }
 
+  /** How many thermals mark clouds now (near: the flight model's; far: visual only). For checks. */
+  get cloudCount(): { near: number; far: number } {
+    return { near: this.cumulus ? this.near.length : 0, far: this.cumulus ? this.far.length : 0 };
+  }
+
   /** Thermals beyond the flight model's reach: clouds only. */
   setFar(list: ThermalView[]): void {
     this.far = list;

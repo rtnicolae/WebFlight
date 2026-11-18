@@ -284,7 +284,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   setStatus("Loading 3D model…");
   await Promise.all([ready, warm, aircraft.load(viewer.scene), launchView?.load().catch((e: unknown) => console.warn("launch models:", e))]);
-  status.hidden = true;
+  // The flight starts paused behind the loading screen (until the ground is in: below).
+  send({ type: "pause", paused: true });
+  setStatus("Loading the ground…");
   const interaction = new CockpitInteraction(viewer, aircraft, send, cam);
   if (aircraft.texMissing.length) console.warn("texture animations without readers:", aircraft.texMissing);
 
@@ -368,8 +370,33 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   if (DYNRES) life.onClose(() => (viewer.resolutionScale = 1));
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
+
+  // Behind the loading screen until the ground under the glider is in: Google's tiles in view
+  // and their height offset settled (else the globe's tiles), and the grass near it when low,
+  // so a flight never starts over a blur or with the glider in the ground. The frame loop
+  // runs meanwhile (it streams the tiles and measures the offset); the flight model is
+  // paused. At most 60 s.
+  const t0 = performance.now();
+  await new Promise<void>((done) => {
+    const tick = () => {
+      if (life.isClosed) return done();
+      const t = google3d?.tileset;
+      const st = (t as unknown as { statistics?: { numberOfPendingRequests: number; numberOfTilesProcessing: number } } | undefined)?.statistics;
+      const tiles = st ? st.numberOfPendingRequests + st.numberOfTilesProcessing : 0;
+      const ground = google3d ? google3d.settled : viewer.scene.globe.tilesLoaded;
+      const lawn = !grass || grass.ready || grass.idle;
+      const waited = performance.now() - t0;
+      if ((ground && lawn && waited > 1500) || waited > 60_000) return done();
+      setStatus(`Loading the ground…${tiles ? ` ${tiles} tiles` : ""}`);
+      setTimeout(tick, 250);
+    };
+    tick();
+  });
+  if (life.isClosed) return;
+  status.hidden = true;
+  send({ type: "pause", paused });
 }
 
 /** The page-wide parameters of p, for links within the app (appKey). */
