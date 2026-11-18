@@ -166,7 +166,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const osmTiles = await openFreeMapTiles();
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
-      ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, ...(google3d ? { google3d } : {}) }, F.latDeg)
+      ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, tuft: params.has("grasstuft") ? Number(params.get("grasstuft")) : 6, ...(google3d ? { google3d } : {}) }, F.latDeg)
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;

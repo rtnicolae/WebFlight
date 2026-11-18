@@ -105,8 +105,8 @@ From the glider at 220 m:
 ## Close range (MSFS-style)
 
 - **Grass** (`grass/grass-field.ts`): blades generated on the GPU (instanced, from a hash of
-  their position), in rings to 75 m round the camera, 320 blades/m² under it (Ultra 500,
-  `grassdensity=`), thinning as 1/d² while widening. Where it grows, how lush and what colour
+  their position), in tufts of 6 (`grasstuft=`), in rings to 75 m round the camera, 320 blades/m²
+  under it (Ultra 500, `grassdensity=`), thinning as 1/d² while widening. Where it grows, how lush and what colour
   come from Sentinel-2 (washed-out green: degraded grass, sparse, short and dry; no green: none)
   and OSM (no roads, paved runways, buildings, water, forest; mown on grass strips and in
   aerodromes); meadows get knee-high patches, seed stalks and flower drifts; the day's wind

@@ -1,5 +1,6 @@
 /**
- * Grass at ground level, made on the GPU: every blade is a tapered, curved strip generated in
+ * Grass at ground level, made on the GPU, in tufts (6 blades fanning out from a root; ?grasstuft=1
+ * for single blades: the same cost at the same blades per m², measured): every blade is a tapered, curved strip generated in
  * the vertex shader from a hash of its world position (nothing per blade on the CPU or in
  * memory), drawn with instancing, patch by patch (4 m squares) in rings round the camera.
  * Densest under the camera (DENSITY blades/m²), thinning with distance as 1/d² while the
@@ -58,7 +59,7 @@ const RINGS: Ring[] = [
 const FULL_R = 6, FADE_R0 = 62, FADE_R1 = 75;
 
 const VS = /* glsl */ `
-in vec2 a_tpl;     // t along the blade (0 root … 1 tip), side (−1, 0, 1)
+in vec3 a_tpl;     // t along the blade (0 root … 1 tip), side (−1, 0, 1), blade in the tuft
 in vec2 a_patch;   // patch's south-west corner, field metres (east, north)
 uniform sampler2D u_mask, u_params, u_height, u_corr;
 uniform vec2 u_gpatch;      // the field centre's global patch index
@@ -120,13 +121,26 @@ void main() {
   float keep = (dens / ringMax) * m.a * clamp(clump, 0.0, 1.0) * u_fade;
   if (d < u_ring.x || d >= u_ring.y || r3 > keep) { gl_Position = vec4(0.0, 0.0, -2.0, 1.0); return; }
 
-  // Kind and shape.
+  // Tuft: TUFT_K blades round its root, fanning out (meadow grass grows in bunches; mown
+  // grass spreads its blades wider, a more even lawn).
   float meadow = 1.0 - mown;
+  float blade = a_tpl.z;
+  float b1 = h11(vec3(gp, slot * 7.31 + blade * 1.73 + 0.29)), b2 = h11(vec3(gp, slot * 5.17 + blade * 2.11 + 0.61)), b3 = h11(vec3(gp, slot * 3.97 + blade * 1.37 + 0.83));
+  vec2 off = vec2(0.0);
+  if (TUFT_K > 1.0) {
+    float spread = mix(0.11, 0.045, meadow) * (0.6 + 0.8 * r6) * sqrt(clamp(sqrt(u_ring.w / max(dens, 1e-3)), 1.0, 12.0));
+    float ba = b2 * 6.2831853;
+    off = sqrt(b1) * spread * vec2(cos(ba), sin(ba));
+    p += off;
+    world += off;
+  }
   float tallPatch = smoothstep(0.25, 0.85, vnoise(world * 0.07 + 3.1));
   float kind = 0.0;
   float flowerField = smoothstep(0.55, 0.85, vnoise(world * 0.05 + 11.0));
-  if (meadow > 0.5 && r4 < 0.012 + 0.05 * flowerField) kind = 2.0;
-  else if (meadow > 0.5 && r4 < 0.11) kind = 1.0;
+  // Flowers and seed stalks: one blade of a tuft (with tufts: a tuft's share is K times a blade's).
+  float kShare = min(1.0, TUFT_K * 0.6);
+  if (blade < 0.5 && meadow > 0.5 && r4 < (0.012 + 0.05 * flowerField) * kShare) kind = 2.0;
+  else if (blade < 0.5 && meadow > 0.5 && r4 < 0.11 * kShare) kind = 1.0;
   float H = mix(0.07 + 0.08 * r5, (0.2 + 0.32 * r5) * (0.55 + 0.75 * tallPatch), meadow);
   if (kind > 0.5) H *= 1.25;
   H *= 0.4 + 0.6 * m.a;  // shorter where it thins out (edges)
@@ -134,17 +148,20 @@ void main() {
   // Far blades are few (1/d²) and wide: tall ones stood out against the horizon as isolated
   // spikes from a low eye. Shorter with distance, they stay in the ground's layer.
   H *= mix(1.0, 0.35, smoothstep(18.0, 65.0, d));
+  // Within a tuft: the middle blades tallest.
+  if (TUFT_K > 1.0) H *= (0.7 + 0.45 * b3) * mix(1.1, 0.8, sqrt(b1));
   // Wider far away (fewer blades, same cover).
   float wk = clamp(sqrt(u_ring.w / max(dens, 1e-3)), 1.0, 12.0);
-  float w = (kind > 0.5 ? 0.003 : mix(0.0065, 0.0055, meadow)) * wk * (0.75 + 0.5 * r6);
-  float ang = r6 * 6.2831853 + r1 * 3.0;
+  float w = (kind > 0.5 ? 0.003 : mix(0.0065, 0.0055, meadow)) * wk * (0.75 + 0.5 * (TUFT_K > 1.0 ? b3 : r6));
+  float ang = TUFT_K > 1.0 ? atan(off.y, off.x + 1e-6) + (b3 - 0.5) * 1.4 : r6 * 6.2831853 + r1 * 3.0;
   vec2 dir = vec2(cos(ang), sin(ang));
   // Wind: gusts travelling downwind, plus a quick flutter.
   vec2 wd = u_wind.xy;
   float gust = vnoise(world * 0.12 - wd * u_wind.w * (1.5 + 4.0 * u_wind.z)) ;
-  float flutter = sin(u_wind.w * 3.1 + r1 * 40.0) * 0.5 + sin(u_wind.w * 4.7 + r2 * 30.0) * 0.3;
+  float flutter = sin(u_wind.w * 3.1 + (r1 + b1) * 40.0) * 0.5 + sin(u_wind.w * 4.7 + (r2 + b2) * 30.0) * 0.3;
   float bendWind = u_wind.z * (0.25 + 0.75 * gust) * (0.6 + 0.4 * meadow) + 0.04 * flutter * (0.3 + u_wind.z);
-  float lean = (0.15 + 0.45 * r5) * (kind > 0.5 ? 0.4 : 1.0);
+  // Outer blades of a tuft lean out further.
+  float lean = (TUFT_K > 1.0 ? 0.1 + 0.6 * sqrt(b1) * (0.6 + 0.6 * r5) : 0.15 + 0.45 * r5) * (kind > 0.5 ? 0.4 : 1.0);
   float t = a_tpl.x;
   // The blade's spine: up, bending over with t² (own lean and the wind).
   vec2 bend = dir * lean + wd * bendWind * 1.2;
@@ -170,7 +187,7 @@ void main() {
   c = mix(c, vec3(0.62, 0.6, 0.32), dry * (0.35 + 0.4 * r4));
   c = mix(c, vec3(0.16, 0.28, 0.08), (1.0 - dry) * 0.25 * r5);
   // Per-blade brightness: lively close up, calmer further out (speckle at 20 m).
-  c *= 1.0 + (r2 - 0.5) * 0.3 * (1.0 - 0.7 * smoothstep(4.0, 25.0, d));
+  c *= 1.0 + ((TUFT_K > 1.0 ? 0.5 * (r2 + b2) : r2) - 0.5) * 0.3 * (1.0 - 0.7 * smoothstep(4.0, 25.0, d));
   if (kind > 1.5) {
     float f = vnoise(world * 0.04 + 23.0);
     v_col = f < 0.4 ? vec3(0.95, 0.94, 0.88) : f < 0.7 ? vec3(0.98, 0.82, 0.12) : vec3(0.62, 0.42, 0.78);
@@ -214,6 +231,8 @@ void main() {
 export interface GrassFieldOptions {
   /** Blades per m² under the camera. */
   density: number;
+  /** Blades per tuft (1: single blades scattered). */
+  tuft?: number;
   /** Re-made maps follow this (the glider). */
   google3d?: Google3D;
 }
@@ -240,6 +259,7 @@ export class GrassField {
   private nextId = 1;
   private program: unknown;
   private tplBuffers: unknown[] = [];
+  private tplIndex: unknown[] = [];
   private ringBuffers: { buffer: unknown; size: number; va: unknown; cmd: unknown }[] = [];
   private readonly camLocal = new Cartesian3();
   private wind = { dir: new Cartesian2(1, 0), strength: 0.2 };
@@ -401,7 +421,9 @@ export class GrassField {
     const inv = Matrix4.inverseTransformation(f.model, new Matrix4());
     Matrix4.multiplyByPoint(inv, this.viewer.camera.positionWC, this.camLocal);
     const cam = this.camLocal;
-    const D0 = this.o.density;
+    const K = this.o.tuft ?? 1;
+    // Tufts per m² (the same blades per m²).
+    const D0 = this.o.density / K;
     const bs = new BoundingSphere();
     const wp = new Cartesian3();
     RINGS.forEach((ring, ri) => {
@@ -442,19 +464,20 @@ export class GrassField {
       if (!rb.va) {
         rb.va = new C.VertexArray({
           context,
+          indexBuffer: this.tplIndex[ring.segments],
           attributes: [
-            { index: 0, vertexBuffer: this.tplBuffers[ring.segments], componentsPerAttribute: 2, componentDatatype: C.ComponentDatatype.FLOAT },
+            { index: 0, vertexBuffer: this.tplBuffers[ring.segments], componentsPerAttribute: 3, componentDatatype: C.ComponentDatatype.FLOAT },
             { index: 1, vertexBuffer: rb.buffer, componentsPerAttribute: 2, componentDatatype: C.ComponentDatatype.FLOAT, instanceDivisor: per },
           ],
         });
         rb.cmd = undefined;
       }
-      const verts = 2 * ring.segments + 1;
+      const verts = 3 * (2 * (ring.segments - 1) + 1) * K;
       const self = this;
       if (!rb.cmd) {
         rb.cmd = new C.DrawCommand({
           vertexArray: rb.va,
-          primitiveType: C.PrimitiveType.TRIANGLE_STRIP,
+          primitiveType: C.PrimitiveType.TRIANGLES,
           shaderProgram: this.program,
           renderState: C.RenderState.fromCache({ depthTest: { enabled: true }, depthMask: true, cull: { enabled: false } }),
           pass: C.Pass.OPAQUE,
@@ -487,13 +510,24 @@ export class GrassField {
   }
 
   private init(context: unknown): void {
+    const K = this.o.tuft ?? 1;
     const lookFs = FS.replaceAll("LOOK_AMBIENT", `vec3(${LOOK.ambient.map((v) => v.toFixed(4)).join(", ")})`).replaceAll("LOOK_GROUND_SKY", `vec3(${LOOK.groundSky.map((v) => v.toFixed(4)).join(", ")})`);
-    this.program = C.ShaderProgram.fromCache({ context, vertexShaderSource: VS, fragmentShaderSource: lookFs, attributeLocations: { a_tpl: 0, a_patch: 1 } });
-    // Blade templates: n segments, two vertices per level, one at the tip (a strip).
+    this.program = C.ShaderProgram.fromCache({ context, vertexShaderSource: VS.replaceAll("TUFT_K", K.toFixed(1)), fragmentShaderSource: lookFs, attributeLocations: { a_tpl: 0, a_patch: 1 } });
+    // Templates: K blades of n segments (two vertices per level, one at the tip), as triangles.
     for (const n of new Set(RINGS.map((r) => r.segments))) {
       const v: number[] = [];
-      for (let i = 0; i < n; i++) v.push(i / n, -1, i / n, 1);
-      v.push(1, 0);
+      const idx: number[] = [];
+      for (let b = 0; b < K; b++) {
+        const base = b * (2 * n + 1);
+        for (let i = 0; i < n; i++) v.push(i / n, -1, b, i / n, 1, b);
+        v.push(1, 0, b);
+        // Indexed: the vertex shader runs once per vertex, as with a strip.
+        for (let i = 0; i < n - 1; i++) idx.push(base + 2 * i, base + 2 * i + 1, base + 2 * i + 2, base + 2 * i + 1, base + 2 * i + 3, base + 2 * i + 2);
+        idx.push(base + 2 * n - 2, base + 2 * n - 1, base + 2 * n);
+      }
+      const ib = C.Buffer.createIndexBuffer({ context, typedArray: new Uint16Array(idx), usage: C.BufferUsage.STATIC_DRAW, indexDatatype: C.IndexDatatype.UNSIGNED_SHORT });
+      ib.vertexArrayDestroyable = false;
+      this.tplIndex[n] = ib;
       const b = C.Buffer.createVertexBuffer({ context, typedArray: new Float32Array(v), usage: C.BufferUsage.STATIC_DRAW });
       b.vertexArrayDestroyable = false; // shared by the rings' vertex arrays
       this.tplBuffers[n] = b;
@@ -512,6 +546,6 @@ export class GrassField {
       (rb.va as { destroy?(): void } | undefined)?.destroy?.();
       (rb.buffer as { destroy?(): void } | undefined)?.destroy?.();
     }
-    for (const b of this.tplBuffers) (b as { destroy?(): void } | undefined)?.destroy?.();
+    for (const b of [...this.tplBuffers, ...this.tplIndex]) (b as { destroy?(): void } | undefined)?.destroy?.();
   }
 }
