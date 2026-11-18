@@ -26,7 +26,7 @@
  *    surfaces near the camera (not walls; level found from the screen-space slope of the
  *    surface), keeping the photo's colour; within ~120 m only (their photos have the rest).
  *  - Cloud shadows. The cumulus (scene.ts ThermalLayer) are projected along the sun onto a
- *    soft map round the camera (512 px over 50 km, redrawn every 2 s or 3 km), which darkens
+ *    soft map round the camera (1024 px over 50 km, redrawn every 2 s or 3 km), which darkens
  *    the tiles under them.
  *  - Shadows. The photos already carry the sun's shadows: the tiles only receive ours (the
  *    glider's), they don't cast into the shadow map (Brașov at 300 m: 103 fps, casting too 81).
@@ -43,13 +43,14 @@
 import { Cartesian2, Cartesian3, Cartographic, createGooglePhotorealistic3DTileset, CustomShader, RequestScheduler, DynamicAtmosphereLightingType, Ellipsoid, Math as CesiumMath, Matrix4, ShadowMode, TextureMagnificationFilter, TextureMinificationFilter, TextureUniform, UniformType, type Cesium3DTileset, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import * as CesiumAll from "cesium";
+import { cloudGeometry } from "./vclouds.ts";
 import { DETAIL_GLSL, detailSettings, detailTexturePixels, followCameraOnGround } from "./ground-detail.ts";
 import { LOOK } from "./lighting.ts";
 
 type GroundFn = (latDeg: number, lonDeg: number) => number | undefined;
 
 /** The cloud shadow map: pixels, and metres across (centred on the camera when drawn). */
-const SHADOW_PX = 512;
+const SHADOW_PX = 1024;
 const SHADOW_M = 50_000;
 
 /** The light the photos are dimmed and tinted with (1 at midday). */
@@ -245,7 +246,7 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
 
   private shadowAt: Cartesian3 | undefined;
   private shadowT = -1e9;
-  private readonly shadowCanvas = new OffscreenCanvas(SHADOW_PX, SHADOW_PX);
+  private readonly shadowBuf = new Uint8Array(SHADOW_PX * SHADOW_PX * 4);
 
   /**
    * The clouds' shadows on the ground (each cloud a soft disc, moved away from the sun by its
@@ -269,34 +270,45 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     const east = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, up, new Cartesian3()), new Cartesian3());
     const north = Cartesian3.cross(up, east, new Cartesian3());
     const az = (sun.azimuthDeg * Math.PI) / 180, tanEl = Math.tan((Math.max(5, sun.elevationDeg) * Math.PI) / 180);
-    const g = this.shadowCanvas.getContext("2d")!;
-    g.globalCompositeOperation = "source-over";
-    g.fillStyle = "#000";
-    g.fillRect(0, 0, SHADOW_PX, SHADOW_PX);
-    g.globalCompositeOperation = "lighten"; // overlapping shadows: the darker, not the sum
+    // Drawn straight into the texture's bytes, soft discs as max (overlapping shadows: the
+    // darker, not the sum). A canvas cost 30–40 ms a redraw (reading a GPU canvas back), or
+    // 0.5 s drawing on a CPU-backed one; this ~3 ms.
+    const buf = this.shadowBuf;
+    buf.fill(0);
     const px = SHADOW_PX / SHADOW_M, d = new Cartesian3();
+    const disc = (x: number, y: number, r: number, v: number) => {
+      const x0 = Math.max(0, Math.floor(x - r)), x1 = Math.min(SHADOW_PX - 1, Math.ceil(x + r));
+      const y0 = Math.max(0, Math.floor(y - r)), y1 = Math.min(SHADOW_PX - 1, Math.ceil(y + r));
+      for (let j = y0; j <= y1; j++)
+        for (let i = x0; i <= x1; i++) {
+          const q = Math.hypot(i + 0.5 - x, j + 0.5 - y) / r;
+          if (q >= 1) continue;
+          const a = q < 0.55 ? v : v * (1 - (q - 0.55) / 0.45);
+          const k = 4 * (j * SHADOW_PX + i);
+          if (a > buf[k]!) buf[k] = a;
+        }
+    };
     for (const c of clouds) {
       if (c.size <= 0 || c.opacity <= 0) continue;
       Cartesian3.subtract(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, d), cam, d);
-      const R = c.radiusM * 1.4 * c.size;
-      // The cloud's middle over the ground, cast away from the sun.
-      const h = c.baseM - (c.groundM ?? c.baseM - 1500) + Math.min(1000, R * 0.45 * (c.tall ?? 1));
-      const e = Cartesian3.dot(d, east) - (Math.sin(az) * h) / tanEl, n = Cartesian3.dot(d, north) - (Math.cos(az) * h) / tanEl;
-      // The footprint of the volume (vclouds.ts: towers out to ~1.2 R), soft at the rim.
-      const x = (0.5 + e / SHADOW_M) * SHADOW_PX, y = (0.5 + n / SHADOW_M) * SHADOW_PX, r = Math.max(2, R * 1.2 * px);
-      if (x < -r || y < -r || x > SHADOW_PX + r || y > SHADOW_PX + r) continue;
+      // The cloud's own towers (vclouds.ts), each cast away from the sun from its own height:
+      // a lumpy footprint, not a disc.
+      const e0 = Cartesian3.dot(d, east), n0 = Cartesian3.dot(d, north);
+      if (Math.abs(e0) > SHADOW_M * 0.7 || Math.abs(n0) > SHADOW_M * 0.7) continue;
+      const geo = cloudGeometry(c);
+      const above = c.baseM - (c.groundM ?? c.baseM - 1500);
       const v = Math.round(255 * c.opacity);
-      const grad = g.createRadialGradient(x, y, r * 0.75, x, y, r);
-      grad.addColorStop(0, `rgb(${v},${v},${v})`);
-      grad.addColorStop(1, "rgb(0,0,0)");
-      g.fillStyle = grad;
-      g.beginPath();
-      g.arc(x, y, r, 0, Math.PI * 2);
-      g.fill();
+      for (let k = 0; k < geo.towers.length / 4; k++) {
+        const te = geo.towers[k * 4]!, tn = geo.towers[k * 4 + 1]!, tz = geo.towers[k * 4 + 2]!, tr = geo.towers[k * 4 + 3]!;
+        const h = above + tz;
+        const e = e0 + te - (Math.sin(az) * h) / tanEl, n = n0 + tn - (Math.cos(az) * h) / tanEl;
+        const x = (0.5 + e / SHADOW_M) * SHADOW_PX, y = (0.5 + n / SHADOW_M) * SHADOW_PX, r = Math.max(1.5, tr * 1.05 * px);
+        if (x < -r || y < -r || x > SHADOW_PX + r || y > SHADOW_PX + r) continue;
+        disc(x, y, r, v);
+      }
     }
-    // Canvas rows top-down = texture rows bottom-up: row y is (0.5 + north / size) as drawn.
-    const img = g.getImageData(0, 0, SHADOW_PX, SHADOW_PX);
-    shader.setUniform("u_cloudShadow", new TextureUniform({ typedArray: new Uint8Array(img.data.buffer), width: SHADOW_PX, height: SHADOW_PX, repeat: false, minificationFilter: TextureMinificationFilter.LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
+    // Row y is (0.5 + north / size): texture rows bottom-up, as the shader reads them.
+    shader.setUniform("u_cloudShadow", new TextureUniform({ typedArray: buf, width: SHADOW_PX, height: SHADOW_PX, repeat: false, minificationFilter: TextureMinificationFilter.LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
     shader.setUniform("u_shadowK", k);
     this.followShadow();
   }

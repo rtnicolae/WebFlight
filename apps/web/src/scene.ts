@@ -17,7 +17,8 @@ import type { TerrariumTerrain } from "@webflight/environment";
 import type { ThermalView } from "./protocol.ts";
 import { CloudLayer, type CloudSpec } from "./clouds.ts";
 import type { Thermal } from "@webflight/environment";
-import { VolumetricClouds } from "./vclouds.ts";
+import { VOLUME_RANGE_M, VolumetricClouds } from "./vclouds.ts";
+import type { Atmosphere } from "./atmosphere.ts";
 
 const M_PER_DEG_LAT = 111_132;
 
@@ -309,12 +310,12 @@ function cloudsOver(t: ThermalView): CloudSpec[] {
 }
 
 /** Within this distance of the camera clouds are ray-marched volumes; beyond, sprites. */
-const VOLUME_M = 22_000;
+const VOLUME_M = VOLUME_RANGE_M;
 
 /**
  * A cumulus over each thermal: flat base at the thermal's cloud base, growing while the thermal
  * forms and fading as it dies, so clouds mark the lift as real ones do. Near ones (within
- * 22 km of the camera) are ray-marched volumes (vclouds.ts), farther ones sprite puffs
+ * 45 km of the camera) are ray-marched volumes (vclouds.ts), farther ones sprite puffs
  * (clouds.ts): out there, in the haze, the two look alike, and sprites cost next to nothing.
  * The flight model's thermals reach ~20 km round the glider; setFar adds the same sky model's
  * thermals farther out (visual only), so the sky is full to the horizon. quality=low or
@@ -335,11 +336,13 @@ export class ThermalLayer {
     private readonly cumulus = true,
     /** Gets every cloud on each change (their shadows on the ground: google3d.ts). */
     private readonly shadows?: (clouds: CloudSpec[]) => void,
+    /** Our sky (atmosphere.ts): the volumes take its light and haze. */
+    atmosphere?: Atmosphere,
   ) {
     const az = (sun.azimuthDeg * Math.PI) / 180, el = (Math.max(5, sun.elevationDeg) * Math.PI) / 180;
     this.sprites = new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) });
     const q = new URLSearchParams(location.search);
-    if (q.get("clouds") !== "sprites" && !(q.get("quality") === "low" && q.get("clouds") !== "volume")) this.volumes = new VolumetricClouds(viewer);
+    if (q.get("clouds") !== "sprites" && !(q.get("quality") === "low" && q.get("clouds") !== "volume")) this.volumes = new VolumetricClouds(viewer, atmosphere);
   }
 
   /** The flight model's thermals (near the glider). */

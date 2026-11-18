@@ -83,6 +83,27 @@ float wfSceneDist(sampler2D depthTex, vec2 uv) {
 }
 `;
 
+/**
+ * GLSL: the aerial-perspective volume (u_ap) at screen position uv and distance d [km]: light
+ * scattered in along the way (per unit sun; × the haze scale) in rgb, transmittance in a.
+ * Also used by the clouds (vclouds.ts).
+ */
+export const AERIAL_GLSL = /* glsl */ `
+uniform sampler2D u_ap;
+vec4 apSlice(int i, vec2 tuv) {
+  vec2 cell = vec2(float(i - (i / 8) * 8), float(i / 8));
+  return texture(u_ap, (cell + tuv) / vec2(8.0, 4.0));
+}
+vec4 aerial(vec2 uv, float d) {
+  float s = 32.0 * sqrt(clamp(d / ${MAX_D.toFixed(1)}, 0.0, 1.0)) - 1.0;
+  vec2 tuv = clamp(uv, vec2(0.5 / 32.0), vec2(1.0 - 0.5 / 32.0));
+  if (s < 0.0) return mix(vec4(0.0, 0.0, 0.0, 1.0), apSlice(0, tuv), s + 1.0);
+  int i0 = int(floor(s));
+  int i1 = min(i0 + 1, 31);
+  return mix(apSlice(i0, tuv), apSlice(i1, tuv), s - float(i0));
+}
+`;
+
 const COMMON = /* glsl */ `
 const float PI = 3.14159265358979;
 const float BOT = ${BOT.toFixed(1)};
@@ -270,12 +291,11 @@ void main() {
   out_FragColor = scatter(vec3(0.0, 0.0, u_camR), rd, u_sunL, ${MAX_D.toFixed(1)} * k * k, 20);
 }`;
 
-const COMPOSITE_FS = /* glsl */ `${COMMON}${SCENE_DIST_GLSL}
+const COMPOSITE_FS = /* glsl */ `${COMMON}${SCENE_DIST_GLSL}${AERIAL_GLSL}
 uniform sampler2D colorTexture;
 uniform sampler2D depthTexture;
 uniform sampler2D u_trans;
 uniform sampler2D u_sky;
-uniform sampler2D u_ap;
 uniform vec3 u_east;
 uniform vec3 u_north;
 uniform vec3 u_up;
@@ -293,18 +313,6 @@ vec2 skyUv(vec3 d, float r) {
   float v = vz < zh ? 0.5 * (1.0 - sqrt(max(1.0 - vz / zh, 0.0))) : 0.5 + 0.5 * sqrt(max((vz - zh) / beta, 0.0));
   float az = acos(clamp(dot(normalize(d.xy + vec2(1e-7, 0.0)), normalize(u_sunL.xy + vec2(1e-7, 0.0))), -1.0, 1.0));
   return vec2(az / PI, v);
-}
-vec4 apSlice(int i, vec2 tuv) {
-  vec2 cell = vec2(float(i - (i / 8) * 8), float(i / 8));
-  return texture(u_ap, (cell + tuv) / vec2(8.0, 4.0));
-}
-vec4 aerial(vec2 uv, float d) {
-  float s = 32.0 * sqrt(clamp(d / ${MAX_D.toFixed(1)}, 0.0, 1.0)) - 1.0;
-  vec2 tuv = clamp(uv, vec2(0.5 / 32.0), vec2(1.0 - 0.5 / 32.0));
-  if (s < 0.0) return mix(vec4(0.0, 0.0, 0.0, 1.0), apSlice(0, tuv), s + 1.0);
-  int i0 = int(floor(s));
-  int i1 = min(i0 + 1, 31);
-  return mix(apSlice(i0, tuv), apSlice(i1, tuv), s - float(i0));
 }
 void main() {
   vec2 uv = v_textureCoordinates;
@@ -356,6 +364,9 @@ export class Atmosphere {
     tanHalf: new Cesium.Cartesian2(1, 1),
   };
   private readonly saved: { sky: boolean; sun: boolean; fog: boolean };
+  /** Sky and haze scale into scene units (with the twilight adaptation). */
+  readonly scale: Cesium.Cartesian2;
+  private ambientCache: { top: number[]; horizon: number[] } | undefined;
   private destroyed = false;
 
   constructor(
@@ -374,7 +385,7 @@ export class Atmosphere {
     // radiance falls by orders of magnitude, and at −2° ours was a dim brown where the eye sees
     // a glowing orange band. ×1 above 6°, ×6 by −4°; night stays dark (there is no light left).
     const tw = Math.min(1, Math.max(0, (6 - opts.sun.elevationDeg) / 10)), adapt = 1 + 5 * tw * tw * (3 - 2 * tw);
-    const scale = new Cesium.Cartesian2((params.has("skyk") ? Number(params.get("skyk")) : SKY_SCALE) * adapt, (params.has("apk") ? Number(params.get("apk")) : AP_SCALE) * adapt);
+    const scale = (this.scale = new Cesium.Cartesian2((params.has("skyk") ? Number(params.get("skyk")) : SKY_SCALE) * adapt, (params.has("apk") ? Number(params.get("apk")) : AP_SCALE) * adapt));
     const sun = opts.sun, az = (sun.azimuthDeg * Math.PI) / 180, el = (sun.elevationDeg * Math.PI) / 180;
     this.u.sunL = new Cartesian3(Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el));
     this.u.sunMu = Math.sin(el);
@@ -451,6 +462,28 @@ export class Atmosphere {
     }
     // (Compute commands go in the frame's command list; Cesium runs them first, in order.)
     frameState.commandList.push(...this.cmds.frame);
+  }
+
+  /** The aerial-perspective volume (for AERIAL_GLSL elsewhere). */
+  get apTexture(): unknown {
+    return this.tex.ap;
+  }
+
+  /**
+   * The sky's light round the camera in scene units: at the zenith and along the horizon
+   * (averaged round it). Read back once, after the lookup tables are made (a frame in);
+   * undefined before.
+   */
+  skyAmbient(): { top: number[]; horizon: number[] } | undefined {
+    if (this.ambientCache) return this.ambientCache;
+    if (!this.onceDone) return undefined;
+    const k = this.scale.x;
+    const top = this.readTexel("sky", 96, 0).slice(0, 3);
+    if (!(top[0]! > 0)) return undefined;
+    const hor = [0, 0, 0];
+    for (const x of [0, 48, 96, 144, 191]) this.readTexel("sky", x, 52).forEach((v, i) => i < 3 && (hor[i]! += v / 5));
+    this.ambientCache = { top: top.map((v) => v * k), horizon: hor.map((v) => v * k) };
+    return this.ambientCache;
   }
 
   /** Debugging: one texel of a lookup table (raw values). */

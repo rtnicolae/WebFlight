@@ -2,30 +2,37 @@
  * Volumetric cumulus, ray-marched in a full-screen pass (no hardware ray tracing: WebGL2).
  *
  * The same clouds as the sprite layer (clouds.ts: one cumulus per thermal, flat base at the
- * thermal's cloud base), drawn as volumes: for each pixel the view ray is tested against each
- * cloud's bounding sphere, and the few it hits are marched front to back, up to the scene's
- * depth (ground, glider, buildings in front stop it). Each cloud is a flat-based dome whose
- * radius shrinks with height, eroded by 3D value noise in the cloud's own frame (its shape
- * stays put as you fly by). Light, per step: a short march towards the sun (self-shadowing:
- * dark undersides, lit tops), a Henyey-Greenstein phase (the bright rim towards the sun),
- * the powder term (dark crevices), and the sky's light from above, darker below; integrated
- * energy-conserving (Hillaire 2015). Far clouds fade into the haze colour, then out.
+ * thermal's cloud base), drawn as volumes out to 45 km: for each pixel the view ray is tested
+ * against each cloud's bounding sphere, and the few it hits are marched front to back, up to
+ * the scene's depth (ground, glider, buildings in front stop it).
  *
- * Drawn at half resolution (a quarter of the pixels), then blended over the scene at full
- * resolution with a small depth-aware filter.
+ * Shape (after Schneider 2015 / Nubis): each cloud is 7 towers (a big central one, smaller
+ * round it; laid out here, cloudTowers(), shared with the cloud shadows) that set where cloud
+ * may be, cut level at the base. Inside, tileable Perlin–Worley noise (cloud-noise.ts, a 3D
+ * texture in the cloud's own frame) makes the cauliflower: towards the towers' edges only its
+ * highest values survive, so the edges are billows, not a sphere. World-scale Worley detail
+ * erodes what is left: wisps at the base, rounded billows above.
  *
- * Shape: each cloud is 7 spheres (a big central tower, smaller ones round it) whose bottoms
- * reach below the cloud base, cut level there (the flat underside), eaten by billowy (folded)
- * value noise. Tried and dropped: one dome (smooth mushroom caps), a separate base slab (a
- * brim under each cloud), towers as columns (marshmallows), adaptive steps (−30 fps).
- * Measured in Brave on the M1 Pro, 1,500 m below a field of cumulus (10 July 2024, 15:00, near
- * Ghimbav), vsync off: 124 fps with these, 161 with the sprite puffs (~1.5 ms a frame); the
- * same from above the tops.
+ * Light, per step: a short march towards the sun (self-shadowing), three octaves of multiple
+ * scattering (Wrenninge 2013: each octave lets more light through, scatters less and less
+ * forwards: bright, milky interiors instead of grey), a two-lobe phase (the silver lining
+ * towards the sun), the powder term (dark crevices), and the sky's light (the atmosphere's,
+ * atmosphere.ts) from above, darker below; integrated energy-conserving (Hillaire 2015). With
+ * the atmosphere the clouds get its aerial perspective too: far clouds fade blue into the same
+ * air as the ground under them.
+ *
+ * Drawn at half resolution, then blended over the scene at full resolution with a small
+ * depth-aware filter. Farther clouds take fewer steps and no detail.
  */
+import * as Cesium from "cesium";
 import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PixelDatatype, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import { LOOK } from "./lighting.ts";
-import { SCENE_DIST_GLSL } from "./atmosphere.ts";
+import { AERIAL_GLSL, SCENE_DIST_GLSL, type Atmosphere } from "./atmosphere.ts";
+import { cloudNoiseAsync } from "./cloud-noise.ts";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const C = Cesium as unknown as Record<string, any>;
 
 /**
  * Tallest cloud [m above its base]: fair-weather cumulus seldom grow more than ~2 km; how much
@@ -35,79 +42,82 @@ import { SCENE_DIST_GLSL } from "./atmosphere.ts";
 export const MAX_TOWER_M = 2200;
 
 /** Most clouds drawn (the nearest in view). */
-const MAX = 96;
+const MAX = 128;
+/** Towers per cloud. */
+const TOWERS = 7;
+/** Clouds farther than this are not drawn as volumes [m]. */
+export const VOLUME_RANGE_M = 45_000;
 
-const FS = /* glsl */ `${SCENE_DIST_GLSL}
+/** A cloud's size [m] and its towers: east, north, centre height, radius [m] (TOWERS × 4). */
+export interface CloudGeometry {
+  radius: number;
+  height: number;
+  seed: number;
+  towers: Float32Array;
+}
+
+/** Deterministic: the same cloud (spec id) gets the same towers in the volume and its shadow. */
+export function cloudGeometry(spec: CloudSpec): CloudGeometry {
+  let h = 7919;
+  for (const ch of spec.id) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
+  const rnd = (() => {
+    let s = h || 1;
+    return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+  })();
+  const r = rnd();
+  // Wider than the thermal's figure (the sprite puffs spread past it too); towers as tall as
+  // 0.8–1.4 times that.
+  const R = spec.radiusM * 1.4 * spec.size, H = Math.min(MAX_TOWER_M, spec.radiusM * 1.4 * (spec.tall ?? 0.8 + 0.6 * r)) * spec.size;
+  const towers = new Float32Array(TOWERS * 4);
+  for (let k = 0; k < TOWERS; k++) {
+    const a = 6.2831853 * rnd(), rr = Math.sqrt(rnd()), z = rnd(), sz = rnd();
+    // Tower centres within a disc of 0.65 R (beyond, they poked out of the ray-test sphere).
+    const br = R * (k === 0 ? 0.62 : 0.32 + 0.22 * sz);
+    // Centres low enough that each reaches below the base: the level cut there is the flat
+    // underside; the tops stay round.
+    const cz = k === 0 ? H * 0.38 : Math.min(br * 0.85, H * (0.15 + 0.35 * z));
+    towers.set([k === 0 ? 0 : rr * R * 0.65 * Math.cos(a), k === 0 ? 0 : rr * R * 0.65 * Math.sin(a), cz, br], k * 4);
+  }
+  return { radius: R, height: H, seed: (h % 997) * 0.0137, towers };
+}
+
+const FS = /* glsl */ `${SCENE_DIST_GLSL}${AERIAL_GLSL}
+precision highp sampler3D;
 uniform sampler2D colorTexture;
 uniform sampler2D depthTexture;
 in vec2 v_textureCoordinates;
-uniform vec4 u_c[${MAX}];   // base centre relative to the camera (world axes) [m], radius [m]
-uniform vec4 u_d[${MAX}];   // height [m], opacity, noise seed, 0
+uniform sampler3D u_shape;
+uniform sampler3D u_detail;
+uniform sampler2D u_towers;   // TOWERS × MAX: east, north, centre height, radius [m]
+uniform vec4 u_c[${MAX}];     // base centre relative to the camera (world axes) [m], radius [m]
+uniform vec4 u_d[${MAX}];     // height [m], opacity, noise offset, 0
 uniform int u_n;
-uniform vec3 u_up;          // the camera's up (world)
-uniform vec3 u_E;           // and its east, north
+uniform vec3 u_up;            // the camera's up (world)
+uniform vec3 u_E;             // and its east, north
 uniform vec3 u_N;
 uniform vec3 u_ambTop;
 uniform vec3 u_ambBase;
-uniform vec3 u_haze;
-uniform vec2 u_fade;        // haze starts, cloud gone [m]
-uniform float u_sigma;      // extinction per metre at density 1
-uniform float u_steps;
+uniform vec4 u_light;         // extinction per m at density 1, sun scale, sky scale, steps
+uniform vec3 u_haze;          // without the atmosphere: the haze colour far clouds fade to
+uniform vec2 u_fade;          // haze starts, cloud gone [m]
+uniform vec2 u_ap0;           // with the atmosphere: haze scale, 1
+uniform float u_ready;
+uniform vec4 u_form;          // density scale, detail erosion, shape tile ÷ radius, detail tile [m]
 
-float hash(vec3 p) {
-  p = fract(p * 0.3183099 + 0.1);
-  p *= 17.0;
-  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-}
-float vnoise(vec3 x) {
-  vec3 i = floor(x), f = fract(x);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(mix(hash(i), hash(i + vec3(1, 0, 0)), f.x), mix(hash(i + vec3(0, 1, 0)), hash(i + vec3(1, 1, 0)), f.x), f.y),
-             mix(mix(hash(i + vec3(0, 0, 1)), hash(i + vec3(1, 0, 1)), f.x), mix(hash(i + vec3(0, 1, 1)), hash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
-}
-float fbm(vec3 p, int oct) {
-  float a = 0.5, s = 0.0;
-  for (int k = 0; k < 4; k++) {
-    if (k >= oct) break;
-    s += a * vnoise(p);
-    p = p * 2.03 + vec3(1.7, 9.2, 3.1);
-    a *= 0.5;
-  }
-  return s;
-}
+float remap(float v, float a, float b, float c, float d) { return c + (v - a) / (b - a) * (d - c); }
 
-vec3 hash3(float n) {
-  return fract(sin(vec3(n, n + 1.0, n + 2.0)) * vec3(43758.5453, 22578.1459, 19642.3490));
+vec4 g_b[${TOWERS}];
+void towers(int i) {
+  for (int k = 0; k < ${TOWERS}; k++) g_b[k] = texelFetch(u_towers, ivec2(k, i), 0);
 }
-
-// A cumulus: BUBBLES towers, each a rounded top on straight sides down to the level base, eaten
-// by billowy noise. Tower k: xy centre (local east/north), top-centre height, radius; worked
-// out once per cloud per pixel (bubbles()).
-#define BUBBLES 7
-vec4 g_b[BUBBLES];
-void bubbles(int i) {
-  float R = u_c[i].w, H = u_d[i].x, seed = u_d[i].z;
-  for (int k = 0; k < BUBBLES; k++) {
-    vec3 rn = hash3(seed + float(k) * 7.13);
-    // Tower centres within a disc of 0.65 R (a square reached 0.85 R at its corners, and the
-    // towers there poked out of the ray-test sphere: a straight cut down the cloud's side).
-    float ang = 6.2831853 * rn.y;
-    vec2 c = k == 0 ? vec2(0.0) : sqrt(rn.x) * R * 0.65 * vec2(cos(ang), sin(ang));
-    // Sphere centres low enough that each reaches below the base: the level cut there is
-    // the flat underside; the tops stay round.
-    float br = R * (k == 0 ? 0.62 : 0.32 + 0.22 * fract(rn.x * 7.31));
-    float cz = k == 0 ? H * 0.38 : min(br * 0.85, H * (0.15 + 0.35 * rn.z));
-    g_b[k] = vec4(c, cz, br);
-  }
-}
-// Density of cloud i at q (relative to its base centre, world axes), 0..1.
-float density(int i, vec3 q, int oct) {
+// Density of cloud i at q (relative to its base centre, world axes).
+float density(int i, vec3 q, bool detail) {
   float R = u_c[i].w, H = u_d[i].x;
   float h = dot(q, u_up);
   if (h < 0.0 || h > H) return 0.0;
   vec2 xy = vec2(dot(q, u_E), dot(q, u_N));
   float s = -1.0;
-  for (int k = 0; k < BUBBLES; k++) {
+  for (int k = 0; k < ${TOWERS}; k++) {
     vec4 b = g_b[k];
     // Wide clouds under the height cap: towers squashed to fit (round tops, not cut ones).
     float vz = min(1.0, (H - b.z) / (b.w * 1.05));
@@ -115,28 +125,24 @@ float density(int i, vec3 q, int oct) {
   }
   if (s < -0.3) return 0.0;
   float hn = h / H;
-  // Billowy noise (folded value noise): rounded lumps, the cauliflower of a cumulus.
-  vec3 np = q / R * 3.2 + u_d[i].z;
-  float n = 0.0, a = 0.5;
-  for (int o = 0; o < 3; o++) {
-    if (o >= oct) break;
-    n += a * (1.0 - abs(2.0 * vnoise(np) - 1.0));
-    np = np * 2.07 + vec3(3.1, 7.7, 1.3);
-    a *= 0.5;
-  }
-  // A gentler rise than before (×2.6 made a hard, opaque surface: "solid" clouds).
-  float d = s * 1.5 - (0.875 - n) * (0.9 + 0.6 * hn) + 0.1;
+  // Where cloud may be: 1 deep in the towers, 0 a little outside them.
+  float cov = clamp(s * 1.4 + 0.4, 0.0, 1.0);
+  // Perlin–Worley in the cloud's own frame, about a tile per cloud.
+  vec4 sn = texture(u_shape, vec3(xy, h) / (R * u_form.z) + u_d[i].z);
+  float wf = sn.g * 0.625 + sn.b * 0.25 + sn.a * 0.125;
+  float base = remap(sn.r, wf - 1.0, 1.0, 0.0, 1.0);
+  float d = remap(base, 1.0 - cov, 1.0, 0.0, 1.0) * cov;
   if (d <= 0.0) return 0.0;
-  // Fine erosion of the thin outer layer only: ragged, wispy edges round a dense core.
-  if (oct >= 3 && d < 0.55) {
-    float hf = 0.6 * vnoise(q / R * 16.0 + u_d[i].z * 1.7) + 0.4 * vnoise(q / R * 34.0 + 5.3);
-    d -= (1.0 - smoothstep(0.0, 0.55, d)) * (1.0 - hf) * 0.5;
+  if (detail) {
+    // World-scale wisps (~260 m tile): ragged at the base, billowy above.
+    vec3 dn = texture(u_detail, q / u_form.w + u_d[i].z * 3.1).rgb;
+    float df = dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125;
+    float dm = mix(1.0 - df, df, clamp(hn * 4.0, 0.0, 1.0));
+    d = remap(d, dm * u_form.y, 1.0, 0.0, 1.0);
   }
-  d = clamp(d, 0.0, 1.0);
-  // Thin at the rim, dense inside.
-  d *= d * (1.6 - 0.6 * d);
+  // Dense right behind the surface: crisp edges (real cumulus are), soft only where eroded.
   // Level base: a short fade at the bottom only.
-  d *= smoothstep(0.0, 0.025, hn);
+  d = clamp(d * u_form.x, 0.0, 1.0) * smoothstep(0.0, 0.03, hn);
   return d * u_d[i].y;
 }
 
@@ -144,15 +150,19 @@ float hg(float c, float g) {
   float g2 = g * g;
   return (1.0 - g2) / (4.0 * 3.14159265 * pow(1.0 + g2 - 2.0 * g * c, 1.5));
 }
+// Two lobes (the bright rim towards the sun, a little back-scatter), relative to isotropic.
+float phase2(float c, float e) {
+  return mix(hg(c, 0.8 * e), hg(c, -0.25 * e), 0.25) * 4.0 * 3.14159265;
+}
 
 void main() {
-  if (u_n == 0) { out_FragColor = vec4(0.0); return; }
+  if (u_n == 0 || u_ready < 0.5) { out_FragColor = vec4(0.0); return; }
   float sceneT = wfSceneDist(depthTexture, v_textureCoordinates);
   vec3 dirEC = normalize(wfEyeRay(v_textureCoordinates));
   vec3 dir = normalize(czm_inverseViewRotation * dirEC);
   vec3 sun = czm_lightDirectionWC;
   float cosT = dot(dir, sun);
-  float phase = mix(hg(cosT, 0.6), hg(cosT, -0.25), 0.3) * 4.0 * 3.14159265;
+  float ph0 = phase2(cosT, 1.0), ph1 = phase2(cosT, 0.5), ph2 = phase2(cosT, 0.25);
 
   // The clouds this ray passes through, nearest first (up to 4).
   float t0s[4] = float[4](1e9, 1e9, 1e9, 1e9);
@@ -163,7 +173,7 @@ void main() {
     if (i >= u_n) break;
     float R = u_c[i].w, H = u_d[i].x;
     vec3 ctr = u_c[i].xyz + u_up * (H * 0.5);
-    // Towers reach 0.65 R + 0.54 R × 1.07 (noise) ≈ 1.23 R out.
+    // Towers reach 0.65 R + 0.54 R out, plus the noise's billows.
     float rad = length(vec2(R * 1.3, H * 0.6));
     float b = dot(ctr, dir);
     float disc = b * b - dot(ctr, ctr) + rad * rad;
@@ -171,7 +181,6 @@ void main() {
     float sq = sqrt(disc);
     float a0 = max(b - sq, 0.0), a1 = min(b + sq, sceneT);
     if (a1 <= a0) continue;
-    // Insert by entry distance (the farthest of five drops out).
     if (hits == 4 && a0 >= t0s[3]) continue;
     int k = min(hits, 3);
     for (int j = 3; j > 0; j--) {
@@ -182,55 +191,62 @@ void main() {
   }
   if (hits == 0) { out_FragColor = vec4(0.0); return; }
 
+  float sigma = u_light.x;
   vec3 lin = vec3(0.0);
   float T = 1.0;
   float firstT = -1.0;
   // Per-pixel start offset against banding (the blend's filter smooths the pattern it leaves).
   float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-  vec3 sunCol = czm_lightColor;
+  vec3 sunCol = czm_lightColor * u_light.y;
   for (int h = 0; h < 4; h++) {
     if (h >= hits || T < 0.02) break;
     int i = ids[h];
     float R = u_c[i].w, H = u_d[i].x;
     float a0 = t0s[h], a1 = t1s[h];
-    bubbles(i);
-    // Even steps (half steps inside the cloud smoothed the faint screen-door pattern on big
-    // clouds but halved the frame rate: 88 → 47 fps).
-    float dt = max((a1 - a0) / u_steps, R * 0.015);
+    towers(i);
+    // Fewer steps and no detail far away (a cloud 30 km off is a few dozen pixels).
+    float far = smoothstep(5000.0, 30000.0, a0);
+    bool detail = a0 < 20000.0;
+    float dt = max((a1 - a0) / mix(u_light.w, 14.0, far), R * 0.015);
     float t = a0 + dt * jit;
     for (int it = 0; it < 64; it++) {
       if (t >= a1) break;
       vec3 q = dir * t - u_c[i].xyz;
-      float dens = density(i, q, 3);
+      float dens = density(i, q, detail);
       if (dens <= 0.0) { t += dt; continue; }
-      float step = dt;
       if (firstT < 0.0) firstT = t;
-      // Towards the sun: 4 steps, coarser noise.
-      float od = 0.0, ls = R * 0.12;
-      for (int s = 1; s <= 4; s++) od += density(i, q + sun * (ls * float(s) * float(s) * 0.5), 1) * ls * float(s);
-      // Light scattered many times inside keeps the shadow side from going black
-      // (Wrenninge's octaves, two of them).
-      float tSun = max(exp(-u_sigma * od), 0.6 * exp(-0.25 * u_sigma * od));
+      // Towards the sun: 5 steps, growing, shape only.
+      float od = 0.0, ls = R * 0.1;
+      for (int s = 1; s <= 5; s++) od += density(i, q + sun * (ls * float(s * s) * 0.4), false) * ls * float(s) * 0.8;
+      od *= sigma;
+      // Multiple scattering, three octaves.
+      float powder = mix(0.55, 1.0, 1.0 - exp(-dens * 6.0));
+      // (Weights and attenuations tuned so the shaded side stays a light grey, as the many
+      // scatterings inside a real cumulus keep it.)
+      vec3 S = sunCol * (exp(-od) * ph0 * powder + 0.6 * exp(-0.3 * od) * ph1 + 0.4 * exp(-0.1 * od) * ph2);
       float hn = clamp(dot(q, u_up) / H, 0.0, 1.0);
-      float powder = 1.0 - exp(-dens * 8.0);
-      vec3 amb = mix(u_ambBase, u_ambTop, smoothstep(0.0, 0.8, hn));
-      vec3 S = sunCol * tSun * phase * mix(0.6, 1.0, powder) + amb;
-      float sE = u_sigma * dens;
-      float tr = exp(-sE * step);
+      S += mix(u_ambBase, u_ambTop, smoothstep(0.0, 0.85, hn)) * u_light.z;
+      float tr = exp(-sigma * dens * dt);
       lin += T * S * (1.0 - tr);
       T *= tr;
       if (T < 0.02) break;
-      t += step;
+      t += dt;
     }
   }
   if (firstT < 0.0) { out_FragColor = vec4(0.0); return; }
-  // Into the haze, then gone.
-  float hz = smoothstep(u_fade.x, u_fade.y, firstT);
-  vec3 col = mix(lin, u_haze * (1.0 - T), clamp(hz * 1.2, 0.0, 1.0));
+  float a = 1.0 - T;
+  vec3 col = lin;
+  if (u_ap0.y > 0.5) {
+    // The atmosphere's air between the camera and the cloud.
+    vec4 ap = aerial(v_textureCoordinates, firstT / 1000.0);
+    col = col * ap.a + ap.rgb * u_ap0.x * a;
+  } else {
+    float hz = smoothstep(u_fade.x, u_fade.y, firstT);
+    col = mix(col, u_haze * a, clamp(hz * 1.2, 0.0, 1.0));
+  }
+  // Gone by the far limit.
   float keep = 1.0 - smoothstep(u_fade.y * 0.85, u_fade.y, firstT);
-  float a = (1.0 - T) * keep;
-  col *= keep;
-  out_FragColor = vec4(col, a);
+  out_FragColor = vec4(col * keep, a * keep);
 }
 `;
 
@@ -269,9 +285,7 @@ void main() {
 interface Cloud {
   spec: CloudSpec;
   base: Cartesian3;
-  radius: number;
-  height: number;
-  seed: number;
+  geo: CloudGeometry;
 }
 
 export class VolumetricClouds {
@@ -282,16 +296,68 @@ export class VolumetricClouds {
   private readonly up = new Cartesian3();
   private readonly east = new Cartesian3();
   private readonly north = new Cartesian3();
+  private readonly towerData = new Float32Array(TOWERS * 4 * MAX);
+  private readonly tex: { towers: unknown; shape?: unknown; detail?: unknown };
+  private readonly ambTop: Cartesian3;
+  private readonly ambBase: Cartesian3;
+  private ambFromSky = false;
+  private readonly light: Cartesian4;
+  private readonly form: Cartesian4;
   readonly stage: PostProcessStageComposite;
 
-  constructor(private readonly viewer: Viewer) {
+  constructor(
+    private readonly viewer: Viewer,
+    private readonly atmosphere?: Atmosphere,
+  ) {
     const amb = LOOK.ambient;
     const self = this;
+    const scene = viewer.scene;
+    const context = (scene as unknown as { context: unknown }).context;
     // In HDR (hdr.ts) the march's light is linear radiance going into a linear scene, kept
     // above white in half floats; the haze colour below is given in display values.
-    const hdr = viewer.scene.highDynamicRange;
+    const hdr = scene.highDynamicRange;
     const lin = (v: number) => (hdr ? Math.pow(v, 2.2) : v);
     const pixelDatatype = hdr ? PixelDatatype.HALF_FLOAT : PixelDatatype.UNSIGNED_BYTE;
+    const params = new URLSearchParams(location.search);
+    const num = (k: string, d: number) => (params.has(k) ? Number(params.get(k)) : d);
+    // ?csig= extinction, ?csun= sun, ?camb= sky light, ?csteps= steps (tuning).
+    this.light = new Cartesian4(num("csig", 0.05), num("csun", 1.5), num("camb", 0.5), num("csteps", 40));
+    // ?cdens= density boost, ?cdet= erosion, ?cscale= shape tile ÷ radius, ?cdtile= detail tile [m].
+    this.form = new Cartesian4(num("cdens", 4), num("cdet", 0.55), num("cscale", 0.8), num("cdtile", 180));
+    // The sky's light until the atmosphere's is read back (refresh): ours from lighting.ts.
+    this.ambTop = new Cartesian3(0.6 * amb[0]!, 0.67 * amb[1]!, 0.8 * amb[2]!);
+    this.ambBase = new Cartesian3(0.3 * amb[0]!, 0.33 * amb[1]!, 0.4 * amb[2]!);
+    this.tex = {
+      towers: new C.Texture({
+        context,
+        width: TOWERS,
+        height: MAX,
+        pixelFormat: C.PixelFormat.RGBA,
+        pixelDatatype: C.PixelDatatype.FLOAT,
+        source: { arrayBufferView: this.towerData },
+        flipY: false,
+        sampler: new C.Sampler({ minificationFilter: C.TextureMinificationFilter.NEAREST, magnificationFilter: C.TextureMagnificationFilter.NEAREST }),
+      }),
+    };
+    // The noise is made in a worker; no clouds until it is in (it is, behind the loading screen).
+    void cloudNoiseAsync().then((noise) => {
+      if (this.destroyed) return;
+      const make = (data: Uint8Array, n: number) =>
+        new C.Texture3D({
+          context,
+          width: n,
+          height: n,
+          depth: n,
+          pixelFormat: C.PixelFormat.RGBA,
+          pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE,
+          source: { width: n, height: n, depth: n, arrayBufferView: data },
+          flipY: false,
+          sampler: new C.Sampler({ wrapS: C.TextureWrap.REPEAT, wrapT: C.TextureWrap.REPEAT, wrapR: C.TextureWrap.REPEAT, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }),
+        });
+      this.tex.shape = make(noise.shape, noise.shapeSize);
+      this.tex.detail = make(noise.detail, noise.detailSize);
+    });
+    const hasAp = !!atmosphere;
     const march = new PostProcessStage({
       // Half resolution in each direction: a quarter of the pixels to march.
       textureScale: 0.5,
@@ -304,32 +370,33 @@ export class VolumetricClouds {
         u_up: () => self.up,
         u_E: () => self.east,
         u_N: () => self.north,
-        // The sky's light on the tops, a grey-blue underside; dimmed with the day.
-        // A little less sky light than the sun's: sunlit faces stand out from the shaded ones.
-        u_ambTop: new Cartesian3(0.6 * amb[0]!, 0.67 * amb[1]!, 0.8 * amb[2]!),
-        u_ambBase: new Cartesian3(0.3 * amb[0]!, 0.33 * amb[1]!, 0.4 * amb[2]!),
+        u_ambTop: () => self.ambTop,
+        u_ambBase: () => self.ambBase,
+        u_light: () => self.light,
+        u_form: () => self.form,
         u_haze: new Cartesian3(lin(0.72 * LOOK.ground), lin(0.78 * LOOK.ground), lin(0.86 * LOOK.ground)),
-        u_fade: new Cartesian2(15_000, 70_000),
-        u_sigma: 0.045,
-        u_steps: 40,
+        u_fade: new Cartesian2(15_000, VOLUME_RANGE_M * 1.4),
+        u_ap0: () => new Cartesian2(atmosphere ? atmosphere.scale.y : 0, hasAp ? 1 : 0),
+        u_ap: () => atmosphere?.apTexture ?? self.tex.towers,
+        u_towers: () => self.tex.towers,
+        u_shape: () => self.tex.shape ?? self.tex.towers,
+        u_detail: () => self.tex.detail ?? self.tex.towers,
+        u_ready: () => (self.tex.shape ? 1 : 0),
       },
     });
     const blend = new PostProcessStage({ fragmentShader: BLEND_FS, pixelDatatype, uniforms: { u_clouds: march.name } });
     this.stage = new PostProcessStageComposite({ stages: [march, blend], inputPreviousStageTexture: false });
-    viewer.scene.postProcessStages.add(this.stage);
+    scene.postProcessStages.add(this.stage);
+  }
+
+  private destroyed = false;
+  destroy(): void {
+    this.destroyed = true;
+    for (const t of Object.values(this.tex)) (t as { destroy?(): void } | undefined)?.destroy?.();
   }
 
   set(specs: CloudSpec[]): void {
-    this.clouds = specs
-      .filter((s) => s.size > 0 && s.opacity > 0)
-      .map((spec) => {
-        let h = 7919;
-        for (const ch of spec.id) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
-        const r = (h % 1000) / 1000;
-        // Wider than the thermal's figure (the sprite puffs spread past it too); towers as tall
-        // as 0.8–1.4 times that.
-        return { spec, base: Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, spec.baseM), radius: spec.radiusM * 1.4, height: Math.min(MAX_TOWER_M, spec.radiusM * 1.4 * (spec.tall ?? 0.8 + 0.6 * r)), seed: (h % 997) * 0.37 };
-      });
+    this.clouds = specs.filter((s) => s.size > 0 && s.opacity > 0).map((spec) => ({ spec, base: Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, spec.baseM), geo: cloudGeometry(spec) }));
   }
 
   /** Once per frame (from the uniform callback): the nearest clouds relative to the camera. */
@@ -338,6 +405,21 @@ export class VolumetricClouds {
     const fs = (this.viewer.scene as unknown as { frameState: { frameNumber: number } }).frameState;
     if (fs.frameNumber === this.stamp) return;
     this.stamp = fs.frameNumber;
+    // The sky's light from the atmosphere (once its tables are made): the clouds lit by the
+    // same sky that is drawn round them.
+    if (this.atmosphere && !this.ambFromSky) {
+      const a = this.atmosphere.skyAmbient();
+      if (a) {
+        this.ambFromSky = true;
+        // Less blue than the sky itself: the cloud's own scattered light is white.
+        const sky = a.top.map((v, i) => 0.55 * v + 0.45 * a.horizon[i]!);
+        const lum = 0.2126 * sky[0]! + 0.7152 * sky[1]! + 0.0722 * sky[2]!;
+        const top = sky.map((v) => 0.6 * v + 0.4 * lum);
+        Cartesian3.fromElements(top[0]!, top[1]!, top[2]!, this.ambTop);
+        // Below: the sky's light half hidden by the cloud, plus the ground's, warmer.
+        Cartesian3.fromElements(top[0]! * 0.42 + a.horizon[0]! * 0.08, top[1]! * 0.42 + a.horizon[1]! * 0.07, top[2]! * 0.42 + a.horizon[2]! * 0.05, this.ambBase);
+      }
+    }
     const camera = this.viewer.camera, cam = camera.positionWC;
     Cartesian3.normalize(cam, this.up);
     // Only those in view (the ones behind cost a sphere test per pixel for nothing).
@@ -348,8 +430,8 @@ export class VolumetricClouds {
     const near = this.clouds
       .map((c) => ({ c, d: Cartesian3.distance(c.base, cam) }))
       .filter((x) => {
-        if (x.d > 70_000) return false;
-        const R = x.c.radius * x.c.spec.size, H = x.c.height * x.c.spec.size;
+        if (x.d > VOLUME_RANGE_M * 1.4) return false;
+        const R = x.c.geo.radius, H = x.c.geo.height;
         Cartesian3.add(x.c.base, Cartesian3.multiplyByScalar(this.up, H * 0.5, bs.center), bs.center);
         bs.radius = Math.hypot(R * 1.3, H * 0.6) * 1.1;
         return cull.computeVisibility(bs) !== Intersect.OUTSIDE;
@@ -358,14 +440,15 @@ export class VolumetricClouds {
       .slice(0, MAX);
     this.n = near.length;
     near.forEach(({ c }, i) => {
-      const s = c.spec.size;
       this.c[i]!.x = c.base.x - cam.x;
       this.c[i]!.y = c.base.y - cam.y;
       this.c[i]!.z = c.base.z - cam.z;
-      this.c[i]!.w = c.radius * s;
-      this.d[i]!.x = c.height * s;
+      this.c[i]!.w = c.geo.radius;
+      this.d[i]!.x = c.geo.height;
       this.d[i]!.y = c.spec.opacity;
-      this.d[i]!.z = c.seed;
+      this.d[i]!.z = c.geo.seed;
+      this.towerData.set(c.geo.towers, i * TOWERS * 4);
     });
+    (this.tex.towers as { copyFrom(o: unknown): void }).copyFrom({ source: { width: TOWERS, height: MAX, arrayBufferView: this.towerData } });
   }
 }

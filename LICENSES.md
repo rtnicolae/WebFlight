@@ -86,3 +86,11 @@ The browser shows this credit in the Cesium credit line.
 | `fast-xml-parser` | MIT | npm dependency of `packages/converter` |
 | CesiumJS 1.147 | Apache-2.0 | npm dependency of `apps/web` |
 | Vite | MIT | dev dependency of `apps/web` |
+
+## Published techniques (our own code, no third-party code or data)
+
+| Where | After |
+|---|---|
+| `apps/web/src/atmosphere.ts` (sky, haze, sun) | S. Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique", EGSR 2020; E. Bruneton's transmittance parametrisation |
+| `apps/web/src/vclouds.ts`, `cloud-noise.ts` (volumetric cumulus) | A. Schneider, "The Real-time Volumetric Cloudscapes of Horizon: Zero Dawn", SIGGRAPH 2015 (Perlin–Worley shape and Worley detail noise); M. Wrenninge et al., "Oz: The Great and Volumetric", SIGGRAPH 2013 (multiple-scattering octaves); S. Hillaire, "Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite", SIGGRAPH 2016 (energy-conserving integration) |
+| `apps/web/src/hdr.ts` (tonemap) | Khronos PBR Neutral tone mapper (without its toe) |
