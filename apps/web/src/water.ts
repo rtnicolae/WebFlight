@@ -21,11 +21,11 @@
  * ?water3d=0: off.
  */
 import * as Cesium from "cesium";
-import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Cartographic, Intersect, Matrix4, PolygonGeometry, PolygonHierarchy, Transforms, VertexFormat, type Viewer } from "cesium";
+import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Cartographic, Intersect, Matrix4, PolygonGeometry, PolygonHierarchy, PostProcessStage, Transforms, VertexFormat, type Viewer } from "cesium";
 import { fetchWater, type WaterPolygon } from "@webflight/scenery";
 import { lonLatToTile } from "@webflight/environment";
 import type { Google3D } from "./google3d.ts";
-import { SKY_LOOKUP_GLSL, type Atmosphere } from "./atmosphere.ts";
+import { SCENE_DIST_GLSL, SKY_LOOKUP_GLSL, type Atmosphere } from "./atmosphere.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const C = Cesium as unknown as Record<string, any>;
@@ -37,6 +37,11 @@ out vec3 v_posEC;
 out vec2 v_xy;
 void main() {
   vec4 p = czm_modelView * vec4(position, 1.0);
+  // Drawn 0.15% of its distance nearer the camera (4.5 m at 3 km, 15 cm at 100 m): Google's own
+  // water mesh, noisy and near the shores often a little above our plane, won the depth test
+  // there (a band of dull photo water along the far shore). Clipping Google's tiles instead
+  // cost 20–25% of the frame rate.
+  p.xyz *= 0.9985;
   v_posEC = p.xyz;
   v_xy = position.xy + u_origin;
   gl_Position = czm_projection * p;
@@ -96,7 +101,8 @@ void main() {
   float el = asin(clamp(Rl.z, -1.0, 1.0));
   float skyLum = dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
   vec3 hill = vec3(0.07, 0.085, 0.055) * (dot(czm_lightColorHdr, vec3(0.33)) * 0.5 + skyLum * 0.8);
-  sky = mix(hill, sky, smoothstep(hor - 0.01, hor + 0.015, el));
+  float skyPart = smoothstep(hor - 0.01, hor + 0.015, el);
+  sky = mix(hill, sky, skyPart);
   vec3 body = u_body * dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
   vec3 col = mix(body, sky, F);
   // The sun's glint: GGX. Where the ripples are too small to draw (far, grazing) they become
@@ -118,7 +124,141 @@ void main() {
 #ifdef WATER_DEBUG
   col = vec3(4.0, 0.0, 0.0);
 #endif
+#ifdef WATER_MASK
+  // The reflection pass's mask (its own target): water here, how much of the reflection above
+  // was sky (the rest the estimated hills), and the distance (the pass checks the scene's).
+  out_FragColor = vec4(1.0, skyPart, length(v_posEC), 1.0);
+#else
   out_FragColor = vec4(col, 1.0);
+#endif
+}`;
+
+/**
+ * Screen-space reflections on the water (a pass after the clouds, before the tonemap): the
+ * reflected ray from each water pixel is marched through the depth buffer; what it hits (hills,
+ * trees, houses, the far shore) replaces the water shader's fallback (the sky table, or the
+ * estimated hills below the terrain's horizon). A ray that leaves towards the sky takes the
+ * screen's sky there, clouds and all. Off-screen: the fallback. Water pixels are marked by
+ * their alpha (the water shader's), which also says how much of the fallback was sky.
+ */
+const REFLECT_FS = /* glsl */ `${SCENE_DIST_GLSL}${SKY_LOOKUP_GLSL}
+uniform sampler2D colorTexture;
+uniform sampler2D depthTexture;
+uniform vec2 u_camEN;   // the camera's position, metres east/north, mod 1000 (ripples stay put)
+uniform sampler2D u_mask;  // the water shader's mask: flag, sky part, distance
+uniform float u_time;
+in vec2 v_textureCoordinates;
+// Eye space → screen (the inverse of wfEyeRay, from the frustum's planes).
+vec2 toUv(vec3 p) {
+  vec4 fp = czm_frustumPlanes;   // top, bottom, left, right at the near distance
+  float n = czm_currentFrustum.x;
+  vec2 q = p.xy * (n / -p.z);
+  return vec2((q.x - fp.z) / (fp.w - fp.z), (q.y - fp.y) / (fp.x - fp.y));
+}
+// Water at q: the mask says so and nothing stands in front of it (the scene's distance there is
+// the water's).
+bool isWater(vec2 q, float d) {
+  vec4 m = texture(u_mask, q);
+  // (Tight: the mask has no depth test, so a pond behind a hill is in it; at 5% the hill in front
+  // passed, and was darkened into a black blob.)
+  return m.r > 0.5 && abs(m.b - d) < 0.015 * d + 0.5;
+}
+void main() {
+  vec2 uv = v_textureCoordinates;
+  vec4 c = texture(colorTexture, uv);
+  float dist = wfSceneDist(depthTexture, uv);
+  bool water = isWater(uv, dist);
+#ifdef SSR_DEBUG
+  out_FragColor = vec4(water ? vec3(0.0, 4.0, 0.0) : c.rgb * 0.3, 1.0);
+  return;
+#endif
+  if (!water) { out_FragColor = c; return; }
+  float skyPart = texture(u_mask, uv).g;
+  vec3 ray = wfEyeRay(uv);
+  vec3 P = ray * (dist / length(ray));
+  vec3 V = normalize(P);
+  // The water's normal: up at the camera, with slow world-anchored ripples (a little).
+  vec3 rel = czm_inverseViewRotation * P;
+  vec2 en = vec2(dot(rel, u_weast), dot(rel, u_wnorth)) + u_camEN;
+  // (Faded where they are under a few pixels: far away they aliased into dashed stripes.)
+  float fpx = max(length(dFdx(en)), length(dFdy(en)));
+  vec2 sl = 0.012 * (1.0 - smoothstep(0.4, 1.6, fpx)) * vec2(sin(en.x * 0.9 + u_time * 1.3) + 0.6 * sin(en.y * 1.7 - u_time * 1.9), sin(en.y * 1.1 + u_time * 1.1) + 0.6 * sin((en.x + en.y) * 1.4 + u_time * 2.3));
+  vec3 nW = normalize(u_wup - u_weast * sl.x - u_wnorth * sl.y);
+  vec3 n = czm_viewRotation * nW;
+  vec3 R = reflect(V, n);
+  // Keep it above the water (at grazing angles a ripple could send it into the water itself).
+  vec3 upE = czm_viewRotation * u_wup;
+  float ru = dot(R, upE);
+  if (ru < 0.004) R = normalize(R + upE * (0.004 - ru));
+  float NV = max(dot(-V, n), 0.0);
+  float F = 0.02 + 0.98 * pow(1.0 - NV, 5.0);
+  // Looking steeply down the reflection is a few percent: not worth a march.
+  if (F < 0.035) { out_FragColor = c; return; }
+  // What the water shader reflected: the sky table, or below the hills its estimate of them.
+  vec3 RW = normalize(czm_inverseViewRotation * R);
+  vec3 skyR = wfSkyRadiance(RW);
+  float skyLum = dot(wfSkyRadiance(u_wup), vec3(0.2126, 0.7152, 0.0722));
+  vec3 hill = vec3(0.07, 0.085, 0.055) * (dot(czm_lightColorHdr, vec3(0.33)) * 0.5 + skyLum * 0.8);
+  vec3 fallback = mix(hill, skyR, skyPart);
+  // Ours only if at least about as bright as the reflection it carries (the glint only adds):
+  // where our plane lies just under Google's ground (a pond in a gorge) the mask still says
+  // water, and a dark rock pixel minus a bright sky went black.
+  const vec3 LW = vec3(0.2126, 0.7152, 0.0722);
+  if (dot(c.rgb, LW) < 0.5 * F * dot(fallback, LW)) { out_FragColor = c; return; }
+  vec3 refl = fallback;
+  float w = 0.0;
+  // March the reflected ray: steps growing from ~1% of the distance, jittered per pixel (the
+  // pattern it leaves is finer than the stair-steps it replaces).
+  float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  float t = max(dist * 0.01, 1.5) * (0.6 + 0.8 * jit), tPrev = 0.0;
+  bool hit = false, onScreen = true;
+  vec2 q = uv;
+  for (int i = 0; i < 24; i++) {
+    vec3 Q = P + R * t;
+    if (Q.z > -1.0) { onScreen = false; break; }
+    vec2 qn = toUv(Q);
+    if (qn.x < 0.0 || qn.y < 0.0 || qn.x > 1.0 || qn.y > 1.0) { onScreen = false; break; }
+    q = qn;
+    float sd = wfSceneDist(depthTexture, q), qd = length(Q);
+    // Thick: the scene is mostly terrain (a height field), and a thin test let rays at grazing
+    // angles slip behind the far shore's hills and miss (a dark band along it).
+    if (sd < qd && qd - sd < max((t - tPrev) * 3.0, qd * 0.3)) {
+      // Refine between the last two steps.
+      float a = tPrev, b = t;
+      for (int k = 0; k < 4; k++) {
+        float m = 0.5 * (a + b);
+        vec3 M = P + R * m;
+        vec2 mq = toUv(M);
+        if (wfSceneDist(depthTexture, mq) < length(M)) { b = m; q = mq; } else a = m;
+      }
+      hit = true;
+      break;
+    }
+    tPrev = t;
+    t *= 1.32;
+  }
+  vec2 edge = min(q, 1.0 - q);
+  float edgeFade = smoothstep(0.0, 0.06, min(edge.x, edge.y));
+  // Out of steps while still on screen: what it was over last (far hills, as a rule).
+  if (!hit && onScreen && R.z < 0.0) hit = wfSceneDist(depthTexture, q) < 1e8;
+  if (hit) {
+    if (!isWater(q, wfSceneDist(depthTexture, q))) { refl = texture(colorTexture, q).rgb; w = edgeFade; }
+  } else if (R.z < 0.0) {
+    // Towards the sky: the screen's sky in that direction (clouds and all), if it is on screen.
+    vec2 qi = toUv(R * 1e5);
+    if (qi.x > 0.0 && qi.y > 0.0 && qi.x < 1.0 && qi.y < 1.0 && wfSceneDist(depthTexture, qi) > 1e8) {
+      vec2 e2 = min(qi, 1.0 - qi);
+      refl = texture(colorTexture, qi).rgb;
+      w = smoothstep(0.0, 0.06, min(e2.x, e2.y)) * skyPart;
+    }
+  }
+  c.rgb = max(c.rgb + F * w * (refl - fallback), vec3(0.0));
+#ifdef SSR_CASES
+  // green: hit something; red: hit water; blue: left the screen; yellow: sky branch used; grey: nothing.
+  bool hw = hit && isWater(q, wfSceneDist(depthTexture, q));
+  c.rgb = hit ? (hw ? vec3(3.0, 0.0, 0.0) : vec3(0.0, 3.0, 0.0)) : (!onScreen ? (w > 0.0 ? vec3(3.0, 3.0, 0.0) : vec3(0.0, 0.0, 3.0)) : vec3(0.5));
+#endif
+  out_FragColor = c;
 }`;
 
 interface Body {
@@ -144,6 +284,7 @@ interface Body {
   count: number;
   sphere: BoundingSphere;
   cmd: unknown;
+  maskCmd: unknown;
 }
 
 export class Water {
@@ -156,6 +297,13 @@ export class Water {
   private readonly body = new Cartesian3(0.045, 0.11, 0.11);
   private readonly sky: Record<string, () => unknown>;
   show = true;
+  /** Behind the loading screen: the levelling may take more of each frame. */
+  loading = false;
+  readonly reflect: PostProcessStage;
+  /** The reflection pass's mask target (drawing-buffer sized) and its program. */
+  private mask: { tex: unknown; fb: unknown; w: number; h: number; clear: unknown } | undefined;
+
+  private maskProgram: unknown;
   /** ?wglint= the sun's glint strength (tuning). */
   private readonly glint = Number(new URLSearchParams(location.search).get("wglint") ?? 0.25);
 
@@ -169,6 +317,24 @@ export class Water {
   ) {
     this.sky = atmosphere.skyUniforms();
     viewer.scene.primitives.add(this);
+
+    // The reflections: after the clouds, before the tonemap (main.ts adds that later).
+    const t0 = this.t0, camEN = new Cartesian2();
+    this.reflect = new PostProcessStage({
+      fragmentShader: ({ "1": "#define SSR_DEBUG\n", "2": "#define SSR_CASES\n" }[new URLSearchParams(location.search).get("wssrdbg") ?? ""] ?? "") + REFLECT_FS,
+      pixelDatatype: C.PixelDatatype.HALF_FLOAT,
+      uniforms: {
+        ...this.sky,
+        u_time: () => (performance.now() - t0) / 1000,
+        u_mask: () => this.mask?.tex ?? null,
+        u_camEN: () => {
+          const c = viewer.camera.positionCartographic, kx = 111_320 * Math.cos(c.latitude);
+          return Cartesian2.fromElements(((Cesium.Math.toDegrees(c.longitude) * kx) % 1000 + 1000) % 1000, ((Cesium.Math.toDegrees(c.latitude) * 111_132) % 1000 + 1000) % 1000, camEN);
+        },
+      },
+    });
+    viewer.scene.postProcessStages.add(this.reflect);
+    if (new URLSearchParams(location.search).get("wssr") === "0") this.reflect.enabled = false;
   }
 
   /** The day's wind: from [deg], speed [kt]. */
@@ -179,12 +345,12 @@ export class Water {
 
   /** Every frame with the glider's position: tiles round it. */
   follow(latDeg: number, lonDeg: number): void {
-    const ring = (z: number, r: number, keep: number, kinds: (k: string) => boolean, minAreaM2: number) => {
+    const ring = (z: number, r: number, keep: number, kinds: (k: string) => boolean, minAreaM2: number, maxAreaM2 = Infinity) => {
       const [fx, fy] = lonLatToTile(lonDeg, latDeg, z);
       const cx = Math.floor(fx), cy = Math.floor(fy), key = `${cx}/${cy}`;
       if (this.centres[z] === key) return;
       this.centres[z] = key;
-      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) this.load(z, cx + dx, cy + dy, kinds, minAreaM2);
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) this.load(z, cx + dx, cy + dy, kinds, minAreaM2, maxAreaM2);
       for (const [k, bodies] of this.tiles) {
         const [tz, x, y] = k.split("/").map(Number) as [number, number, number];
         if (tz === z && (Math.abs(x - cx) > keep || Math.abs(y - cy) > keep)) {
@@ -196,10 +362,12 @@ export class Water {
     // Standing water only: OSM maps rivers here as polygons over their whole gravel bed (at
     // Codlea a 300 m band of mostly dry stones became a sheet of water).
     ring(11, 2, 3, (k) => k === "lake" || k === "ocean", 20_000);
-    ring(14, 1, 2, (k) => k === "pond" || k === "lake", 800);
+    // Zoom 14: only what zoom 11 leaves out (the same lake from both made two planes at
+    // slightly different levels).
+    ring(14, 1, 2, (k) => k === "pond" || k === "lake", 800, 20_000);
   }
 
-  private load(z: number, x: number, y: number, kinds: (k: string) => boolean, minAreaM2: number): void {
+  private load(z: number, x: number, y: number, kinds: (k: string) => boolean, minAreaM2: number, maxAreaM2: number): void {
     const key = `${z}/${x}/${y}`;
     if (this.tiles.has(key)) return;
     this.tiles.set(key, null);
@@ -208,7 +376,7 @@ export class Water {
         if (!this.tiles.has(key)) return;
         const bodies = all
           .map((p) => ({ p, a: areaM2(p.rings[0]!) }))
-          .filter((e) => e.a >= minAreaM2)
+          .filter((e) => e.a >= minAreaM2 && e.a < maxAreaM2)
           .sort((a, b) => b.a - a.a)
           .slice(0, 80)
           .map((e) => this.build(e.p))
@@ -253,15 +421,25 @@ export class Water {
       const cc = Cartographic.fromCartesian(Cartesian3.multiplyByScalar(Cartesian3.add(Cartesian3.add(A, B, new Cartesian3()), Cc, new Cartesian3()), 1 / 3, new Cartesian3()));
       tris.push({ a: area, c: [Cesium.Math.toDegrees(cc.longitude), Cesium.Math.toDegrees(cc.latitude)], b: 0 });
     }
-    const best = tris.sort((a, b) => b.a - a.a).slice(0, 9);
-    const probes = best.map((t) => t.c), probeBase = best.map((t) => t.b);
+    // Many, spread out: only those in view can be measured (Google's tiles answer only where
+    // they are drawn), and a lake half behind the camera must level from its visible half.
+    const best = tris.sort((a, b) => b.a - a.a).slice(0, 24);
+    // Plus the outline's centre (on some small ponds every triangle-centre pick missed while the
+    // centre answered; why is not known).
+    const probes = [...best.map((t) => t.c), [Cesium.Math.toDegrees(centre.longitude), Cesium.Math.toDegrees(centre.latitude)] as [number, number]], probeBase = [...best.map((t) => t.b), 0];
     const vb = C.Buffer.createVertexBuffer({ context, typedArray: local, usage: C.BufferUsage.STATIC_DRAW });
     const ib = C.Buffer.createIndexBuffer({ context, typedArray: idx instanceof Uint32Array ? idx : new Uint16Array(idx), usage: C.BufferUsage.STATIC_DRAW, indexDatatype: idx instanceof Uint32Array ? C.IndexDatatype.UNSIGNED_INT : C.IndexDatatype.UNSIGNED_SHORT });
     const va = new C.VertexArray({ context, indexBuffer: ib, attributes: [{ index: 0, vertexBuffer: vb, componentsPerAttribute: 3, componentDatatype: C.ComponentDatatype.FLOAT }] });
     const kx = 111_320 * Math.cos(centre.latitude);
     const origin = new Cartesian2(((Cesium.Math.toDegrees(centre.longitude) * kx) % 4096 + 4096) % 4096, ((Cesium.Math.toDegrees(centre.latitude) * 111_132) % 4096 + 4096) % 4096);
+    // At the ground's height (the outline is on the ellipsoid, hundreds of metres below: small
+    // ponds were culled as out of view, so never measured nor drawn); at the water once levelled.
     const sphere = BoundingSphere.fromVertices(Array.from(pos));
-    return { poly, frame, model: Matrix4.clone(frame), centre, origin, probes, probeBase, heights: [], probeNext: 0, level: undefined, horizon: new Array(16).fill(0), probedAt: 0, va, count: idx.length, sphere, cmd: undefined };
+    const cla = Cesium.Math.toDegrees(centre.latitude), clo = Cesium.Math.toDegrees(centre.longitude);
+    const g0 = this.groundAt(cla, clo, 13) ?? this.groundAt(cla, clo, 11) ?? this.groundAt(cla, clo, 9) ?? 0;
+    sphere.center = Cartesian3.fromRadians(centre.longitude, centre.latitude, g0);
+    sphere.radius += 30;
+    return { poly, frame, model: Matrix4.clone(frame), centre, origin, probes, probeBase, heights: [], probeNext: 0, level: undefined, horizon: new Array(16).fill(0), probedAt: 0, va, count: idx.length, sphere, cmd: undefined, maskCmd: undefined };
   }
 
   /**
@@ -272,7 +450,7 @@ export class Water {
    * water can be tens of metres above the valley floor the terrain data has.
    */
   private probe(cull: { computeVisibility(b: BoundingSphere): number }): void {
-    const t0 = performance.now();
+    const t0 = performance.now(), budget = this.loading ? 4 : 0.8;
     for (const bodies of this.tiles.values())
       for (const b of bodies ?? []) {
         if (b.probeNext >= b.probes.length) {
@@ -280,14 +458,17 @@ export class Water {
           else continue;
         }
         if (cull.computeVisibility(b.sphere) === Intersect.OUTSIDE) continue;
-        while (b.probeNext < b.probes.length && performance.now() - t0 < 0.8) {
+        while (b.probeNext < b.probes.length && performance.now() - t0 < budget) {
           const [lon, lat] = b.probes[b.probeNext++]!;
+          probeSphere.center = Cartesian3.fromDegrees(lon, lat, b.level !== undefined ? b.level - this.google3d.offsetM : (this.groundAt(lat, lon) ?? 0), undefined, probeSphere.center);
+          if (cull.computeVisibility(probeSphere) === Intersect.OUTSIDE) continue;
           const h = this.google3d.tileset.getHeight(Cartographic.fromDegrees(lon, lat), this.viewer.scene), o = this.groundAt(lat, lon);
           if (h !== undefined && o !== undefined && Number.isFinite(h) && Math.abs(h - o) < 60) b.heights.push(h - b.probeBase[b.probeNext - 1]!);
         }
         if (b.probeNext >= b.probes.length) {
           b.probedAt = t0;
-          if (b.heights.length >= Math.min(3, b.probes.length)) {
+          // Three answers for a lake; one is enough for a small pond (often only its centre answers).
+          if (b.heights.length >= (b.sphere.radius < 400 ? 1 : 3)) {
             const v = [...b.heights].sort((x, y) => x - y);
             // The median, a little above (Google's water mesh is noisy; ours covers it).
             b.level = v[Math.floor(v.length / 2)]! + 0.25 + this.google3d.offsetM;
@@ -295,7 +476,7 @@ export class Water {
             this.horizonOf(b);
           }
         }
-        if (performance.now() - t0 >= 0.8) return;
+        if (performance.now() - t0 >= budget) return;
       }
   }
 
@@ -321,6 +502,7 @@ export class Water {
   private place(b: Body): void {
     const h = b.level! - this.google3d.offsetM, f = b.frame;
     Matrix4.setTranslation(f, new Cartesian3(f[12]! + f[8]! * h, f[13]! + f[9]! * h, f[14]! + f[10]! * h), b.model);
+    b.sphere.center = Cartesian3.fromRadians(b.centre.longitude, b.centre.latitude, h, undefined, b.sphere.center);
   }
   private placedOffset = Number.NaN;
 
@@ -340,6 +522,18 @@ export class Water {
     }
     const context = frameState.context;
     if (!this.program) this.program = C.ShaderProgram.fromCache({ context, vertexShaderSource: VS, fragmentShaderSource: (new URLSearchParams(location.search).get("waterdbg") === "1" ? "#define WATER_DEBUG\n" : "") + FS, attributeLocations: { position: 0 } });
+    if (!this.maskProgram) this.maskProgram = C.ShaderProgram.fromCache({ context, vertexShaderSource: VS, fragmentShaderSource: "#define WATER_MASK\n" + FS, attributeLocations: { position: 0 } });
+    // The mask target, as big as the drawing buffer; cleared each frame before the water.
+    const ctx = context as { drawingBufferWidth: number; drawingBufferHeight: number };
+    const W = ctx.drawingBufferWidth, Hh = ctx.drawingBufferHeight;
+    if (!this.mask || this.mask.w !== W || this.mask.h !== Hh) {
+      (this.mask?.fb as { destroy?(): void } | undefined)?.destroy?.();
+      const tex = new C.Texture({ context, width: W, height: Hh, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.FLOAT, sampler: new C.Sampler({ minificationFilter: C.TextureMinificationFilter.NEAREST, magnificationFilter: C.TextureMagnificationFilter.NEAREST }) });
+      const fb = new C.Framebuffer({ context, colorTextures: [tex], destroyAttachments: true });
+      this.mask = { tex, fb, w: W, h: Hh, clear: new C.ClearCommand({ color: new Cesium.Color(0, 0, 0, 0), framebuffer: fb, pass: C.Pass.OPAQUE, owner: this }) };
+      for (const bodies of this.tiles.values()) for (const b of bodies ?? []) b.maskCmd = undefined;
+    }
+    frameState.commandList.push(this.mask.clear);
     const w = this.wind, t = (performance.now() - this.t0) / 1000;
     const wind = new Cartesian4(w.dir.x, w.dir.y, w.strength, t);
     for (const bodies of this.tiles.values())
@@ -362,6 +556,22 @@ export class Water {
         const cmd = b.cmd as Record<string, unknown>;
         cmd["uniformMap"] = this.uniforms(b, wind);
         frameState.commandList.push(b.cmd);
+        if (!b.maskCmd)
+          b.maskCmd = new C.DrawCommand({
+            vertexArray: b.va,
+            primitiveType: C.PrimitiveType.TRIANGLES,
+            shaderProgram: this.maskProgram,
+            renderState: C.RenderState.fromCache({ depthTest: { enabled: false }, depthMask: false, cull: { enabled: false } }),
+            pass: C.Pass.OPAQUE,
+            owner: this,
+            modelMatrix: b.model,
+            boundingVolume: b.sphere,
+            count: b.count,
+            framebuffer: this.mask.fb,
+            uniformMap: this.uniforms(b, wind),
+          });
+        (b.maskCmd as Record<string, unknown>)["uniformMap"] = cmd["uniformMap"];
+        frameState.commandList.push(b.maskCmd);
       }
   }
 
@@ -372,6 +582,9 @@ export class Water {
   destroy(): void {
     for (const bodies of this.tiles.values()) for (const b of bodies ?? []) (b.va as { destroy(): void }).destroy();
     this.tiles.clear();
+    (this.mask?.fb as { destroy?(): void } | undefined)?.destroy?.();
+    this.mask = undefined;
+
   }
 }
 
@@ -407,6 +620,8 @@ function offsetRing(r: [number, number][], d: number): [number, number][] {
   out.push(out[0]!);
   return out;
 }
+
+const probeSphere = new BoundingSphere(new Cartesian3(), 5);
 
 /** Area of a closed [lon, lat] ring [m²] (local equirectangular). */
 function areaM2(r: [number, number][]): number {

@@ -176,9 +176,6 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   }
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined, atmosphere);
   if (google3d) life.onClose(() => google3d.setCloudShadows([], sun));
-  // After the clouds: bloom, exposure, tonemap (?exposure=, ?bloom= for tuning).
-  const num = (k: string) => (params.has(k) ? { [k]: Number(params.get(k)) } : {});
-  const hdrFinish = hdr ? new HdrFinish(viewer, { ...num("exposure"), ...num("bloom"), ...num("saturation"), ...num("contrast"), ...num("tone"), ...num("vignette") }) : undefined;
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
@@ -190,6 +187,10 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const osmTiles = await openFreeMapTiles();
   // Our water on Google's tiles (water.ts): with our sky only. ?water3d=0: Google's photo.
   const water = google3d && atmosphere && osmTiles && params.get("water3d") !== "0" ? new Water(viewer, google3d, atmosphere, osmTiles, (la, lo, z) => renderTerrain.heightAt(la, lo, z)) : undefined;
+  // Last of the post-process stages (after the clouds and the water's reflections): bloom,
+  // exposure, the grade, the tonemap (?exposure=, ?bloom=, … for tuning).
+  const num = (k: string) => (params.has(k) ? { [k]: Number(params.get(k)) } : {});
+  const hdrFinish = hdr ? new HdrFinish(viewer, { ...num("exposure"), ...num("bloom"), ...num("saturation"), ...num("contrast"), ...num("tone"), ...num("vignette") }) : undefined;
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
       ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, tuft: params.has("grasstuft") ? Number(params.get("grasstuft")) : 6, ...(google3d ? { google3d } : {}) }, F.latDeg)
@@ -400,6 +401,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // paused. At most 60 s.
   const t0 = performance.now();
   if (grass) grass.loading = true;
+  if (water) water.loading = true;
   await new Promise<void>((done) => {
     const tick = () => {
       if (life.isClosed) return done();
@@ -416,6 +418,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     tick();
   });
   if (grass) grass.loading = false;
+  if (water) water.loading = false;
   if (life.isClosed) return;
   status.hidden = true;
   send({ type: "pause", paused });
