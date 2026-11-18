@@ -1,55 +1,79 @@
 /**
- * Water on Google's 3D tiles: lakes, ponds and rivers from OpenStreetMap (OpenFreeMap vector
- * tiles), drawn as level surfaces that reflect our sky (atmosphere.ts) with wind ripples and
- * the sun's glint, instead of Google's photo of water (flat, dull, the sky of the day it was
- * taken, often noisy).
+ * Water on Google's 3D tiles: lakes, reservoirs and rivers drawn as surfaces that reflect our sky
+ * (atmosphere.ts) and the scene (screen-space reflections), with wind ripples and the sun's
+ * glint, instead of Google's photo of water (flat, dull, the sky of the day it was taken).
+ * MSFS-style rather than strictly photographic: deep blue-teal, lighter in the shallows.
  *
- * Each polygon is a plane laid on the ellipsoid (1 km subdivisions: a 10 km lake sags 2 m),
- * set at Google's own water level there: the median of height picks on the tiles inside the
- * polygon, taken once the tiles are in. The shoreline is then where Google's banks rise out of
- * our plane (closer to the real one than OSM's outline); Google's water mesh, a few cm below,
- * is hidden by it. Polygons without a level yet are not drawn.
+ * Where: JRC Global Surface Water (EC JRC / Google, Pekel et al. 2016: 38 years of Landsat at
+ * 30 m), its occurrence layer as map tiles: every pixel where water has been seen. OSM's
+ * outlines left gaps (a reservoir's arm full in Google's photo, unmapped in OSM: teal patches)
+ * and mapped rivers over whole gravel beds; JRC has the water itself, seasonal margins
+ * included. Each map tile with water becomes a grid laid on the ellipsoid (its curvature
+ * corrected), drawn where JRC has seen water (dilated a pixel): z13 tiles (3.4 km) round the
+ * glider, z11 tiles (14 km) farther out, the near ones cut out of the far.
  *
- * Light (in HDR, scene units): Fresnel (2% looking straight down, all at grazing angles)
- * between the sky's radiance in the reflected direction and the water's own dark body colour,
- * plus the sun's glint (GGX on the rippled normal: bright enough to bloom). Ripples: six wave
- * trains round the wind direction, longer and slower in a stronger wind, faded with distance
- * (no shimmer far away).
+ * At which height: Google's own. Height picks on the tiles at points JRC calls water most of the
+ * time, taken in view (Google's tiles answer only where drawn), each within 60 m of our terrain
+ * (coarse tiles answer kilometres off); a 16×16 level grid per tile from the median of the
+ * picks within ~500 m (so a dam's two basins, or a river's fall, keep their own levels), a
+ * little above (Google's water mesh is noisy). Measured again every 15 s as tiles sharpen. The
+ * shoreline is where Google's banks rise above our surface; Google's water mesh, just below, is
+ * hidden by it. Tiles without a level yet are not drawn.
  *
- * Standing water only (lakes, ponds): OSM's river polygons cover whole gravel beds. Streams z11
- * tiles (lakes: ±2, ~±40 km) and z14 tiles (ponds: ±1) round the glider. With the atmosphere only (HDR, Google 3D);
- * ?water3d=0: off.
+ * Light (in HDR, scene units): Fresnel between the sky's radiance in the reflected direction
+ * and the water's own colour; below the terrain's horizon round the tile the hills; the sun's
+ * glint (GGX), glittering where ripples are too small to draw. ?water3d=0: off.
  */
 import * as Cesium from "cesium";
-import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Cartographic, Intersect, Matrix4, PolygonGeometry, PolygonHierarchy, PostProcessStage, Transforms, VertexFormat, type Viewer } from "cesium";
-import { fetchWater, type WaterPolygon } from "@webflight/scenery";
-import { lonLatToTile } from "@webflight/environment";
+import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Cartographic, Credit, Intersect, Matrix4, PostProcessStage, Transforms, type Viewer } from "cesium";
 import type { Google3D } from "./google3d.ts";
 import { SCENE_DIST_GLSL, SKY_LOOKUP_GLSL, type Atmosphere } from "./atmosphere.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const C = Cesium as unknown as Record<string, any>;
 
+/** JRC Global Surface Water, occurrence 1984–2021 (alpha: the share of the time water was seen). */
+const JRC = "https://storage.googleapis.com/global-surface-water/tiles2021/occurrence/{z}/{x}/{y}.png";
+/** Grid vertices across a tile, level cells across. */
+const GRID = 33, LEV = 16;
+
 const VS = /* glsl */ `
-in vec3 position;
-uniform vec2 u_origin;   // this polygon's frame origin, metres east/north in a global frame (mod 4096)
+in vec2 position;          // grid uv, 0–1 (v north)
+uniform vec4 u_tile;       // size east, north [m]
+uniform sampler2D u_level; // LEV×LEV: height above the tile's base [m]
+uniform vec2 u_origin;     // the tile centre, metres east/north in a global frame (mod 4096)
 out vec3 v_posEC;
 out vec2 v_xy;
+out vec2 v_uv;
+float levelAt(vec2 uv) {
+  vec2 g = clamp(uv * ${LEV.toFixed(1)} - 0.5, 0.0, ${(LEV - 1).toFixed(1)});
+  ivec2 i = ivec2(floor(g));
+  vec2 f = fract(g);
+  ivec2 j = min(i + 1, ivec2(${LEV - 1}));
+  return mix(mix(texelFetch(u_level, i, 0).r, texelFetch(u_level, ivec2(j.x, i.y), 0).r, f.x),
+             mix(texelFetch(u_level, ivec2(i.x, j.y), 0).r, texelFetch(u_level, j, 0).r, f.x), f.y);
+}
 void main() {
-  vec4 p = czm_modelView * vec4(position, 1.0);
-  // Drawn 0.15% of its distance nearer the camera (4.5 m at 3 km, 15 cm at 100 m): Google's own
-  // water mesh, noisy and near the shores often a little above our plane, won the depth test
-  // there (a band of dull photo water along the far shore). Clipping Google's tiles instead
-  // cost 20–25% of the frame rate.
+  vec2 xy = (position - 0.5) * u_tile.xy;
+  // On the ellipsoid: the plane drops away from the tile's centre (2 m at 5 km).
+  float z = levelAt(position) - dot(xy, xy) / (2.0 * 6371000.0);
+  vec4 p = czm_modelView * vec4(xy, z, 1.0);
+  // Nearer the camera by 0.15% of the distance (2 m at 1.5 km): Google's water mesh tilts a metre
+  // or so across a reservoir and won the depth test where it rose above ours (cut along a straight
+  // line). Safe now that we draw only where JRC has seen water (+65 m), not over the land.
   p.xyz *= 0.9985;
   v_posEC = p.xyz;
-  v_xy = position.xy + u_origin;
+  v_xy = xy + u_origin;
+  v_uv = position;
   gl_Position = czm_projection * p;
 }`;
 
 const FS = /* glsl */ `${SKY_LOOKUP_GLSL}
 in vec3 v_posEC;
 in vec2 v_xy;
+in vec2 v_uv;
+uniform sampler2D u_occ;  // JRC occurrence (0–1), rows north to south
+uniform vec4 u_cut;       // far tiles: the near tiles' rectangle (uv), not drawn here
 uniform vec4 u_wind;     // direction to (x east, y north), strength 0–1, time [s]
 uniform vec3 u_body;     // the water's own colour, relative to the sky's light
 uniform float u_glint;   // the sun's glint strength
@@ -74,12 +98,17 @@ vec2 waveSlope(vec2 p, float fp) {
     float a = (wHash(vec2(fi, 3.7)) - 0.5) * 2.2;          // angle off the wind
     vec2 d = vec2(w.x * cos(a) - w.y * sin(a), w.x * sin(a) + w.y * cos(a));
     float kk = 6.2831853 / L, om = sqrt(9.81 * kk);        // deep-water dispersion
-    float s = 0.07 * (0.4 + 0.6 * u_wind.z) * gust * (1.0 - smoothstep(L * 0.12, L * 0.45, fp));
+    float s = 0.045 * (0.4 + 0.6 * u_wind.z) * gust * (1.0 - smoothstep(L * 0.08, L * 0.3, fp));
     g += d * s * cos(dot(d, p) * kk - om * t + 6.2831853 * wHash(vec2(fi, 9.1)));
   }
   return g;
 }
 void main() {
+  // Only where the satellites have seen water (a little dilated, made on the CPU); the
+  // shoreline itself is where Google's banks rise above our surface.
+  float occ = texture(u_occ, vec2(v_uv.x, 1.0 - v_uv.y)).r;
+  if (occ < 0.015) discard;
+  if (v_uv.x > u_cut.x && v_uv.y > u_cut.y && v_uv.x < u_cut.z && v_uv.y < u_cut.w) discard;
   float fp = max(length(dFdx(v_xy)), length(dFdy(v_xy)));
   vec2 sl = waveSlope(v_xy, fp);
   // The normal in the polygon's frame, then eye space.
@@ -103,7 +132,11 @@ void main() {
   vec3 hill = vec3(0.07, 0.085, 0.055) * (dot(czm_lightColorHdr, vec3(0.33)) * 0.5 + skyLum * 0.8);
   float skyPart = smoothstep(hor - 0.01, hor + 0.015, el);
   sky = mix(hill, sky, skyPart);
-  vec3 body = u_body * dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
+  // The water's own colour: deep blue-teal, lighter and greener where it is shallow or only
+  // sometimes water (low occurrence: the margins), as in MSFS.
+  // (Subtle: with the grade on top a strong tint made teal blotches like Google's photo.)
+  vec3 bodyCol = mix(u_body, vec3(0.08, 0.16, 0.15), 0.45 * (1.0 - smoothstep(0.15, 0.7, occ)));
+  vec3 body = bodyCol * dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
   vec3 col = mix(body, sky, F);
   // The sun's glint: GGX. Where the ripples are too small to draw (far, grazing) they become
   // roughness, and the path glitters: many small facets catch the sun, most don't (a hashed
@@ -182,7 +215,7 @@ void main() {
   vec2 en = vec2(dot(rel, u_weast), dot(rel, u_wnorth)) + u_camEN;
   // (Faded where they are under a few pixels: far away they aliased into dashed stripes.)
   float fpx = max(length(dFdx(en)), length(dFdy(en)));
-  vec2 sl = 0.012 * (1.0 - smoothstep(0.4, 1.6, fpx)) * vec2(sin(en.x * 0.9 + u_time * 1.3) + 0.6 * sin(en.y * 1.7 - u_time * 1.9), sin(en.y * 1.1 + u_time * 1.1) + 0.6 * sin((en.x + en.y) * 1.4 + u_time * 2.3));
+  vec2 sl = 0.006 * (1.0 - smoothstep(0.2, 0.8, fpx)) * vec2(sin(en.x * 0.9 + u_time * 1.3) + 0.6 * sin(en.y * 1.7 - u_time * 1.9), sin(en.y * 1.1 + u_time * 1.1) + 0.6 * sin((en.x + en.y) * 1.4 + u_time * 2.3));
   vec3 nW = normalize(u_wup - u_weast * sl.x - u_wnorth * sl.y);
   vec3 n = czm_viewRotation * nW;
   vec3 R = reflect(V, n);
@@ -293,64 +326,72 @@ void main() {
   out_FragColor = vec4(sum / w, c.a);
 }`;
 
-interface Body {
-  poly: WaterPolygon;
-  /** Frame at the polygon's centre on the ellipsoid; the plane is raised by `level`. */
+interface Tile {
+  z: number;
+  x: number;
+  y: number;
+  /** Bounds [deg]. */
+  west: number;
+  east: number;
+  south: number;
+  north: number;
+  size: Cartesian2;
+  /** ENU frame at the tile's centre on the ellipsoid; drawn raised to its base level. */
   frame: Matrix4;
   model: Matrix4;
   centre: Cartographic;
   origin: Cartesian2;
-  /** Points inside the polygon where Google's height is picked [lon, lat] (triangle centroids). */
+  occ: unknown;
+  /** Probe points [lon, lat] and Google's height at each (NaN: no answer yet). */
   probes: [number, number][];
-  /** The plane's own height at each probe above its base (0: level). */
-  probeBase: number[];
-  heights: number[];
+  heights: Float64Array;
   probeNext: number;
-  /** When the level was last measured (it is measured again: tiles sharpen). */
   probedAt: number;
-  /** The terrain's horizon seen from the water (16 directions), once the level is known. */
+  /** Lowest level in Google's own (unshifted) heights; undefined until measured. */
+  base: number | undefined;
+  levels: Float32Array;
+  levelTex: unknown;
   horizon: number[];
-  /** Water level in Google's own (unshifted) heights; drawn lowered by its current offset. */
-  level: number | undefined;
-  va: unknown;
-  count: number;
   sphere: BoundingSphere;
+  cut: Cartesian4;
   cmd: unknown;
   maskCmd: unknown;
 }
 
 export class Water {
-  private readonly tiles = new Map<string, Body[] | null>();
+  private readonly tiles = new Map<string, Tile | null>();
   private readonly centres: Record<number, string> = {};
   private program: unknown;
+  private maskProgram: unknown;
+  private grid: { va: unknown; count: number } | undefined;
   private wind = { dir: new Cartesian2(1, 0), strength: 0.2 };
   private readonly t0 = performance.now();
   /** Deep water's own colour (light scattered back from inside), relative to the sky's light. */
-  private readonly body = new Cartesian3(0.045, 0.11, 0.11);
+  private readonly body = new Cartesian3(0.05, 0.14, 0.16);
   private readonly sky: Record<string, () => unknown>;
   show = true;
   /** Behind the loading screen: the levelling may take more of each frame. */
   loading = false;
   readonly reflect: PostProcessStage;
   readonly smear: PostProcessStage;
-  /** The reflection pass's mask target (drawing-buffer sized) and its program. */
+  /** The reflection pass's mask target (drawing-buffer sized). */
   private mask: { tex: unknown; fb: unknown; w: number; h: number; clear: unknown } | undefined;
-
-  private maskProgram: unknown;
   /** ?wglint= the sun's glint strength (tuning). */
   private readonly glint = Number(new URLSearchParams(location.search).get("wglint") ?? 0.25);
+  /** The near tiles' bounds [deg] (cut out of the far ones). */
+  private near = { west: 0, east: 0, south: 0, north: 0 };
+  private readonly credit = new Credit("Water: EC JRC/Google Global Surface Water");
 
   constructor(
     private readonly viewer: Viewer,
     private readonly google3d: Google3D,
     atmosphere: Atmosphere,
-    private readonly url: string,
     /** Our terrain's height [m] (Google's tiles are drawn lowered to match it). */
     private readonly groundAt: (latDeg: number, lonDeg: number, zoom?: number) => number | undefined,
   ) {
     this.sky = atmosphere.skyUniforms();
     viewer.scene.primitives.add(this);
-
+    viewer.creditDisplay.addStaticCredit(this.credit);
     // The reflections: after the clouds, before the tonemap (main.ts adds that later).
     const t0 = this.t0, camEN = new Cartesian2();
     this.reflect = new PostProcessStage({
@@ -370,7 +411,7 @@ export class Water {
     this.smear = new PostProcessStage({
       fragmentShader: SMEAR_FS,
       pixelDatatype: C.PixelDatatype.HALF_FLOAT,
-      uniforms: { u_mask: () => this.mask?.tex ?? null, u_rough: () => 1.2 + 2.5 * this.wind.strength },
+      uniforms: { u_mask: () => this.mask?.tex ?? null, u_rough: () => 0.8 + 1.2 * this.wind.strength },
     });
     viewer.scene.postProcessStages.add(this.smear);
     if (new URLSearchParams(location.search).get("wssr") === "0") this.reflect.enabled = this.smear.enabled = false;
@@ -384,182 +425,295 @@ export class Water {
 
   /** Every frame with the glider's position: tiles round it. */
   follow(latDeg: number, lonDeg: number): void {
-    const ring = (z: number, r: number, keep: number, kinds: (k: string) => boolean, minAreaM2: number, maxAreaM2 = Infinity) => {
-      const [fx, fy] = lonLatToTile(lonDeg, latDeg, z);
+    const ring = (z: number, r: number, keep: number) => {
+      const n = 2 ** z;
+      const fx = ((lonDeg + 180) / 360) * n, fy = ((1 - Math.log(Math.tan((latDeg * Math.PI) / 180) + 1 / Math.cos((latDeg * Math.PI) / 180)) / Math.PI) / 2) * n;
       const cx = Math.floor(fx), cy = Math.floor(fy), key = `${cx}/${cy}`;
       if (this.centres[z] === key) return;
       this.centres[z] = key;
-      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) this.load(z, cx + dx, cy + dy, kinds, minAreaM2, maxAreaM2);
-      for (const [k, bodies] of this.tiles) {
+      if (z === 13) {
+        this.near = { west: tileLon(cx - r, z), east: tileLon(cx + r + 1, z), north: tileLat(cy - r, z), south: tileLat(cy + r + 1, z) };
+        for (const t of this.tiles.values()) if (t && t.z !== 13) this.cutFor(t);
+      }
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) this.load(z, cx + dx, cy + dy);
+      for (const [k, t] of this.tiles) {
         const [tz, x, y] = k.split("/").map(Number) as [number, number, number];
         if (tz === z && (Math.abs(x - cx) > keep || Math.abs(y - cy) > keep)) {
-          for (const b of bodies ?? []) (b.va as { destroy(): void }).destroy();
+          this.free(t);
           this.tiles.delete(k);
         }
       }
     };
-    // Standing water only: OSM maps rivers here as polygons over their whole gravel bed (at
-    // Codlea a 300 m band of mostly dry stones became a sheet of water).
-    ring(11, 2, 3, (k) => k === "lake" || k === "ocean", 20_000);
-    // Zoom 14: only what zoom 11 leaves out (the same lake from both made two planes at
-    // slightly different levels).
-    ring(14, 1, 2, (k) => k === "pond" || k === "lake", 800, 20_000);
+    ring(13, 2, 3);
+    ring(11, 2, 3);
   }
 
-  private load(z: number, x: number, y: number, kinds: (k: string) => boolean, minAreaM2: number, maxAreaM2: number): void {
+  private free(t: Tile | null): void {
+    if (!t) return;
+    (t.occ as { destroy(): void }).destroy();
+    (t.levelTex as { destroy?(): void } | undefined)?.destroy?.();
+  }
+
+  /** The near tiles' rectangle in a far tile's uv (nothing drawn there). */
+  private cutFor(t: Tile): void {
+    const n = this.near;
+    t.cut = new Cartesian4((n.west - t.west) / (t.east - t.west), (n.south - t.south) / (t.north - t.south), (n.east - t.west) / (t.east - t.west), (n.north - t.south) / (t.north - t.south));
+  }
+
+  private load(z: number, x: number, y: number): void {
     const key = `${z}/${x}/${y}`;
     if (this.tiles.has(key)) return;
     this.tiles.set(key, null);
-    void fetchWater(z, x, y, kinds, this.url)
-      .then((all) => {
-        if (!this.tiles.has(key)) return;
-        const bodies = all
-          .map((p) => ({ p, a: areaM2(p.rings[0]!) }))
-          .filter((e) => e.a >= minAreaM2 && e.a < maxAreaM2)
-          .sort((a, b) => b.a - a.a)
-          .slice(0, 80)
-          .map((e) => this.build(e.p))
-          .filter((b): b is Body => !!b);
-        this.tiles.set(key, bodies);
-      })
-      .catch(() => {});
+    void (async () => {
+      const r = await fetch(JRC.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y)));
+      if (!r.ok) return; // 404: no water seen here
+      const bmp = await createImageBitmap(await r.blob(), { premultiplyAlpha: "none" });
+      const g = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
+      g.drawImage(bmp, 0, 0);
+      const rgba = g.getImageData(0, 0, 256, 256).data;
+      if (!this.tiles.has(key)) return;
+      const t = this.build(z, x, y, rgba);
+      if (t) this.tiles.set(key, t);
+    })().catch(() => {});
   }
 
-  private build(poly: WaterPolygon): Body | undefined {
+  private build(z: number, x: number, y: number, rgba: Uint8ClampedArray): Tile | undefined {
     const context = (this.viewer.scene as unknown as { context: unknown }).context;
-    const ring = (r: [number, number][]) => Cartesian3.fromDegreesArray(r.slice(0, -1).flat());
-    const triangulate = (rings: [number, number][][]) =>
-      PolygonGeometry.createGeometry(new PolygonGeometry({ polygonHierarchy: new PolygonHierarchy(ring(rings[0]!), rings.slice(1).map((h) => new PolygonHierarchy(ring(h)))), vertexFormat: VertexFormat.POSITION_ONLY, granularity: Cesium.Math.toRadians(0.01) }));
-    // Drawn 40 m past OSM's outline (at a reservoir in Google's photo the water reached well
-    // past it: a teal rim round ours). Where the shore is higher than the water it hides the
-    // plane anyway, so the shoreline is Google's; the levels are probed inside the outline.
-    const geom = triangulate([offsetRing(poly.rings[0]!, 40), ...poly.rings.slice(1).map((h) => offsetRing(h, -40))]);
-    const inner = triangulate(poly.rings);
-    if (!geom || !inner) return undefined;
-    const pos = geom.attributes.position!.values as unknown as Float64Array, idx = geom.indices as unknown as Uint16Array | Uint32Array;
-    // Frame at the centre of the vertices, on the ellipsoid.
-    const centreWC = BoundingSphere.fromVertices(Array.from(pos)).center;
-    const centre = Cartographic.fromCartesian(centreWC);
-    centre.height = 0;
+    // Occurrence (alpha), grown by ~65 m (z13: 5 pixels; z11: 1): Google's photo often shows
+    // water 30–60 m past what JRC has seen (a teal rim round ours); the shoreline is cut by
+    // Google's banks anyway. Then softened (a box blur), so edges and the shallow tint have no
+    // 30 m steps.
+    const a = new Uint8Array(256 * 256);
+    let any = 0;
+    for (let i = 0; i < a.length; i++) any |= a[i] = rgba[4 * i + 3]!;
+    if (!any) return undefined;
+    const R = z >= 13 ? 5 : 1;
+    const grown = new Uint8Array(256 * 256);
+    for (let j = 0; j < 256; j++)
+      for (let i = 0; i < 256; i++) {
+        let m = 0;
+        for (let dj = -R; dj <= R; dj++)
+          for (let di = -R; di <= R; di++) {
+            const ii = i + di, jj = j + dj, d = Math.hypot(di, dj);
+            if (d > R + 0.5 || ii < 0 || jj < 0 || ii > 255 || jj > 255) continue;
+            m = Math.max(m, a[jj * 256 + ii]! * (1 - (0.5 * d) / (R + 1)));
+          }
+        grown[j * 256 + i] = m;
+      }
+    const occ = new Uint8Array(256 * 256 * 4);
+    for (let j = 0; j < 256; j++)
+      for (let i = 0; i < 256; i++) {
+        let sum = 0, n = 0;
+        for (let dj = -1; dj <= 1; dj++)
+          for (let di = -1; di <= 1; di++) {
+            const ii = i + di, jj = j + dj;
+            if (ii >= 0 && jj >= 0 && ii < 256 && jj < 256) (sum += grown[jj * 256 + ii]!), n++;
+          }
+        const k = 4 * (j * 256 + i);
+        occ[k] = occ[k + 1] = occ[k + 2] = occ[k + 3] = Math.round(sum / n);
+      }
+    const tex = new C.Texture({
+      context,
+      width: 256,
+      height: 256,
+      pixelFormat: C.PixelFormat.RGBA,
+      pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE,
+      source: { arrayBufferView: occ },
+      flipY: false,
+      sampler: new C.Sampler({ wrapS: C.TextureWrap.CLAMP_TO_EDGE, wrapT: C.TextureWrap.CLAMP_TO_EDGE, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }),
+    });
+    const west = tileLon(x, z), east = tileLon(x + 1, z), north = tileLat(y, z), south = tileLat(y + 1, z);
+    const centre = Cartographic.fromDegrees((west + east) / 2, (south + north) / 2, 0);
+    const kx = 111_320 * Math.cos(centre.latitude), ky = 111_132;
+    const size = new Cartesian2((east - west) * kx, (north - south) * ky);
     const frame = Transforms.eastNorthUpToFixedFrame(Cartographic.toCartesian(centre));
-    const inv = Matrix4.inverseTransformation(frame, new Matrix4());
-    const local = new Float32Array(pos.length), p = new Cartesian3(), n = pos.length / 3;
-    for (let i = 0; i < pos.length; i += 3) {
-      Matrix4.multiplyByPoint(inv, Cartesian3.fromElements(pos[i]!, pos[i + 1]!, pos[i + 2]!, p), p);
-      local[i] = p.x;
-      local[i + 1] = p.y;
-      local[i + 2] = p.z;
+    // Probes: pixels water most of the time (else at all), on a grid, at most 64 in all.
+    const pick = (min: number) => {
+      const out: [number, number][] = [];
+      for (let j = 4; j < 256; j += 8) for (let i = 4; i < 256; i += 8) if (a[j * 256 + i]! >= min) out.push([west + ((i + 0.5) / 256) * (east - west), north - ((j + 0.5) / 256) * (north - south)]);
+      return out;
+    };
+    let probes = pick(140);
+    if (probes.length < 4) probes = pick(15);
+    if (!probes.length) return undefined;
+    if (probes.length > 64) {
+      const k = probes.length / 64;
+      probes = Array.from({ length: 64 }, (_, i) => probes[Math.floor(i * k)]!);
     }
-    // Probes: centroids of the largest triangles of the outline itself (inside it).
-    const tris: { a: number; c: [number, number]; b: number }[] = [];
-    const ipos = inner.attributes.position!.values as unknown as Float64Array, iidx = inner.indices as unknown as Uint16Array | Uint32Array;
-    const P = (k: number) => Cartesian3.fromElements(ipos[3 * k]!, ipos[3 * k + 1]!, ipos[3 * k + 2]!);
-    for (let t = 0; t < iidx.length; t += 3) {
-      const A = P(iidx[t]!), B = P(iidx[t + 1]!), Cc = P(iidx[t + 2]!);
-      const area = Cartesian3.magnitude(Cartesian3.cross(Cartesian3.subtract(B, A, new Cartesian3()), Cartesian3.subtract(Cc, A, new Cartesian3()), new Cartesian3())) / 2;
-      const cc = Cartographic.fromCartesian(Cartesian3.multiplyByScalar(Cartesian3.add(Cartesian3.add(A, B, new Cartesian3()), Cc, new Cartesian3()), 1 / 3, new Cartesian3()));
-      tris.push({ a: area, c: [Cesium.Math.toDegrees(cc.longitude), Cesium.Math.toDegrees(cc.latitude)], b: 0 });
-    }
-    // Many, spread out: only those in view can be measured (Google's tiles answer only where
-    // they are drawn), and a lake half behind the camera must level from its visible half.
-    const best = tris.sort((a, b) => b.a - a.a).slice(0, 24);
-    // Plus the outline's centre (on some small ponds every triangle-centre pick missed while the
-    // centre answered; why is not known).
-    const probes = [...best.map((t) => t.c), [Cesium.Math.toDegrees(centre.longitude), Cesium.Math.toDegrees(centre.latitude)] as [number, number]], probeBase = [...best.map((t) => t.b), 0];
-    const vb = C.Buffer.createVertexBuffer({ context, typedArray: local, usage: C.BufferUsage.STATIC_DRAW });
-    const ib = C.Buffer.createIndexBuffer({ context, typedArray: idx instanceof Uint32Array ? idx : new Uint16Array(idx), usage: C.BufferUsage.STATIC_DRAW, indexDatatype: idx instanceof Uint32Array ? C.IndexDatatype.UNSIGNED_INT : C.IndexDatatype.UNSIGNED_SHORT });
-    const va = new C.VertexArray({ context, indexBuffer: ib, attributes: [{ index: 0, vertexBuffer: vb, componentsPerAttribute: 3, componentDatatype: C.ComponentDatatype.FLOAT }] });
-    const kx = 111_320 * Math.cos(centre.latitude);
-    const origin = new Cartesian2(((Cesium.Math.toDegrees(centre.longitude) * kx) % 4096 + 4096) % 4096, ((Cesium.Math.toDegrees(centre.latitude) * 111_132) % 4096 + 4096) % 4096);
-    // At the ground's height (the outline is on the ellipsoid, hundreds of metres below: small
-    // ponds were culled as out of view, so never measured nor drawn); at the water once levelled.
-    const sphere = BoundingSphere.fromVertices(Array.from(pos));
-    const cla = Cesium.Math.toDegrees(centre.latitude), clo = Cesium.Math.toDegrees(centre.longitude);
-    const g0 = this.groundAt(cla, clo, 13) ?? this.groundAt(cla, clo, 11) ?? this.groundAt(cla, clo, 9) ?? 0;
-    sphere.center = Cartesian3.fromRadians(centre.longitude, centre.latitude, g0);
-    sphere.radius += 30;
-    return { poly, frame, model: Matrix4.clone(frame), centre, origin, probes, probeBase, heights: [], probeNext: 0, level: undefined, horizon: new Array(16).fill(0), probedAt: 0, va, count: idx.length, sphere, cmd: undefined, maskCmd: undefined };
+    const g0 = this.ground((south + north) / 2, (west + east) / 2) ?? 0;
+    const sphere = new BoundingSphere(Cartesian3.fromRadians(centre.longitude, centre.latitude, g0), Math.hypot(size.x, size.y) / 2 + 60);
+    const t: Tile = {
+      z, x, y, west, east, south, north, size, frame, model: Matrix4.clone(frame), centre,
+      origin: new Cartesian2((((west + east) / 2) * kx % 4096 + 4096) % 4096, (((south + north) / 2) * ky % 4096 + 4096) % 4096),
+      occ: tex, probes, heights: new Float64Array(probes.length).fill(Number.NaN), probeNext: 0, probedAt: 0, base: undefined,
+      levels: new Float32Array(LEV * LEV), levelTex: undefined, horizon: new Array(16).fill(0), sphere, cut: new Cartesian4(2, 2, -1, -1), cmd: undefined, maskCmd: undefined,
+    };
+    if (z !== 13) this.cutFor(t);
+    return t;
+  }
+
+  /** Our terrain, finest tiles loaded first. */
+  private ground(lat: number, lon: number): number | undefined {
+    return this.groundAt(lat, lon, 13) ?? this.groundAt(lat, lon, 11) ?? this.groundAt(lat, lon, 9);
   }
 
   /**
-   * Google's water level: a few height picks a frame (0.8 ms) among the bodies in view still
-   * without one, or measured more than 15 s ago (finer tiles have come since). A pick counts
-   * only within 60 m of our terrain: on a coarse tile (before the fine ones load) it lands on
-   * a chord of a triangle hundreds of km across, kilometres below the ground; a reservoir's
-   * water can be tens of metres above the valley floor the terrain data has.
+   * Google's water levels: height picks (0.8 ms a frame, 4 behind the loading screen) at the
+   * probes in view, of tiles still without levels or measured more than 15 s ago.
    */
   private probe(cull: { computeVisibility(b: BoundingSphere): number }): void {
     const t0 = performance.now(), budget = this.loading ? 4 : 0.8;
-    for (const bodies of this.tiles.values())
-      for (const b of bodies ?? []) {
-        if (b.probeNext >= b.probes.length) {
-          if (b.level === undefined || t0 - b.probedAt > 15_000) (b.probeNext = 0), (b.heights = []);
-          else continue;
-        }
-        if (cull.computeVisibility(b.sphere) === Intersect.OUTSIDE) continue;
-        while (b.probeNext < b.probes.length && performance.now() - t0 < budget) {
-          const [lon, lat] = b.probes[b.probeNext++]!;
-          probeSphere.center = Cartesian3.fromDegrees(lon, lat, b.level !== undefined ? b.level - this.google3d.offsetM : (this.groundAt(lat, lon) ?? 0), undefined, probeSphere.center);
-          if (cull.computeVisibility(probeSphere) === Intersect.OUTSIDE) continue;
-          const h = this.google3d.tileset.getHeight(Cartographic.fromDegrees(lon, lat), this.viewer.scene), o = this.groundAt(lat, lon);
-          if (h !== undefined && o !== undefined && Number.isFinite(h) && Math.abs(h - o) < 60) b.heights.push(h - b.probeBase[b.probeNext - 1]!);
-        }
-        if (b.probeNext >= b.probes.length) {
-          b.probedAt = t0;
-          // Three answers for a lake; one is enough for a small pond (often only its centre answers).
-          if (b.heights.length >= (b.sphere.radius < 400 ? 1 : 3)) {
-            const v = [...b.heights].sort((x, y) => x - y);
-            // The median, a little above (Google's water mesh is noisy; ours covers it).
-            b.level = v[Math.floor(v.length / 2)]! + 0.25 + this.google3d.offsetM;
-            this.place(b);
-            this.horizonOf(b);
-          }
-        }
-        if (performance.now() - t0 >= budget) return;
+    for (const t of this.tiles.values()) {
+      if (!t) continue;
+      if (t.probeNext >= t.probes.length) {
+        if (t.base === undefined || t0 - t.probedAt > 15_000) t.probeNext = 0;
+        else continue;
       }
-  }
-
-  /**
-   * The highest elevation angle of our terrain in 16 directions from the water's centre, out to
-   * 8 km (ground beyond the shore only: the first 60 m skipped).
-   */
-  private horizonOf(b: Body): void {
-    const lat0 = Cesium.Math.toDegrees(b.centre.latitude), lon0 = Cesium.Math.toDegrees(b.centre.longitude);
-    const kx = 111_320 * Math.cos(b.centre.latitude), ky = 111_132, h0 = b.level! - this.google3d.offsetM;
-    for (let k = 0; k < 16; k++) {
-      const a = (k / 16) * 2 * Math.PI;
-      let best = 0;
-      for (let d = 60 + b.sphere.radius * 0.5; d < 8000; d *= 1.18) {
-        const h = this.groundAt(lat0 + (Math.cos(a) * d) / ky, lon0 + (Math.sin(a) * d) / kx, 12);
-        if (h !== undefined) best = Math.max(best, Math.atan2(h - h0, d));
+      if (cull.computeVisibility(t.sphere) === Intersect.OUTSIDE) continue;
+      while (t.probeNext < t.probes.length && performance.now() - t0 < budget) {
+        const k = t.probeNext++, [lon, lat] = t.probes[k]!;
+        const o = this.ground(lat, lon);
+        if (o === undefined) continue;
+        probeSphere.center = Cartesian3.fromDegrees(lon, lat, t.base !== undefined ? t.base - this.google3d.offsetM : o, undefined, probeSphere.center);
+        if (cull.computeVisibility(probeSphere) === Intersect.OUTSIDE) continue;
+        const h = this.google3d.tileset.getHeight(Cartographic.fromDegrees(lon, lat), this.viewer.scene);
+        if (h !== undefined && Number.isFinite(h) && Math.abs(h - o) < 60) t.heights[k] = h + this.google3d.offsetM;
       }
-      b.horizon[k] = best;
+      // A first estimate as soon as a few answers are in (a full pass takes a few seconds).
+      if (t.base === undefined && t.probeNext < t.probes.length) {
+        let n = 0;
+        for (const h of t.heights) if (Number.isFinite(h)) n++;
+        if (n >= 6) this.levelGrid(t);
+      }
+      if (t.probeNext >= t.probes.length) {
+        t.probedAt = t0;
+        this.levelGrid(t);
+      }
+      if (performance.now() - t0 >= budget) return;
     }
   }
 
-  /** The plane at its level, as Google's tiles are drawn now (lowered by their offset). */
-  private place(b: Body): void {
-    const h = b.level! - this.google3d.offsetM, f = b.frame;
-    Matrix4.setTranslation(f, new Cartesian3(f[12]! + f[8]! * h, f[13]! + f[9]! * h, f[14]! + f[10]! * h), b.model);
-    b.sphere.center = Cartesian3.fromRadians(b.centre.longitude, b.centre.latitude, h, undefined, b.sphere.center);
+  /**
+   * The 16×16 level grid: per cell the median of the answers within ~500 m (z13; a third of the
+   * tile for far ones), else the nearest answer; a little above Google's water.
+   */
+  private levelGrid(t: Tile): boolean {
+    const valid: { x: number; y: number; h: number }[] = [];
+    const kx = 111_320 * Math.cos(t.centre.latitude), ky = 111_132;
+    // Its own answers and its neighbours' (a lake crossing a tile edge: the side with few
+    // probes, or none in view, levels from the other).
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const n = dx || dy ? this.tiles.get(`${t.z}/${t.x + dx}/${t.y + dy}`) : t;
+        if (!n) continue;
+        n.probes.forEach(([lon, lat], i) => {
+          const h = n.heights[i]!;
+          if (Number.isFinite(h)) valid.push({ x: (lon - t.west) * kx, y: (lat - t.south) * ky, h });
+        });
+      }
+    const R = t.z === 13 ? 500 : t.size.x / 3;
+    // The nearest answer counts only this close (not another lake's).
+    const far = t.z === 13 ? 1500 : t.size.x * 0.6;
+    const inside = valid.filter((v) => v.x > -far && v.y > -far && v.x < t.size.x + far && v.y < t.size.y + far);
+    if (!inside.length) return false;
+    const cell = new Float64Array(LEV * LEV);
+    let base = Infinity;
+    for (let j = 0; j < LEV; j++)
+      for (let i = 0; i < LEV; i++) {
+        const cx = ((i + 0.5) / LEV) * t.size.x, cy = ((j + 0.5) / LEV) * t.size.y;
+        const near = inside.filter((v) => Math.hypot(v.x - cx, v.y - cy) < R).map((v) => v.h).sort((p, q) => p - q);
+        let h: number;
+        if (near.length) h = near[near.length >> 1]!;
+        else {
+          let best = Infinity;
+          h = inside[0]!.h;
+          for (const v of inside) {
+            const d = Math.hypot(v.x - cx, v.y - cy);
+            if (d < best) (best = d), (h = v.h);
+          }
+        }
+        // 0.9 m above: Google's water mesh is noisy (±1 m), and close up, where the pull towards the
+        // camera is small, it poked through ours in teal blotches.
+        cell[j * LEV + i] = h + 0.9;
+        base = Math.min(base, h + 0.9);
+      }
+    const first = t.base === undefined;
+    t.base = base;
+    for (let k = 0; k < cell.length; k++) t.levels[k] = cell[k]! - base;
+    const context = (this.viewer.scene as unknown as { context: unknown }).context;
+    (t.levelTex as { destroy?(): void } | undefined)?.destroy?.();
+    t.levelTex = new C.Texture({
+      context,
+      width: LEV,
+      height: LEV,
+      pixelFormat: C.PixelFormat.RED,
+      pixelDatatype: C.PixelDatatype.FLOAT,
+      source: { arrayBufferView: t.levels },
+      flipY: false,
+      sampler: new C.Sampler({ minificationFilter: C.TextureMinificationFilter.NEAREST, magnificationFilter: C.TextureMagnificationFilter.NEAREST }),
+    });
+    this.place(t);
+    if (first) {
+      this.horizonOf(t);
+      // Its neighbours without a level may take one from it now.
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const n = this.tiles.get(`${t.z}/${t.x + dx}/${t.y + dy}`);
+          if (n && n.base === undefined) this.levelGrid(n);
+        }
+    }
+    return true;
+  }
+
+  /** The highest elevation angle of our terrain in 16 directions from the tile's centre, to 8 km. */
+  private horizonOf(t: Tile): void {
+    const lat0 = Cesium.Math.toDegrees(t.centre.latitude), lon0 = Cesium.Math.toDegrees(t.centre.longitude);
+    const kx = 111_320 * Math.cos(t.centre.latitude), ky = 111_132, h0 = t.base! - this.google3d.offsetM;
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * 2 * Math.PI;
+      let best = 0;
+      for (let d = 300; d < 8000; d *= 1.18) {
+        const h = this.groundAt(lat0 + (Math.cos(a) * d) / ky, lon0 + (Math.sin(a) * d) / kx, 12);
+        if (h !== undefined) best = Math.max(best, Math.atan2(h - h0, d));
+      }
+      t.horizon[k] = best;
+    }
+  }
+
+  /** The grid at its base level, as Google's tiles are drawn now (lowered by their offset). */
+  private place(t: Tile): void {
+    const h = t.base! - this.google3d.offsetM, f = t.frame;
+    Matrix4.setTranslation(f, new Cartesian3(f[12]! + f[8]! * h, f[13]! + f[9]! * h, f[14]! + f[10]! * h), t.model);
+    t.sphere.center = Cartesian3.fromRadians(t.centre.longitude, t.centre.latitude, h, undefined, t.sphere.center);
   }
   private placedOffset = Number.NaN;
 
-  /** One body's uniforms (all of them, in one place). */
-  private uniforms(b: Body, wind: Cartesian4): Record<string, () => unknown> {
-    return { ...this.sky, u_origin: () => b.origin, u_wind: () => wind, u_body: () => this.body, u_glint: () => this.glint, u_hor: () => b.horizon };
+  /** One tile's uniforms (all of them, in one place). */
+  private uniforms(t: Tile, wind: Cartesian4): Record<string, () => unknown> {
+    return { ...this.sky, u_origin: () => t.origin, u_tile: () => new Cartesian4(t.size.x, t.size.y, 0, 0), u_level: () => t.levelTex, u_occ: () => t.occ, u_cut: () => t.cut, u_wind: () => wind, u_body: () => this.body, u_glint: () => this.glint, u_hor: () => t.horizon };
   }
 
   /** Cesium primitive interface. */
   update(frameState: { commandList: unknown[]; context: unknown; cullingVolume: { computeVisibility(b: BoundingSphere): number }; passes: { render: boolean } }): void {
     if (!this.show || !frameState.passes.render) return;
     this.probe(frameState.cullingVolume);
-    // Google's offset moved (it is blended in): every plane with it.
     if (this.google3d.offsetM !== this.placedOffset) {
       this.placedOffset = this.google3d.offsetM;
-      for (const bodies of this.tiles.values()) for (const b of bodies ?? []) if (b.level !== undefined) this.place(b);
+      for (const t of this.tiles.values()) if (t && t.base !== undefined) this.place(t);
     }
     const context = frameState.context;
+    if (!this.grid) {
+      const v: number[] = [], idx: number[] = [];
+      for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) v.push(i / (GRID - 1), j / (GRID - 1));
+      for (let j = 0; j < GRID - 1; j++)
+        for (let i = 0; i < GRID - 1; i++) {
+          const a = j * GRID + i;
+          idx.push(a, a + 1, a + GRID, a + 1, a + GRID + 1, a + GRID);
+        }
+      const vb = C.Buffer.createVertexBuffer({ context, typedArray: new Float32Array(v), usage: C.BufferUsage.STATIC_DRAW });
+      const ib = C.Buffer.createIndexBuffer({ context, typedArray: new Uint16Array(idx), usage: C.BufferUsage.STATIC_DRAW, indexDatatype: C.IndexDatatype.UNSIGNED_SHORT });
+      this.grid = { va: new C.VertexArray({ context, indexBuffer: ib, attributes: [{ index: 0, vertexBuffer: vb, componentsPerAttribute: 2, componentDatatype: C.ComponentDatatype.FLOAT }] }), count: idx.length };
+    }
     if (!this.program) this.program = C.ShaderProgram.fromCache({ context, vertexShaderSource: VS, fragmentShaderSource: (new URLSearchParams(location.search).get("waterdbg") === "1" ? "#define WATER_DEBUG\n" : "") + FS, attributeLocations: { position: 0 } });
     if (!this.maskProgram) this.maskProgram = C.ShaderProgram.fromCache({ context, vertexShaderSource: VS, fragmentShaderSource: "#define WATER_MASK\n" + FS, attributeLocations: { position: 0 } });
     // The mask target, as big as the drawing buffer; cleared each frame before the water.
@@ -570,48 +724,35 @@ export class Water {
       const tex = new C.Texture({ context, width: W, height: Hh, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.FLOAT, sampler: new C.Sampler({ minificationFilter: C.TextureMinificationFilter.NEAREST, magnificationFilter: C.TextureMagnificationFilter.NEAREST }) });
       const fb = new C.Framebuffer({ context, colorTextures: [tex], destroyAttachments: true });
       this.mask = { tex, fb, w: W, h: Hh, clear: new C.ClearCommand({ color: new Cesium.Color(0, 0, 0, 0), framebuffer: fb, pass: C.Pass.OPAQUE, owner: this }) };
-      for (const bodies of this.tiles.values()) for (const b of bodies ?? []) b.maskCmd = undefined;
+      for (const t of this.tiles.values()) if (t) t.maskCmd = undefined;
     }
     frameState.commandList.push(this.mask.clear);
-    const w = this.wind, t = (performance.now() - this.t0) / 1000;
-    const wind = new Cartesian4(w.dir.x, w.dir.y, w.strength, t);
-    for (const bodies of this.tiles.values())
-      for (const b of bodies ?? []) {
-        if (b.level === undefined) continue;
-        if (frameState.cullingVolume.computeVisibility(b.sphere) === Intersect.OUTSIDE) continue;
-        if (!b.cmd)
-          b.cmd = new C.DrawCommand({
-            vertexArray: b.va,
-            primitiveType: C.PrimitiveType.TRIANGLES,
-            shaderProgram: this.program,
-            renderState: C.RenderState.fromCache({ depthTest: { enabled: true }, depthMask: true, cull: { enabled: false } }),
-            pass: C.Pass.OPAQUE,
-            owner: this,
-            modelMatrix: b.model,
-            boundingVolume: b.sphere,
-            count: b.count,
-            uniformMap: this.uniforms(b, wind),
-          });
-        const cmd = b.cmd as Record<string, unknown>;
-        cmd["uniformMap"] = this.uniforms(b, wind);
-        frameState.commandList.push(b.cmd);
-        if (!b.maskCmd)
-          b.maskCmd = new C.DrawCommand({
-            vertexArray: b.va,
-            primitiveType: C.PrimitiveType.TRIANGLES,
-            shaderProgram: this.maskProgram,
-            renderState: C.RenderState.fromCache({ depthTest: { enabled: false }, depthMask: false, cull: { enabled: false } }),
-            pass: C.Pass.OPAQUE,
-            owner: this,
-            modelMatrix: b.model,
-            boundingVolume: b.sphere,
-            count: b.count,
-            framebuffer: this.mask.fb,
-            uniformMap: this.uniforms(b, wind),
-          });
-        (b.maskCmd as Record<string, unknown>)["uniformMap"] = cmd["uniformMap"];
-        frameState.commandList.push(b.maskCmd);
-      }
+    const w = this.wind, time = (performance.now() - this.t0) / 1000;
+    const wind = new Cartesian4(w.dir.x, w.dir.y, w.strength, time);
+    for (const t of this.tiles.values()) {
+      if (!t || t.base === undefined || !t.levelTex) continue;
+      if (frameState.cullingVolume.computeVisibility(t.sphere) === Intersect.OUTSIDE) continue;
+      const make = (program: unknown, framebuffer?: unknown) =>
+        new C.DrawCommand({
+          vertexArray: this.grid!.va,
+          primitiveType: C.PrimitiveType.TRIANGLES,
+          shaderProgram: program,
+          renderState: C.RenderState.fromCache(framebuffer ? { depthTest: { enabled: false }, depthMask: false, cull: { enabled: false } } : { depthTest: { enabled: true }, depthMask: true, cull: { enabled: false } }),
+          pass: C.Pass.OPAQUE,
+          owner: this,
+          modelMatrix: t.model,
+          boundingVolume: t.sphere,
+          count: this.grid!.count,
+          ...(framebuffer ? { framebuffer } : {}),
+          uniformMap: {},
+        });
+      if (!t.cmd) t.cmd = make(this.program);
+      if (!t.maskCmd) t.maskCmd = make(this.maskProgram, this.mask.fb);
+      const u = this.uniforms(t, wind);
+      (t.cmd as Record<string, unknown>)["uniformMap"] = u;
+      (t.maskCmd as Record<string, unknown>)["uniformMap"] = u;
+      frameState.commandList.push(t.cmd, t.maskCmd);
+    }
   }
 
   isDestroyed(): boolean {
@@ -619,53 +760,15 @@ export class Water {
   }
 
   destroy(): void {
-    for (const bodies of this.tiles.values()) for (const b of bodies ?? []) (b.va as { destroy(): void }).destroy();
+    for (const t of this.tiles.values()) this.free(t);
     this.tiles.clear();
     (this.mask?.fb as { destroy?(): void } | undefined)?.destroy?.();
     this.mask = undefined;
-
+    this.viewer.creditDisplay.removeStaticCredit(this.credit);
   }
 }
 
-/**
- * A closed [lon, lat] ring moved outwards (away from its inside) by d metres, each vertex along
- * its corner's bisector (miter, limited). Enough for tens of metres round a lake.
- */
-function offsetRing(r: [number, number][], d: number): [number, number][] {
-  const lat0 = r[0]![1], kx = 111_320 * Math.cos((lat0 * Math.PI) / 180), ky = 111_132;
-  const pts = r.slice(0, -1).map(([lo, la]) => [lo * kx, la * ky] as [number, number]);
-  const n = pts.length;
-  if (n < 3) return r;
-  let area = 0;
-  for (let i = 0; i < n; i++) {
-    const [x1, y1] = pts[i]!, [x2, y2] = pts[(i + 1) % n]!;
-    area += x1 * y2 - x2 * y1;
-  }
-  // Outward normal of an edge: right of it for a counter-clockwise ring, left for clockwise.
-  const sgn = area > 0 ? 1 : -1;
-  const normal = (a: [number, number], b: [number, number]) => {
-    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
-    return [(sgn * dy) / l, (-sgn * dx) / l] as [number, number];
-  };
-  const out = pts.map((p, i) => {
-    const n1 = normal(pts[(i - 1 + n) % n]!, p), n2 = normal(p, pts[(i + 1) % n]!);
-    let mx = n1[0] + n2[0], my = n1[1] + n2[1];
-    const ml = Math.hypot(mx, my) || 1;
-    mx /= ml;
-    my /= ml;
-    const k = d / Math.max(0.4, mx * n1[0] + my * n1[1]);
-    return [(p[0] + mx * k) / kx, (p[1] + my * k) / ky] as [number, number];
-  });
-  out.push(out[0]!);
-  return out;
-}
+const tileLon = (x: number, z: number) => (x / 2 ** z) * 360 - 180;
+const tileLat = (y: number, z: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / 2 ** z))) * 180) / Math.PI;
 
 const probeSphere = new BoundingSphere(new Cartesian3(), 5);
-
-/** Area of a closed [lon, lat] ring [m²] (local equirectangular). */
-function areaM2(r: [number, number][]): number {
-  const k = 111_320 * Math.cos(((r[0]?.[1] ?? 0) * Math.PI) / 180);
-  let a = 0;
-  for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j]![0] - r[i]![0]) * k * (r[j]![1] + r[i]![1]) * 111_132;
-  return Math.abs(a / 2);
-}

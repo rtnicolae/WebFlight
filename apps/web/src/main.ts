@@ -186,7 +186,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
   // Our water on Google's tiles (water.ts): with our sky only. ?water3d=0: Google's photo.
-  const water = google3d && atmosphere && osmTiles && params.get("water3d") !== "0" ? new Water(viewer, google3d, atmosphere, osmTiles, (la, lo, z) => renderTerrain.heightAt(la, lo, z)) : undefined;
+  const water = google3d && atmosphere && params.get("water3d") !== "0" ? new Water(viewer, google3d, atmosphere, (la, lo, z) => renderTerrain.heightAt(la, lo, z)) : undefined;
   // Last of the post-process stages (after the clouds and the water's reflections): bloom,
   // exposure, the grade, the tonemap (?exposure=, ?bloom=, … for tuning).
   const num = (k: string) => (params.has(k) ? { [k]: Number(params.get(k)) } : {});
