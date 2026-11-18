@@ -52,7 +52,8 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   quality=low | high (default: shadows, FXAA; HDR in flight) | ultra (+ 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
  *   dynres=0 | <scale> fixed render scale (default: 1.0–1.5× following the frame time, dynres.ts)
- *   hdr=0             LDR (default: HDR with bloom and our tonemap, hdr.ts; exposure=, bloom= tune it)
+ *   hdr=0             LDR (default: HDR with bloom, a cinematic grade and our tonemap, hdr.ts;
+ *                     exposure=, bloom=, saturation=, contrast=, tone=, vignette= tune it)
  *   pin=<metres>      keep the ground within that radius of the glider loaded (default: off)
  *   shadowdist=M      how far shadows reach [m] (default: 1–4 km with the height above ground)
  *   far=N             distant buildings out to ±N zoom-14 tiles, ~1.7 km each (default 3, ultra 5; 0: off)
@@ -174,7 +175,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined);
   if (google3d) life.onClose(() => google3d.setCloudShadows([], sun));
   // After the clouds: bloom, exposure, tonemap (?exposure=, ?bloom= for tuning).
-  const hdrFinish = hdr ? new HdrFinish(viewer, { ...(params.has("exposure") ? { exposure: Number(params.get("exposure")) } : {}), ...(params.has("bloom") ? { bloom: Number(params.get("bloom")) } : {}) }) : undefined;
+  const num = (k: string) => (params.has(k) ? { [k]: Number(params.get(k)) } : {});
+  const hdrFinish = hdr ? new HdrFinish(viewer, { ...num("exposure"), ...num("bloom"), ...num("saturation"), ...num("contrast"), ...num("tone"), ...num("vignette") }) : undefined;
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;

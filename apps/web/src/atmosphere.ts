@@ -16,8 +16,8 @@
  * convective top (the ground plus the weather's boundary-layer depth, where the cumulus
  * sit), 3% of that above: from above the layer its top is a line on the horizon. The
  * haze's strength from relative humidity (moist air hazes more: the particles swell):
- * visibility ~74 km at 20%, ~60 km at 35%, ~39 km at 60%, ~21 km at 80% (a July soaring day
- * here: 40–60 km, distant ridges blue and soft, the layer's top a pale band from above).
+ * visibility ~107 km at 20%, ~87 km at 35%, ~57 km at 60%, ~30 km at 80% (the owner: "reduce
+ * the haze a bit"; at 60 km on the July test day the near ground already looked washed).
  *
  * HDR only (hdr.ts), with Google's tiles: the sky and haze are radiances, scaled into the
  * scene's units (SKY_SCALE, AP_SCALE), and more as the sun goes down (the eye adapts). Stars
@@ -45,7 +45,7 @@ const MAX_D = 200;
  * slate blue, darker than the ground, where photos and the eye see a bright blue. Distant
  * ridges then sit a little darker than the sky behind them, as they do.
  */
-const SKY_SCALE = 10, AP_SCALE = 3.5;
+const SKY_SCALE = 10, AP_SCALE = 3;
 /** Aerosol above the boundary layer, relative to in it. */
 const ABOVE = 0.03;
 
@@ -367,7 +367,7 @@ export class Atmosphere {
     const params = new URLSearchParams(location.search);
     // Haze from the humidity (or ?vis=): the aerosol's extinction at the ground from the
     // visibility (Koschmieder, 3.912 / V), less the air's own (~0.0116 / km); 90% of it scattering.
-    const visKm = params.has("vis") ? Number(params.get("vis")) : Math.min(120, Math.max(15, 90 * Math.pow(1 - opts.humidity, 0.9)));
+    const visKm = params.has("vis") ? Number(params.get("vis")) : Math.min(160, Math.max(20, 130 * Math.pow(1 - opts.humidity, 0.9)));
     const mieExt = Math.max(0.002, 3.912 / visKm - 0.0116);
     const mie = new Cesium.Cartesian4(mieExt * 0.9, 1 / 0.9, opts.hazeTopM / 1000, opts.groundM / 1000);
     // The eye's adaptation as the sun goes down (no auto-exposure here): the twilight sky's

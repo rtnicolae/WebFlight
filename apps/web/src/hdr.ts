@@ -22,7 +22,7 @@
  * the ground the same (the tonemap is PBR Neutral without its dark offset), a warm glow along the
  * horizon at sunset.
  */
-import { Cartesian2, PixelDatatype, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
+import { Cartesian2, Cartesian4, PixelDatatype, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
 
 interface StagesInternal {
   update(...a: unknown[]): void;
@@ -106,12 +106,27 @@ uniform sampler2D u_bloomNear;
 uniform sampler2D u_bloomWide;
 uniform float u_exposure;
 uniform float u_bloom;
+uniform vec4 u_grade;   // saturation, contrast, split toning, vignette
 in vec2 v_textureCoordinates;
 void main() {
-  vec4 f = texture(colorTexture, v_textureCoordinates);
-  vec3 b = 0.6 * texture(u_bloomNear, v_textureCoordinates).rgb + 0.4 * texture(u_bloomWide, v_textureCoordinates).rgb;
-  vec3 c = (f.rgb + b * u_bloom) * u_exposure;
-  c = wfNeutral(max(c, vec3(0.0)));
+  vec2 uv = v_textureCoordinates;
+  vec4 f = texture(colorTexture, uv);
+  vec3 b = 0.6 * texture(u_bloomNear, uv).rgb + 0.4 * texture(u_bloomWide, uv).rgb;
+  vec3 c = max((f.rgb + b * u_bloom) * u_exposure, vec3(0.0));
+  // The grade, in linear light before the tonemap:
+  // saturation round the pixel's luminance,
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = max(mix(vec3(lum), c, u_grade.x), vec3(0.0));
+  // contrast as a power round mid-grey (0.18): darks deeper, lights brighter, mid-grey kept,
+  c = 0.18 * pow(c / 0.18 + 1e-6, vec3(u_grade.y));
+  // split toning: shadows a touch teal, highlights a touch warm (by luminance after contrast).
+  float l2 = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float hi = smoothstep(0.05, 0.6, l2);
+  c *= mix(vec3(0.96, 1.0, 1.05), vec3(1.04, 1.0, 0.95), hi) * (1.0 - u_grade.z) + vec3(u_grade.z);
+  c = wfNeutral(c);
+  // A light vignette (display values).
+  vec2 v = uv - 0.5;
+  c *= 1.0 - u_grade.w * smoothstep(0.25, 0.85, dot(v, v) * 2.2);
   out_FragColor = vec4(czm_inverseGamma(c), f.a);
 }`;
 
@@ -121,6 +136,14 @@ export interface FinishOptions {
   bloom?: number;
   /** Linear brightness above which things bloom. */
   threshold?: number;
+  /** Saturation (1: as rendered). */
+  saturation?: number;
+  /** Contrast round mid-grey (1: as rendered). */
+  contrast?: number;
+  /** Teal shadows / warm highlights: 1 full, 0 none. */
+  tone?: number;
+  /** Corner darkening, 0–1. */
+  vignette?: number;
 }
 
 /** The finishing stages, added after everything else (call after the clouds are created). */
@@ -129,7 +152,8 @@ export class HdrFinish {
   readonly settings: Required<FinishOptions>;
 
   constructor(viewer: Viewer, opts: FinishOptions = {}) {
-    const st = (this.settings = { exposure: opts.exposure ?? 1, bloom: opts.bloom ?? 0.35, threshold: opts.threshold ?? 1.2 });
+    // The look (owner: "bump saturation and contrast to where it looks cinematic and awesome").
+    const st = (this.settings = { exposure: opts.exposure ?? 1, bloom: opts.bloom ?? 0.35, threshold: opts.threshold ?? 1.2, saturation: opts.saturation ?? 1.35, contrast: opts.contrast ?? 1.22, tone: opts.tone ?? 1, vignette: opts.vignette ?? 0.18 });
     const half = PixelDatatype.HALF_FLOAT;
     const bright = new PostProcessStage({ fragmentShader: BRIGHT_FS, textureScale: 0.25, pixelDatatype: half, uniforms: { u_threshold: () => st.threshold } });
     const blur = (src: string, x: number, scale: number) => new PostProcessStage({ fragmentShader: BLUR_FS, textureScale: scale, pixelDatatype: half, uniforms: { u_src: src, u_dir: new Cartesian2(x, 1 - x) } });
@@ -137,7 +161,7 @@ export class HdrFinish {
     const nearV = blur(nearH.name, 0, 0.25);
     const wideH = blur(nearV.name, 1, 0.125);
     const wideV = blur(wideH.name, 0, 0.125);
-    const finish = new PostProcessStage({ fragmentShader: FINISH_FS, uniforms: { u_bloomNear: nearV.name, u_bloomWide: wideV.name, u_exposure: () => st.exposure, u_bloom: () => st.bloom } });
+    const finish = new PostProcessStage({ fragmentShader: FINISH_FS, uniforms: { u_bloomNear: nearV.name, u_bloomWide: wideV.name, u_exposure: () => st.exposure, u_bloom: () => st.bloom, u_grade: () => new Cartesian4(st.saturation, st.contrast, 1 - st.tone, st.vignette) } });
     this.stage = new PostProcessStageComposite({ stages: [bright, nearH, nearV, wideH, wideV, finish], inputPreviousStageTexture: false });
     viewer.scene.postProcessStages.add(this.stage);
   }
