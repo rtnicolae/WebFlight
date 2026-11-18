@@ -75,7 +75,17 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
   - grass ground cover;
   - near forests;
   - ground materials;
-  - teal rims where Google's water reaches past an OSM polygon that isn't levelled yet.
+  - teal patches where Google's photo shows water that OSM doesn't map (we must not detect water from Google's imagery).
+
+**Water reflections, same day (42408df, baf3604):**
+- **Screen-space reflections:** hills, trees and clouds, via a mask target.
+- **Ripple smear:** reflections stretched vertically, as on rippled water.
+- **Fixes:**
+  - bounding spheres sat on the ellipsoid, culling small ponds;
+  - the same lake appeared twice (zoom 11 and 14);
+  - levels now come from probes in view;
+  - the plane gets a small pull towards the camera instead of clipping Google's tiles (clipping cost 20–25% fps).
+- **Cost:** about 4% where a lake fills the view.
 
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
