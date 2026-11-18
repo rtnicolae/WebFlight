@@ -61,7 +61,8 @@ describe("fg-host with the ASK21 bundle", () => {
   it("runs the ported Nasal and reports what is not ported", async () => {
     const { host } = await hosted();
     const by = (st: string) => host.nasalStatus.filter((n) => n.status === st).map((n) => n.file.split("/").pop());
-    expect(by("ported").sort()).toEqual(["ask21.nas", "door.nas", "electrical.nas", "groundhandling.nas", "ilec-sc7.nas", "limits.nas", "te-vario.nas"]);
+    // immat.nas: listed upstream with the same index as te-vario.nas; the converter adds it back.
+    expect(by("ported").sort()).toEqual(["ask21.nas", "door.nas", "electrical.nas", "groundhandling.nas", "ilec-sc7.nas", "immat.nas", "limits.nas", "te-vario.nas"]);
     expect(by("not-ported").sort()).toEqual(["anemoi.nas", "ar6201.nas", "dragrobot.nas", "flarm.nas", "global.canvas.nas", "walk.nas", "walker-animate.nas"]);
     expect(host.warnings.filter((w) => w.startsWith("script"))).toEqual([]);
   }, 30_000);
