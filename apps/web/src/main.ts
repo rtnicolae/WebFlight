@@ -20,6 +20,7 @@ import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
 import { GrassField } from "./grass/grass-field.ts";
+import { DynamicResolution } from "./dynres.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
@@ -47,7 +48,7 @@ const BUNDLE = new URL(`bundles/${AIRCRAFT}/`, new URL(import.meta.env.BASE_URL,
  *   gdetail=0         no close-range ground texture over the photos
  *   quality=low | high (default: shadows, FXAA) | ultra (+ HDR, 4× MSAA)
  *   sharpen=0..1      contrast-adaptive sharpening (default 0: off)
- *   dynres=1          lower the resolution to keep ≥ 40 fps, down to 60% (default: fixed)
+ *   dynres=0 | <scale> fixed render scale (default: 1.0–1.5× following the frame time, dynres.ts)
  *   pin=<metres>      keep the ground within that radius of the glider loaded (default: off)
  *   shadowdist=M      how far shadows reach [m] (default: 1–4 km with the height above ground)
  *   far=N             distant buildings out to ±N zoom-14 tiles, ~1.7 km each (default 3, ultra 5; 0: off)
@@ -64,7 +65,7 @@ if ("serviceWorker" in navigator) {
 }
 const qualityOf = (p: URLSearchParams) => (["low", "high", "ultra"].includes(p.get("quality") ?? "") ? p.get("quality") : "high") as "low" | "high" | "ultra";
 const imageryOf = (p: URLSearchParams) => (["photo", "painted", "grid", "osm"].includes(p.get("imagery") ?? "") ? p.get("imagery") : p.get("map") === "osm" ? "osm" : "photo") as ImageryMode;
-const DYNRES = page.get("dynres") === "1";
+const DYNRES = page.get("dynres");
 const QUALITY = qualityOf(page);
 const IMAGERY = imageryOf(page);
 const GOOGLE3D = page.get("world") !== "globe" && IMAGERY === "photo";
@@ -292,22 +293,15 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
 
   let last = performance.now();
   let fps = 60;
-  let lastScale = 0;
-  const bootT = performance.now();
+  const dynres = new DynamicResolution(viewer, DYNRES === null ? undefined : DYNRES === "0" ? 1 : Number(DYNRES) || 1);
+  life.onClose(() => dynres.reset());
   viewer.scene.preUpdate.addEventListener(() => {
     const now = performance.now();
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
     if (dt > 0) fps += (1 / dt - fps) * 0.05;
-    // Dynamic resolution: below ~40 fps render fewer pixels (down to 60%), back up above ~55.
-    // Sharpening keeps it crisp. Off with ?dynres=0.
     if (life.isClosed) return;
-    if (DYNRES && now - lastScale > 2000 && now - bootT > 8000) {
-      lastScale = now;
-      const sc = viewer.resolutionScale;
-      if (fps < 40 && sc > 0.61) viewer.resolutionScale = Math.max(0.6, sc - 0.1);
-      else if (fps > 55 && sc < 0.99) viewer.resolutionScale = Math.min(1, sc + 0.1);
-    }
+    dynres.update(now, status.hidden);
 
     const controls = input.update(dt);
     send({ type: "controls", controls });
@@ -367,10 +361,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
       dt,
     );
   });
-  if (DYNRES) life.onClose(() => (viewer.resolutionScale = 1));
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view
