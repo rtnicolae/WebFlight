@@ -216,8 +216,10 @@ void main() {
   // Colour: the ground's, varied per blade and in patches (drier, lusher).
   // Grass is lighter and yellower than Sentinel-2's 10 m average of it (soil, shade in it).
   float dry = max(smoothstep(0.45, 0.9, vnoise(world * 0.09 + 5.0)) * meadow * 0.6, 1.0 - lush);
-  vec3 c = m.rgb * mix(vec3(1.18, 1.24, 0.95), vec3(1.04, 1.0, 0.92), dry) + vec3(0.02, 0.03, 0.0) * (1.0 - dry);
-  c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.15);
+  // (Less green boost and more grey than before: with the final grade's saturation on top the
+  // blades read neon against the photo's ground.)
+  vec3 c = m.rgb * mix(vec3(1.08, 1.12, 0.97), vec3(1.04, 1.0, 0.92), dry) + vec3(0.015, 0.02, 0.0) * (1.0 - dry);
+  c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.32);
   // Dry blades: straw, a third of them dead grey-brown; partly dry tufts keep green near the
   // root (the new growth), going straw towards the tips.
   vec3 straw = b3 > 0.68 ? vec3(0.5, 0.45, 0.34) : mix(vec3(0.76, 0.66, 0.42), vec3(0.68, 0.6, 0.38), b2);
@@ -268,7 +270,7 @@ void main() {
   // Tips catch more light and go yellow-green.
   // (Dry tips bleach paler.)
   vec3 col = mix(v_col, v_col * mix(vec3(1.12, 1.15, 0.8), vec3(1.14, 1.1, 0.98), v_dry), smoothstep(0.5, 1.0, t));
-  vec3 c = col * (sun * diff * 0.9 + sky) * ao + col * mix(vec3(1.05, 1.15, 0.55), vec3(1.1, 0.95, 0.6), v_dry) * sun * back * 0.7 + sun * spec;
+  vec3 c = col * (sun * diff * 0.9 + sky) * ao + col * mix(vec3(1.05, 1.15, 0.55), vec3(1.1, 0.95, 0.6), v_dry) * sun * back * 0.45 + sun * spec;
   // Display values; linear in HDR (czm_gammaCorrect).
   out_FragColor = czm_gammaCorrect(vec4(c, 1.0));
 }`;
