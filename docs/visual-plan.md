@@ -31,7 +31,19 @@ Audit of 18 November 2026, branch `mac/msfs-look` at e44fdab.
 | A1 resolution | Dynamic 1.0–1.5× (6e5cea0). |
 | A2 HDR | HDR with bloom and our tonemap after the clouds (52343a0). The clouds are white now. |
 
-Still open from phase 1: 4× MSAA (5–10%), and a real sun disc with glare. The bloom is in.
+Still open from phase 1: 4× MSAA, which costs 5–10%.
+
+**Phase 2, same day:** one atmosphere (da8f28a, 639d459).
+- **The model:** Hillaire's sky and aerial perspective, with lookup tables computed on the GPU. It replaces Cesium's sky, sun and fog.
+- **The boundary layer:** its haze is set by humidity (about 60 km visibility on 10 July 2024) and by the depth of the layer.
+- **The sun:** a disc that blooms.
+- **Dusk:** the sky brightens as the eye adapts.
+- **A bug fixed on the way:** Cesium's perspective depth has no precision left at our near and far planes. The atmosphere and the clouds now decode the logarithmic depth directly.
+- **Result:** fps unchanged (±3). It replaces A3 (three skies) and the twilight dome.
+- **Still to do from phase 2:**
+  - relighting Google's tiles at low sun (4);
+  - a stronger inversion line (it shows only as a pale band from above).
+- **Tuning:** `?vis=`, `?apk=`, `?skyk=`; `?atm=0` brings back the old sky.
 
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
