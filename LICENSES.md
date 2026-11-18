@@ -11,7 +11,7 @@ served and shipped with the bundle.
 |---|---|---|---|---|
 | Schleicher ASK 21 (JSBSim, `ask21-jsb`) | `Aircraft/ASK21` | GPL v2 or later | `COPYING`, `README.md` | Heiko Schulz, Detlef Faber, AJ MacLeod, Thomas Polzer, Viktor Radnai, Bea Wolf, Gilberto Agostinho, Herbert Wagner, Patrice Poly (ASK13 parts), Anders Gidenstam (dual control) |
 
-The ASK 21's outside in the bundle (`packages/converter/src/glider-look.ts`, at bundle time) is derived from its own `Models/ask21.png` and model (GPL v2 or later, like the bundle): the texture enlarged to 4096² (Lanczos), a little bug spatter and belly grime drawn in, ambient occlusion baked by ray casting against the model, roughness and a clearcoat mask from the colours. Nothing from other sources.
+The ASK 21's outside in the bundle (`packages/converter/src/glider-look.ts`, at bundle time) is derived from its own `Models/Liveries/customcallsign-2.png` (the "Custom Callsign 2" livery of the ASK21 package; its `liveries.txt` calls the custom-callsign liveries not present in real life) and model (GPL v2 or later, like the bundle), with the package's own registration letters (`Models/Immat`, `Nasal/immat.nas` by Zakharov) showing a fictional registration, YR-FLY: the texture enlarged to 4096² (Lanczos), a little bug spatter and belly grime drawn in, ambient occlusion baked by ray casting against the model, roughness and a clearcoat mask from the colours. Nothing from other sources.
 
 Check each new aircraft's `COPYING` before adding it to this table.
 

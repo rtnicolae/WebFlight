@@ -1,7 +1,7 @@
 /**
  * A finer look for a glider's outside, made at bundle time from its own FlightGear texture
  * (GPL, like the rest of the bundle; visual only):
- *  - Base colour at 4096² (the 2048² atlas enlarged with a Lanczos filter), with a little bug
+ *  - Base colour at 4096² (the 2048² atlas, or a livery of it, enlarged with a Lanczos filter), with a little bug
  *    spatter along the wings' leading edges and grime on the belly behind the wheel.
  *  - Ambient occlusion baked by casting rays against the whole model (wing roots, the cockpit
  *    rim, control-surface gaps and the wheel well darken where the sky's light can't reach),
@@ -208,7 +208,7 @@ export interface ExteriorLookResult {
  * Gives material `name` (the glider's outside) the finer look; adds images. Glass materials
  * (translucent) get a smooth surface. Mutates materials and images.
  */
-export function improveExterior(nodes: readonly GlbNode[], materials: GlbMaterial[], images: GlbImage[], name: string): ExteriorLookResult {
+export function improveExterior(nodes: readonly GlbNode[], materials: GlbMaterial[], images: GlbImage[], name: string, opts: { livery?: Uint8Array } = {}): ExteriorLookResult {
   const t0 = Date.now();
   const warnings: string[] = [];
   // Glass: smooth, so the canopy reflects the sky instead of looking milky.
@@ -222,7 +222,8 @@ export function improveExterior(nodes: readonly GlbNode[], materials: GlbMateria
   if (!mat || mat.image === undefined) return { warnings: [`exterior material ${name} not found or untextured`] };
   const src = images[mat.image]!;
   if (src.mimeType !== "image/png") return { warnings: [`exterior texture of ${name} is not a PNG`] };
-  const base = decodePng(src.data);
+  // A livery (same UV layout) in place of the plain texture, when given.
+  const base = decodePng(opts.livery ?? src.data);
 
   // Every opaque triangle occludes; the exterior's own are the ones baked.
   const all: number[] = [];

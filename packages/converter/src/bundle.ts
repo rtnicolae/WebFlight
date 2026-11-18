@@ -86,7 +86,12 @@ export function buildBundle(aircraftDir: string, setFile: string, outRoot: strin
   warnings.push(...model.warnings);
   // The ASK 21's outside: 4K colour, baked occlusion, gelcoat clearcoat (glider-look.ts).
   if (aircraft === "ASK21" && !opts.plainLook) {
-    const look = improveExterior(model.nodes, model.materials, model.images, "ASK21");
+    // The "Custom Callsign 2" livery: blue cheat lines and fin stripes, made to carry the
+    // registration letters (the immat model; fg-host's immat.nas port sets them).
+    const liveryFile = path.join(aircraftDir, "Models/Liveries/customcallsign-2.png");
+    const livery = fs.existsSync(liveryFile) ? new Uint8Array(fs.readFileSync(liveryFile)) : undefined;
+    if (!livery) warnings.push("ASK21 livery customcallsign-2.png not found: plain white");
+    const look = improveExterior(model.nodes, model.materials, model.images, "ASK21", livery ? { livery } : {});
     warnings.push(...look.warnings);
     if (look.ms !== undefined) console.log(`exterior look: ${(look.ms / 1000).toFixed(1)} s, mean occlusion ${look.aoMean?.toFixed(3)}`);
   }
@@ -186,6 +191,10 @@ function buildHostConfig(aircraftDir: string, aircraft: string, setFile: string,
     module: key.replace(/\[\d+\]$/, ""),
     files: [...mod.children].filter(([k]) => k.startsWith("file[")).map(([, f]) => (f.value ?? "").trim().replace(/^\/+/, "")),
   }));
+  // ASK21: ask21-main.xml lists immat.nas and te-vario.nas both as file n="5", so the second
+  // replaces the first and the registration letters are never set. Load it as intended.
+  const ask21 = nasal.find((m) => m.module === "ask21");
+  if (ask21 && aircraft === "ASK21" && fs.existsSync(path.join(aircraftDir, "Nasal/immat.nas")) && !ask21.files.includes("Aircraft/ASK21/Nasal/immat.nas")) ask21.files.push("Aircraft/ASK21/Nasal/immat.nas");
   const gearCount = Object.values(fdmFiles).reduce((n, t) => n + (t.replace(/<!--[\s\S]*?-->/g, "").match(/<contact[\s>]/g)?.length ?? 0), 0);
   return {
     aircraft,
