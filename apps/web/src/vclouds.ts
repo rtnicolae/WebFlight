@@ -25,6 +25,7 @@
 import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PixelDatatype, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import { LOOK } from "./lighting.ts";
+import { SCENE_DIST_GLSL } from "./atmosphere.ts";
 
 /**
  * Tallest cloud [m above its base]: fair-weather cumulus seldom grow more than ~2 km; how much
@@ -36,7 +37,7 @@ export const MAX_TOWER_M = 2200;
 /** Most clouds drawn (the nearest in view). */
 const MAX = 96;
 
-const FS = /* glsl */ `
+const FS = /* glsl */ `${SCENE_DIST_GLSL}
 uniform sampler2D colorTexture;
 uniform sampler2D depthTexture;
 in vec2 v_textureCoordinates;
@@ -146,10 +147,8 @@ float hg(float c, float g) {
 
 void main() {
   if (u_n == 0) { out_FragColor = vec4(0.0); return; }
-  float depth = czm_readDepth(depthTexture, v_textureCoordinates);
-  vec4 hitEC = czm_windowToEyeCoordinates(gl_FragCoord.xy, depth);
-  vec3 dirEC = normalize(hitEC.xyz / hitEC.w);
-  float sceneT = depth >= 1.0 ? 1e9 : length(hitEC.xyz / hitEC.w);
+  float sceneT = wfSceneDist(depthTexture, v_textureCoordinates);
+  vec3 dirEC = normalize(wfEyeRay(v_textureCoordinates));
   vec3 dir = normalize(czm_inverseViewRotation * dirEC);
   vec3 sun = czm_lightDirectionWC;
   float cosT = dot(dir, sun);
@@ -240,16 +239,13 @@ void main() {
  * texel tent: it also smooths the march's step pattern), each weighted by how close the scene
  * depth at the tap is to the depth here, so clouds don't bleed onto the glider's edges.
  */
-const BLEND_FS = /* glsl */ `
+const BLEND_FS = /* glsl */ `${SCENE_DIST_GLSL}
 uniform sampler2D colorTexture;
 uniform sampler2D depthTexture;
 uniform sampler2D u_clouds;
 in vec2 v_textureCoordinates;
 float distAt(vec2 uv) {
-  float d = czm_readDepth(depthTexture, uv);
-  if (d >= 1.0) return 1e9;
-  vec4 e = czm_windowToEyeCoordinates(uv * czm_viewport.zw + czm_viewport.xy, d);
-  return length(e.xyz / e.w);
+  return wfSceneDist(depthTexture, uv);
 }
 void main() {
   vec2 uv = v_textureCoordinates;

@@ -52,12 +52,22 @@ export function disableHdr(viewer: Viewer): void {
   viewer.scene.highDynamicRange = false;
 }
 
+// At a quarter of the resolution: 4 reads spread over the 4×4 full-resolution pixels it stands
+// for (one read made a lone glint a blocky square), each clamped (a few pixels of the sun's
+// glint on the wing are hundreds of times white).
 const BRIGHT_FS = /* glsl */ `
 uniform sampler2D colorTexture;
 uniform float u_threshold;
 in vec2 v_textureCoordinates;
 void main() {
-  vec3 c = texture(colorTexture, v_textureCoordinates).rgb;
+  vec2 px = 1.0 / vec2(textureSize(colorTexture, 0));
+  vec3 c = vec3(0.0);
+  for (int k = 0; k < 4; k++) {
+    vec2 o = vec2(k == 0 || k == 2 ? -1.0 : 1.0, k < 2 ? -1.0 : 1.0) * px;
+    vec3 s = texture(colorTexture, v_textureCoordinates + o).rgb;
+    c += s * min(1.0, 16.0 / max(max(s.r, max(s.g, s.b)), 1e-4));
+  }
+  c *= 0.25;
   float l = max(c.r, max(c.g, c.b));
   // What is above the threshold, soft-kneed.
   float k = max(l - u_threshold, 0.0);

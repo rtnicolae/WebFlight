@@ -22,6 +22,8 @@ import { Scenery } from "./scenery.ts";
 import { GrassField } from "./grass/grass-field.ts";
 import { DynamicResolution } from "./dynres.ts";
 import { disableHdr, enableHdr, HdrFinish } from "./hdr.ts";
+import { Atmosphere, relativeHumidity } from "./atmosphere.ts";
+import { setOwnSky } from "./twilight-sky.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
@@ -148,6 +150,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // HDR for the flight (hdr.ts), before the lighting and the clouds read it. ?hdr=0: off.
   const hdr = params.get("hdr") !== "0" && QUALITY !== "low" && enableHdr(viewer);
   if (hdr) life.onClose(() => disableHdr(viewer));
+  // Our sky and haze (atmosphere.ts) in HDR with Google's tiles; ?atm=0: Cesium's.
+  const ownAtmosphere = hdr && !!google3d && params.get("atm") !== "0";
+  setOwnSky(ownAtmosphere);
   applyLighting(viewer, sun, F.latDeg, F.lonDeg);
   google3d?.relight();
   // Sharp orthophotos show the real runway; otherwise (painted, or 10 m Sentinel-2 where a
@@ -158,7 +163,14 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     if (RUNWAY && (mode !== "photo" || params.get("detail") === "0" || params.get("runway") === "1")) addRunway(viewer, RUNWAY);
     return mode;
   });
-  const cumulus = soaringFrom(F.weather).cumulus;
+  const soaring = soaringFrom(F.weather), cumulus = soaring.cumulus;
+  // Before the clouds: its pass must run before theirs.
+  let atmosphere: Atmosphere | undefined;
+  if (ownAtmosphere) {
+    const w = F.weather;
+    atmosphere = new Atmosphere(viewer, { sun, groundM: w.elevationM, hazeTopM: w.elevationM + Math.max(300, w.boundaryLayerM), humidity: relativeHumidity(w.tempC, w.dewPointC) });
+    life.onClose(() => atmosphere?.destroy());
+  }
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined);
   if (google3d) life.onClose(() => google3d.setCloudShadows([], sun));
   // After the clouds: bloom, exposure, tonemap (?exposure=, ?bloom= for tuning).
@@ -370,7 +382,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, atmosphere, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

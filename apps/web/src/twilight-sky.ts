@@ -47,9 +47,15 @@ export function twilightSkyActive(sunElevationDeg: number): boolean {
 }
 
 /** Adds the dome when the sun is in the twilight range; returns whether it did. */
+/** Our own atmosphere (atmosphere.ts) draws the twilight itself: no twilight dome then. */
+let ownSky = false;
+export function setOwnSky(on: boolean): void {
+  ownSky = on;
+}
+
 export function addTwilightSky(viewer: Viewer, sun: { azimuthDeg: number; elevationDeg: number }): boolean {
   const el = sun.elevationDeg;
-  if (!twilightSkyActive(el)) return false;
+  if (ownSky || !twilightSkyActive(el)) return false;
   const az = (sun.azimuthDeg * Math.PI) / 180, e = (el * Math.PI) / 180;
   const sunDir = [Math.sin(az) * Math.cos(e), Math.cos(az) * Math.cos(e), Math.sin(e)];
   const disc = el > -0.6; // the sun's disc still (partly) above the horizon
