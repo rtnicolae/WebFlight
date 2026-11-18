@@ -22,7 +22,7 @@
  * Costly, so only near the ground: it fades out between 25 and 40 m above it.
  */
 import * as Cesium from "cesium";
-import { BoundingSphere, Cartesian2, Cartesian3, Cartographic, Intersect, Matrix4, Transforms, type Viewer } from "cesium";
+import { BoundingSphere, Cartesian2, Cartesian3, Cartographic, Intersect, Matrix4, Transforms, type Cartesian4, type Viewer } from "cesium";
 import { LOOK } from "../lighting.ts";
 import type { Google3D } from "../google3d.ts";
 import type { FieldRequest, FieldResult } from "./grass-worker.ts";
@@ -43,6 +43,33 @@ const CORR_ORDER = Array.from({ length: CORR_N * CORR_N }, (_, k) => k).sort((a,
   const c = (CORR_N - 1) / 2, d = (k: number) => Math.hypot((k % CORR_N) - c, Math.floor(k / CORR_N) - c);
   return d(a) - d(b);
 });
+
+/** Grid points within 40 m of the centre (the first ones in CORR_ORDER). */
+const NEAR_K = CORR_ORDER.filter((k) => Math.hypot((k % CORR_N) - (CORR_N - 1) / 2, Math.floor(k / CORR_N) - (CORR_N - 1) / 2) * (FIELD_M / (CORR_N - 1)) <= 40).length;
+/** Scratch for the correction filter (no allocations while it runs). */
+const ALL = new Float64Array(CORR_N * CORR_N), SCRATCH = new Float64Array(81), BLOCKS = new Float64Array(64);
+/** Median of the first n values in SCRATCH (insertion-sorts them; n ≤ 81). */
+function scratchMedian(n: number): number {
+  for (let a = 1; a < n; a++) {
+    const v = SCRATCH[a]!;
+    let b = a - 1;
+    while (b >= 0 && SCRATCH[b]! > v) SCRATCH[b + 1] = SCRATCH[b--]!;
+    SCRATCH[b + 1] = v;
+  }
+  return SCRATCH[n >> 1]!;
+}
+
+/** The correction grid's points in world coordinates, for a field frame. */
+function gridPositions(model: Matrix4): Float64Array {
+  const out = new Float64Array(CORR_N * CORR_N * 3), half = FIELD_M / 2, step = FIELD_M / (CORR_N - 1), p = new Cartesian3();
+  for (let k = 0; k < CORR_N * CORR_N; k++) {
+    Matrix4.multiplyByPoint(model, Cartesian3.fromElements((k % CORR_N) * step - half, Math.floor(k / CORR_N) * step - half, 0, p), p);
+    out[3 * k] = p.x;
+    out[3 * k + 1] = p.y;
+    out[3 * k + 2] = p.z;
+  }
+  return out;
+}
 
 interface Ring {
   r0: number;
@@ -68,6 +95,7 @@ uniform vec4 u_ring;        // r0, r1, blades per patch, density at full
 uniform float u_seg;        // segments per blade in this ring
 uniform vec4 u_wind;        // direction (x, y), strength 0–1, time [s]
 uniform float u_fade;       // 0–1 with the camera's height
+uniform vec2 u_g3d;         // Google's tiles: x 1 once corrected, y their current offset [m] (subtracted)
 out vec3 v_positionEC;
 out vec3 v_col;
 out vec3 v_nEC;
@@ -98,7 +126,9 @@ float heightAt(vec2 p) {
   ivec2 cj = min(ci + 1, ivec2(${CORR_N - 1}));
   float c = mix(mix(texelFetch(u_corr, ci, 0).r, texelFetch(u_corr, ivec2(cj.x, ci.y), 0).r, cf.x),
                 mix(texelFetch(u_corr, ivec2(ci.x, cj.y), 0).r, texelFetch(u_corr, cj, 0).r, cf.x), cf.y);
-  return h + c;
+  // The correction is Google's unshifted ground minus ours; the tiles are drawn lowered by
+  // their current offset.
+  return h + u_g3d.x * (c - u_g3d.y);
 }
 void main() {
   float per = u_ring.z;
@@ -259,11 +289,38 @@ interface Field {
   heights: Float32Array;
   textures: { mask: unknown; params: unknown; height: unknown; corr: unknown };
   corr: Float32Array;
-  /** Google minus ours as sampled (NaN: no answer yet). */
+  /**
+   * Google's ground minus ours as sampled, with Google's offset at the time added back (the
+   * tiles' unshifted ground: samples taken while the offset moved stay comparable). NaN: no
+   * answer yet.
+   */
   raw: Float32Array;
+  /** The correction texture holds something (until then the blades stand on our terrain). */
+  corrected: boolean;
+  /** The grid points in world coordinates (x, y, z each). */
+  pos: Float64Array;
+  /**
+   * 1: no answer yet. Google's tiles only answer where they are drawn (in view), so points out
+   * of view are skipped (a pick that fails costs as much as one that answers, ~0.4 ms) and
+   * asked when they come into view: at a ground start the points round the glider were asked
+   * once, during loading, and stayed empty for 30–60 s; the grass there took its level from
+   * far points and sank or floated.
+   */
+  need: Uint8Array;
+  needCount: number;
+  /** When each point was last asked [ms]. */
+  tried: Float64Array;
+  /** Where the sweep for unanswered points is (index into CORR_ORDER). */
+  needCursor: number;
+  /** Points within 40 m, in view and without an answer, as last counted. */
+  nearMissing: number;
+  /** New samples since the texture was last made. */
+  dirty: boolean;
   corrNext: number;
-  /** When the last full pass ended (passes repeat: tiles sharpen after the first). */
+  /** When the last full pass ended. */
   corrPassT: number;
+  /** Google tiles loaded over the field when the current pass started (a new pass when more came). */
+  corrGen: number;
 }
 
 export class GrassField {
@@ -281,7 +338,12 @@ export class GrassField {
   private readonly kx: number;
   private readonly t0 = performance.now();
   private corrApplied = 0;
+  /** Google tiles loaded over the grass field so far (they sharpen after the first pass). */
+  private tileGen = 0;
+  private readonly offTileLoad: (() => void) | undefined;
   show = true;
+  /** Behind the loading screen: the ground correction may take more of each frame. */
+  loading = false;
 
   constructor(
     private readonly viewer: Viewer,
@@ -292,12 +354,30 @@ export class GrassField {
   ) {
     this.kx = 111_320 * Math.cos((latDeg * Math.PI) / 180);
     this.worker.onmessage = (e: MessageEvent<FieldResult & { error?: string }>) => this.received(e.data);
+    // Tiles arriving over the field (not the far ones streaming at the horizon) call for a new pass.
+    const near = new Cartesian3();
+    this.offTileLoad = o.google3d?.tileset.tileLoad.addEventListener((tile: { boundingSphere: BoundingSphere }) => {
+      const f = this.field;
+      if (!f) return;
+      Matrix4.getTranslation(f.model, near);
+      if (Cartesian3.distance(tile.boundingSphere.center, near) < tile.boundingSphere.radius + FIELD_M) this.tileGen++;
+    });
     viewer.scene.primitives.add(this);
   }
 
   /** The maps round the glider are in (grass can be drawn). */
   get ready(): boolean {
     return !!this.field;
+  }
+
+  /**
+   * The maps are in and, on Google's tiles, the ground under the grass in view within 40 m
+   * of the glider has been measured (until then the blades stand on our terrain, which can be
+   * a metre off Google's).
+   */
+  get settled(): boolean {
+    const f = this.field;
+    return !!f && (!this.o.google3d || (f.corrected && f.nearMissing === 0));
   }
 
   /** Not wanted now (the camera too high above the ground). */
@@ -363,8 +443,17 @@ export class GrassField {
       textures: { mask: tex(FIELD_RES, FIELD_RES, r.mask, false), params: tex(FIELD_RES, FIELD_RES, r.params, false), height: tex(HEIGHT_RES, HEIGHT_RES, r.heights, true), corr: tex(CORR_N, CORR_N, corr, true) },
       corr,
       raw: new Float32Array(CORR_N * CORR_N).fill(NaN),
+      corrected: false,
+      pos: gridPositions(Transforms.eastNorthUpToFixedFrame(Cartographic.toCartesian(centre))),
+      need: new Uint8Array(CORR_N * CORR_N).fill(1),
+      needCount: CORR_N * CORR_N,
+      tried: new Float64Array(CORR_N * CORR_N).fill(-1e9),
+      needCursor: 0,
+      nearMissing: NEAR_K,
+      dirty: false,
       corrNext: 0,
       corrPassT: 0,
+      corrGen: -1,
     };
     if (old) for (const t of Object.values(old.textures)) (t as { destroy(): void }).destroy();
   }
@@ -375,70 +464,124 @@ export class GrassField {
    * includes vehicles, sheds and trees, which lifted the blades round them into the air: the
    * correction used is the median of the samples within one grid step (a lone object drops
    * out; the lowest instead sank the short airfield grass below Google's bumpy ground), kept
-   * within ±1.5 m of the field's median. Buildings are out of the grass mask anyway.
+   * within ±1.5 m of the local level (medians of 32 m blocks). Buildings are out of the grass
+   * mask anyway.
    */
-  private correct(): void {
+  private correct(cv: { planes: Cartesian4[] }): void {
     const f = this.field, g = this.o.google3d;
     if (!f || !g) return;
     const N = CORR_N * CORR_N, now = performance.now();
-    if (f.corrNext >= N) {
-      if (now - f.corrPassT < 5000) return;
-      f.corrNext = 0;
-    }
-    // The first pass quickly (1.5 ms a frame); later ones, for the tiles that sharpened since,
-    // in the background (0.3 ms a frame).
-    const budget = f.corrPassT > 0 ? 0.3 : 1.5;
-    const half = FIELD_M / 2, step = FIELD_M / (CORR_N - 1);
+    // A pass whenever finer tiles have come in over the field since the last one began (the
+    // first runs during loading, on coarse tiles a metre off); none while nothing changes.
+    if (f.corrNext >= N && f.corrGen !== this.tileGen && now - f.corrPassT >= 2000) f.corrNext = 0;
+    if (f.corrNext === 0) f.corrGen = this.tileGen;
+    if (f.corrNext >= N && f.needCount === 0 && !f.dirty) return;
+    // A Google pick costs ~0.4 ms. Behind the loading screen 4 ms a frame; then the first pass
+    // at 1 ms and later ones, for the tiles that sharpened since, at 0.4 ms: the ground scene
+    // runs close to 60 fps, and 1.7 ms a frame here doubled every twentieth frame.
+    const budget = this.loading ? 4 : f.corrPassT > 0 ? 0.4 : 1;
+    const pos = f.pos, planes = cv.planes;
+    const inView = (k: number) => {
+      const x = pos[3 * k]!, y = pos[3 * k + 1]!, z = pos[3 * k + 2]!;
+      for (const pl of planes) if (pl.x * x + pl.y * y + pl.z * z + pl.w < -3) return false;
+      return true;
+    };
     const p = new Cartesian3(), carto = new Cartographic();
-    while (f.corrNext < N && performance.now() - now < budget) {
-      // Nearest the centre (the glider) first: it matters most and comes right away.
-      const k = CORR_ORDER[f.corrNext++]!, i = k % CORR_N, j = Math.floor(k / CORR_N);
-      Matrix4.multiplyByPoint(f.model, Cartesian3.fromElements(i * step - half, j * step - half, 0, p), p);
-      Cartographic.fromCartesian(p, undefined, carto);
+    /** Asks Google's tiles at point k; false when they give no answer. */
+    const sample = (k: number): boolean => {
+      f.tried[k] = now;
+      Cartographic.fromCartesian(Cartesian3.fromElements(pos[3 * k]!, pos[3 * k + 1]!, pos[3 * k + 2]!, p), undefined, carto);
       const gh = g.tileset.getHeight(carto, this.viewer.scene);
-      if (gh === undefined || !Number.isFinite(gh)) continue;
+      if (gh === undefined || !Number.isFinite(gh)) return false;
+      const i = k % CORR_N, j = Math.floor(k / CORR_N);
       const hi = Math.round((i / (CORR_N - 1)) * (HEIGHT_RES - 1)), hj = Math.round((j / (CORR_N - 1)) * (HEIGHT_RES - 1));
       const c = gh - (f.centre.height + f.heights[hj * HEIGHT_RES + hi]!);
-      if (Math.abs(c) < 8) f.raw[k] = c;
+      if (Math.abs(c) >= 8) return false;
+      f.raw[k] = c + g.offsetM;
+      f.dirty = true;
+      if (f.need[k]) (f.need[k] = 0), f.needCount--;
+      return true;
+    };
+    let miss = 0;
+    for (let n = 0; n < NEAR_K; n++) {
+      const k = CORR_ORDER[n]!;
+      if (f.need[k] && inView(k)) miss++;
     }
-    // The first pass is applied as it goes (near the glider first); later ones when done.
-    // The first pass is applied as it goes (near the glider first), twice a second; later ones
-    // when done (the filter below takes ~10 ms).
-    if (f.corrNext < N && (f.corrPassT > 0 || now - this.corrApplied < 500)) return;
+    f.nearMissing = miss;
+    // Unanswered points now in view, nearest the glider first (at most once a second each).
+    for (let checks = 0; f.needCount > 0 && checks < 500 && performance.now() - now < budget; checks++) {
+      const k = CORR_ORDER[f.needCursor]!;
+      f.needCursor = (f.needCursor + 1) % N;
+      if (f.need[k] && now - f.tried[k]! > 1000 && inView(k)) sample(k);
+    }
+    // The pass: every point in view again, nearest first (out of view: kept as it was).
+    const wasInPass = f.corrNext < N;
+    while (f.corrNext < N && performance.now() - now < budget) {
+      const k = CORR_ORDER[f.corrNext++]!;
+      if (inView(k)) sample(k);
+    }
+    const passDone = wasInPass && f.corrNext >= N;
+    if (passDone) f.corrPassT = now;
+    // Applied as the samples come, twice a second (near the glider first), and at the end of
+    // a pass.
+    if (!f.dirty || (!passDone && now - this.corrApplied < 500)) return;
     this.corrApplied = now;
-    if (f.corrNext >= N) f.corrPassT = now;
-    const vals = [...f.raw].filter(Number.isFinite).sort((a, b) => a - b);
-    if (!vals.length) return;
-    const med = vals[Math.floor(vals.length / 2)]!;
+    f.dirty = false;
+    // (No allocations below: made twice a second while samples come in; with arrays and sorts
+    // per point it took 4–12 ms, a stutter each time.)
+    let nv = 0;
+    for (let k = 0; k < N; k++) if (Number.isFinite(f.raw[k]!)) ALL[nv++] = f.raw[k]!;
+    if (!nv) return;
+    const med = ALL.subarray(0, nv).sort()[nv >> 1]!;
+    // The local level the corrections are held to: medians of 8×8-point blocks (32 m),
+    // interpolated. One median for the whole field held them within ±1.5 m of a figure our
+    // terrain and Google's can differ from by more across 224 m: at Ghimbav every point near
+    // the glider was clipped to 1 m below Google's ground, and the short grass vanished.
+    const B = 8, NB = Math.ceil(CORR_N / B), blk = BLOCKS;
+    for (let bj = 0; bj < NB; bj++)
+      for (let bi = 0; bi < NB; bi++) {
+        let n = 0;
+        for (let j = bj * B; j < Math.min(CORR_N, (bj + 1) * B); j++)
+          for (let i = bi * B; i < Math.min(CORR_N, (bi + 1) * B); i++) {
+            const r = f.raw[j * CORR_N + i]!;
+            if (Number.isFinite(r)) SCRATCH[n++] = r;
+          }
+        blk[bj * NB + bi] = n >= 4 ? scratchMedian(n) : med;
+      }
+    const level = (i: number, j: number) => {
+      const x = Math.min(NB - 1, Math.max(0, (i - (B - 1) / 2) / B)), y = Math.min(NB - 1, Math.max(0, (j - (B - 1) / 2) / B));
+      const i0 = Math.floor(x), j0 = Math.floor(y), i1 = Math.min(NB - 1, i0 + 1), j1 = Math.min(NB - 1, j0 + 1), fx = x - i0, fy = y - j0;
+      return (blk[j0 * NB + i0]! * (1 - fx) + blk[j0 * NB + i1]! * fx) * (1 - fy) + (blk[j1 * NB + i0]! * (1 - fx) + blk[j1 * NB + i1]! * fx) * fy;
+    };
+    /** Median of the samples within rad grid steps of (i, j); the level where there are none. */
+    const around = (i: number, j: number, rad: number, lv: number) => {
+      let n = 0;
+      for (let jj = Math.max(0, j - rad); jj <= Math.min(CORR_N - 1, j + rad); jj++)
+        for (let ii = Math.max(0, i - rad); ii <= Math.min(CORR_N - 1, i + rad); ii++) {
+          const v = f.raw[jj * CORR_N + ii]!;
+          if (Number.isFinite(v)) SCRATCH[n++] = v;
+        }
+      return n ? scratchMedian(n) : lv;
+    };
     for (let j = 0; j < CORR_N; j++)
       for (let i = 0; i < CORR_N; i++) {
-        const around = (rad: number) => {
-          const nb: number[] = [];
-          for (let dj = -rad; dj <= rad; dj++)
-            for (let di = -rad; di <= rad; di++) {
-              const ii = i + di, jj = j + dj;
-              if (ii < 0 || jj < 0 || ii >= CORR_N || jj >= CORR_N) continue;
-              const v = f.raw[jj * CORR_N + ii]!;
-              if (Number.isFinite(v)) nb.push(v);
-            }
-          nb.sort((a, b) => a - b);
-          return nb.length ? nb[Math.floor(nb.length / 2)]! : med;
-        };
+        const lv = level(i, j);
         // Within ±4 m; but well above the ground within ±16 m it is a larger object (a row of
         // trees, a parked trailer): that wider figure then.
-        const m3 = around(1);
+        const m3 = around(i, j, 1, lv);
         // (The wide median only where this one stands out: it is the costly part.)
-        const m = m3 - med > 0.25 ? Math.min(m3, around(4) + 0.3) : m3;
-        f.corr[j * CORR_N + i] = Math.min(med + 1.5, Math.max(med - 1.5, m));
+        const m = m3 - lv > 0.25 ? Math.min(m3, around(i, j, 4, lv) + 0.3) : m3;
+        f.corr[j * CORR_N + i] = Math.min(lv + 1.5, Math.max(lv - 1.5, m));
       }
     (f.textures.corr as { copyFrom(o: unknown): void }).copyFrom({ source: { width: CORR_N, height: CORR_N, arrayBufferView: f.corr } });
+    f.corrected = true;
   }
 
   /** Cesium primitive interface: the draw commands for this frame. */
   update(frameState: { commandList: unknown[]; context: unknown; cullingVolume: { computeVisibility(b: BoundingSphere): number }; passes: { render: boolean } }): void {
     const f = this.field;
     if (!this.show || !f || this.fade <= 0 || !frameState.passes.render) return;
-    this.correct();
+    this.correct(frameState.cullingVolume as unknown as { planes: Cartesian4[] });
     const context = frameState.context;
     if (!this.program) this.init(context);
     // Camera in field metres.
@@ -528,6 +671,7 @@ export class GrassField {
         u_ring: () => new Cesium.Cartesian4(ring.r0, ring.r1, per, D0),
         u_wind: () => new Cesium.Cartesian4(w.dir.x, w.dir.y, w.strength, t),
         u_fade: () => fade,
+        u_g3d: () => new Cartesian2(f.corrected ? 1 : 0, this.o.google3d?.offsetM ?? 0),
         u_seg: () => ring.segments,
       };
       frameState.commandList.push(rb.cmd);
@@ -565,6 +709,7 @@ export class GrassField {
   }
 
   destroy(): void {
+    this.offTileLoad?.();
     this.worker.terminate();
     if (this.field) for (const t of Object.values(this.field.textures)) (t as { destroy(): void }).destroy();
     for (const rb of this.ringBuffers) {

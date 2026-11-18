@@ -379,6 +379,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // runs meanwhile (it streams the tiles and measures the offset); the flight model is
   // paused. At most 60 s.
   const t0 = performance.now();
+  if (grass) grass.loading = true;
   await new Promise<void>((done) => {
     const tick = () => {
       if (life.isClosed) return done();
@@ -386,7 +387,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
       const st = (t as unknown as { statistics?: { numberOfPendingRequests: number; numberOfTilesProcessing: number } } | undefined)?.statistics;
       const tiles = st ? st.numberOfPendingRequests + st.numberOfTilesProcessing : 0;
       const ground = google3d ? google3d.settled : viewer.scene.globe.tilesLoaded;
-      const lawn = !grass || grass.ready || grass.idle;
+      const lawn = !grass || grass.settled || grass.idle;
       const waited = performance.now() - t0;
       if ((ground && lawn && waited > 1500) || waited > 60_000) return done();
       setStatus(`Loading the ground…${tiles ? ` ${tiles} tiles` : ""}`);
@@ -394,6 +395,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     };
     tick();
   });
+  if (grass) grass.loading = false;
   if (life.isClosed) return;
   status.hidden = true;
   send({ type: "pause", paused });
