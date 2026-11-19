@@ -304,14 +304,35 @@ export async function weatherFor(
       time = new Date(wall - offsetH * 3600_000);
     }
   } else if (zone) offsetH = zoneOffsetH(zone, time) ?? offsetH;
+  // The forecast API keeps its surface fields for fewer past days than it keeps hours (2026-11:
+  // ~70 of 92; the pressure levels go back further): without them the day would be mostly the
+  // estimate, so it comes from the reanalysis instead.
+  let source: "forecast" | "archive" = archive ? "archive" : "forecast";
+  if (json && !archive && time.getTime() < now.getTime() - 86400_000 && !hasSurface(json, time)) {
+    try {
+      json = (await (opts.fetchJson ?? fetchOpenMeteo)(openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), true))) as OpenMeteoResponse;
+      source = "archive";
+    } catch (e) {
+      note = `Open-Meteo archive: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
   if (json) {
     try {
-      return { weather: { ...parseOpenMeteo(json, latDeg, lonDeg, time, archive ? "archive" : "forecast"), utcOffsetH: offsetH }, time };
+      return { weather: { ...parseOpenMeteo(json, latDeg, lonDeg, time, source), utcOffsetH: offsetH, ...(note ? { note } : {}) }, time };
     } catch (e) {
       note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
   return { weather: { ...estimateWeather(latDeg, lonDeg, time, elevationM), utcOffsetH: offsetH, note }, time };
+}
+
+/** Does the response have the surface temperature and wind for the hour nearest `when`? */
+function hasSurface(json: OpenMeteoResponse, when: Date): boolean {
+  const h = json.hourly, times = h?.time;
+  if (!h || !times?.length) return false;
+  let best = 0;
+  for (let i = 1; i < times.length; i++) if (Math.abs(times[i]! * 1000 - when.getTime()) < Math.abs(times[best]! * 1000 - when.getTime())) best = i;
+  return ["temperature_2m", "wind_speed_10m", "shortwave_radiation"].every((k) => typeof h[k]?.[best] === "number");
 }
 
 /**

@@ -108,6 +108,24 @@ describe("historical weather", () => {
     expect(w.aloft[1]!.kt).toBeCloseTo(10 * 15 ** (1 / 7), 5);
   });
 
+  it("takes a past day from the archive when the forecast has lost its surface fields", async () => {
+    // The forecast still has the hours (and the pressure levels) but no surface values.
+    const blank = { ...fixture, hourly: { ...fixture.hourly, temperature_2m: [null, null, null], wind_speed_10m: [null, null, null], shortwave_radiation: [null, null, null] } };
+    const archived = { ...fixture, hourly: { ...fixture.hourly, wind_speed_10m: [2, 3, 4] } };
+    const urls: string[] = [];
+    const fetchJson = async (u: string) => (urls.push(u), u.includes("archive-api") ? archived : blank);
+    const r = await weatherFor(45.7, 25.53, parseWhen("2026-07-15T13:00"), 530, new Date("2026-09-20T08:00:00Z"), { fetchJson });
+    expect(urls).toHaveLength(2);
+    expect(r.weather.source).toBe("archive");
+    expect(r.weather.windKt).toBe(3);
+    expect(r.weather.tempC).toBe(27.4);
+    // A day the forecast still has: one request.
+    urls.length = 0;
+    const f = await weatherFor(45.7, 25.53, parseWhen("2026-07-15T13:00"), 530, new Date("2026-07-20T08:00:00Z"), { fetchJson: async (u: string) => (urls.push(u), fixture) });
+    expect(urls).toHaveLength(1);
+    expect(f.weather.source).toBe("forecast");
+  });
+
   it("asks the archive for days older than the forecast's past range", () => {
     const u = openMeteoUrl(45.7, 25.53, "2017-07-14", "2017-07-16", true);
     expect(u.startsWith("https://archive-api.open-meteo.com/v1/archive?")).toBe(true);
