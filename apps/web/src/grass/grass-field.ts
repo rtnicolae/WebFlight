@@ -289,6 +289,12 @@ void main() {
   // (Dry tips bleach paler.)
   vec3 col = mix(v_col, v_col * mix(vec3(1.12, 1.15, 0.8), vec3(1.14, 1.1, 0.98), v_dry), smoothstep(0.5, 1.0, t));
   vec3 c = col * (sun * diff * 0.9 + sky) * ao + col * mix(vec3(1.05, 1.15, 0.55), vec3(1.1, 0.95, 0.6), v_dry) * sun * back * 0.45 + sun * spec;
+  // Further out a blade is a pixel or two: its lit tip, glint and back-light made it a lone
+  // bright green dot on the darker photo ground (sand). There it takes what a patch of grass
+  // averages to (tips and shaded roots, no glints), a little darker than a lit blade.
+  float far = smoothstep(6.0, 30.0, length(v_positionEC));
+  vec3 avg = v_col * (sun * 0.62 + sky) * 0.74;
+  c = mix(c, avg, 0.85 * far);
   // Display values; linear in HDR (czm_gammaCorrect).
   out_FragColor = czm_gammaCorrect(vec4(c, 1.0));
 }`;
