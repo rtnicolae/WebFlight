@@ -10,7 +10,9 @@ describe("fg-host with the ASK21 bundle", () => {
   let dir: string;
   beforeAll(async () => {
     dir = await ensureBundle(ASK21, { rebuild: true });
-  }, 300_000);
+  // Builds the glider bundle (4K livery, baked occlusion): ~90 s alone, past 5 min while the
+  // rest of the suite runs alongside on a busy machine.
+  }, 900_000);
 
   async function hosted() {
     const { files } = await loadBundleAircraft(async (r) => fs.readFileSync(path.join(dir, r), "utf8"));
