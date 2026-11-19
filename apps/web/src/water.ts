@@ -221,7 +221,7 @@ void main() {
   vec3 rel = czm_inverseViewRotation * P;
   vec2 en = vec2(dot(rel, u_weast), dot(rel, u_wnorth)) + u_camEN;
   // The water shader's ripples, weaker (the reflection only wobbles).
-  vec2 sl = 0.35 * rippleSlope(en);
+  vec2 sl = 0.2 * rippleSlope(en);
   vec3 nW = normalize(u_wup - u_weast * sl.x - u_wnorth * sl.y);
   vec3 n = czm_viewRotation * nW;
   vec3 R = reflect(V, n);
@@ -250,7 +250,7 @@ void main() {
   // March the reflected ray: steps growing from ~1% of the distance, jittered per pixel (the
   // pattern it leaves is finer than the stair-steps it replaces).
   float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-  float t = max(dist * 0.01, 1.5) * (0.6 + 0.8 * jit), tPrev = 0.0;
+  float t = max(dist * 0.01, 1.5) * (0.85 + 0.3 * jit), tPrev = 0.0;
   bool hit = false, onScreen = true;
   vec2 q = uv;
   for (int i = 0; i < 24; i++) {
@@ -279,11 +279,19 @@ void main() {
   }
   vec2 edge = min(q, 1.0 - q);
   float edgeFade = smoothstep(0.0, 0.06, min(edge.x, edge.y));
-  // Out of steps while still on screen: what it was over last (far hills, as a rule).
-  if (!hit && onScreen && R.z < 0.0) hit = wfSceneDist(depthTexture, q) < 1e8;
+  // Out of steps while still on screen: what it is over now. Ground (far hills, as a rule): a
+  // hit. Sky: the screen's sky there, clouds and all. (It used to fall back to the estimate of
+  // the hills round the lake, which depended on which terrain tiles were in when the lake was
+  // levelled: the same view showed sky in one run and dark hills in the next.)
+  bool skyEnd = false;
+  if (!hit && onScreen && R.z < 0.0) {
+    if (wfSceneDist(depthTexture, q) < 1e8) hit = true;
+    else skyEnd = true;
+  }
+  if (skyEnd) { refl = texture(colorTexture, q).rgb; w = edgeFade; }
   if (hit) {
     if (!isWater(q, wfSceneDist(depthTexture, q))) { refl = texture(colorTexture, q).rgb; w = edgeFade; }
-  } else if (R.z < 0.0) {
+  } else if (!skyEnd && R.z < 0.0) {
     // Towards the sky: the screen's sky in that direction (clouds and all), if it is on screen.
     vec2 qi = toUv(R * 1e5);
     if (qi.x > 0.0 && qi.y > 0.0 && qi.x < 1.0 && qi.y < 1.0 && wfSceneDist(depthTexture, qi) > 1e8) {
@@ -324,8 +332,8 @@ void main() {
   vec2 px = vec2(0.0, 1.0 / float(textureSize(colorTexture, 0).y)) * u_rough;
   vec3 sum = c.rgb;
   float w = 1.0;
-  for (int k = 1; k <= 3; k++) {
-    float wk = 1.0 - float(k) / 4.0;
+  for (int k = 1; k <= 2; k++) {
+    float wk = 1.0 - float(k) / 3.0;
     vec2 a = uv + px * float(k), b = uv - px * float(k);
     if (isWater(a)) { sum += texture(colorTexture, a).rgb * wk; w += wk; }
     if (isWater(b)) { sum += texture(colorTexture, b).rgb * wk; w += wk; }
@@ -452,7 +460,7 @@ export class Water {
     this.smear = new PostProcessStage({
       fragmentShader: SMEAR_FS,
       pixelDatatype: C.PixelDatatype.HALF_FLOAT,
-      uniforms: { u_mask: () => this.mask?.tex ?? null, u_rough: () => 0.8 + 1.2 * this.wind.strength },
+      uniforms: { u_mask: () => this.mask?.tex ?? null, u_rough: () => 0.5 + 0.7 * this.wind.strength },
     });
     viewer.scene.postProcessStages.add(this.smear);
     if (new URLSearchParams(location.search).get("wssr") === "0") this.reflect.enabled = this.smear.enabled = false;
