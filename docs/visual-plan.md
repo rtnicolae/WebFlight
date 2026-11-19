@@ -99,7 +99,8 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
 - **Grass strips:** mown lighter, in 4 m mower lanes that are lighter or darker with the view along them, on the ground and in the 3D grass (blades laid along the cut).
 - **Fixed on the way:** a long runway split in OSM's tiles came out in two halves (Bucharest 08L: 1,461 m of 3,500), which also moved where the glider starts on such runways.
 - **Cost:** about 1 fps (69.7 → 70.8 with it off on the Ghimbav strip, 75.1 → 76.1 low over Brașov's runway).
-- **Still open:** taxiways and aprons, windsocks and strip markers, hangars.
+- **Windsocks** (`windsocks.ts`): placed as sims do without a survey (past the first threshold, left of the landing direction, clear of the edge; a second on runways of 1,500 m or more), pointing with the day's 10 m wind and drooping in light air; standing on Google's ground (height picked once their tiles are in view).
+- **Still open:** taxiways and aprons, strip markers, hangars.
 
 **Image quality, 19 Nov 2026 (A1):** "everything looks grainy/sandy". Measured first:
 - **Render scale:** 1.0–1.125× of 1440×900 on a 2880×1800 screen, so every aliased pixel shows as a 2×2 block.

@@ -244,7 +244,7 @@ function glyphAtlas(): Uint8Array {
 /** Textures set once per shader (it outlives flights). */
 const textured = new WeakSet<CustomShader>();
 
-interface Painted {
+export interface Painted {
   name: string;
   material: RunwayMaterial;
   source: Runway["source"];
@@ -294,6 +294,11 @@ export class RunwayPaint {
   info(): { name: string; material: string; source: string; distM: number; lengthM: number; widthM: number }[] {
     const cam = this.viewer.camera.positionWC;
     return this.runways.map((r) => ({ name: r.name, material: r.material, source: r.source, distM: Math.round(Cartesian3.distance(cam, r.centre)), lengthM: Math.round(2 * r.halfL), widthM: Math.round(2 * r.halfW) }));
+  }
+
+  /** Every runway known round the camera (what is painted, and more), for the windsocks. */
+  get all(): readonly Painted[] {
+    return this.runways;
   }
 
   /** The grass runway nearest the camera within 1 km, for the 3D grass's mower lanes. */

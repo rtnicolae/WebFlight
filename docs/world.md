@@ -110,6 +110,9 @@ From the glider at 220 m:
   their length and width (threshold stripes, designation, centreline, aiming point,
   touchdown zone, side stripes), concrete slabs or asphalt grain, rubber where wheels touch
   down; grass strips get mower lanes, also in the 3D grass. `rwpaint=0` turns it off.
+- **Windsocks** (`windsocks.ts`): beside every runway near the camera (by the first threshold,
+  left of the landing direction; a second one on runways of 1,500 m or more), showing the
+  weather's surface wind. `windsocks=0` turns them off.
 - **Grass** (`grass/grass-field.ts`): blades generated on the GPU (instanced, from a hash of
   their position), in tufts of 6 (`grasstuft=`), in rings to 75 m round the camera, 320 blades/m²
   under it (Ultra 500, `grassdensity=`), thinning as 1/d² while widening. Where it grows, how lush and what colour

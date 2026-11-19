@@ -28,6 +28,7 @@ import { Water } from "./water.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { RunwayPaint } from "./runway-paint.ts";
 import { TemporalAA } from "./taa.ts";
+import { Windsocks } from "./windsocks.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
@@ -190,6 +191,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // Runways painted on Google's tiles from the airfield data (runway-paint.ts). ?rwpaint=0: off.
   const runways = google3d?.tileset.customShader && params.get("rwpaint") !== "0" ? new RunwayPaint(viewer, google3d.tileset.customShader, osmTiles, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href) : undefined;
   if (runways) life.onClose(() => runways.destroy());
+  // Windsocks by the runways, showing the day's surface wind (windsocks.ts). ?windsocks=0: off.
+  const windsocks = runways && params.get("windsocks") !== "0" ? new Windsocks(viewer, runways, google3d, (la, lo) => renderTerrain.heightAt(la, lo), { fromDeg: F.environment.windFromDeg, kt: F.environment.windKt }) : undefined;
+  if (windsocks) life.onClose(() => windsocks.destroy());
   // Our water on Google's tiles (water.ts): with our sky only. ?water3d=0: Google's photo.
   const water = google3d && atmosphere && params.get("water3d") !== "0" ? new Water(viewer, google3d, atmosphere, (la, lo, z) => renderTerrain.heightAt(la, lo, z), osmTiles) : undefined;
   // Last of the post-process stages (after the clouds and the water's reflections): bloom,
@@ -399,7 +403,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, windsocks, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view
