@@ -333,6 +333,8 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           const trim = await applyStart(msg.start);
           paused = wasPaused;
           publish();
+          // The air at the new spot, also while paused (the step loop posts it only when running).
+          postEnvironment();
           post({ type: "ready", names: [...layout!.names], shared: shared ? (writer!.buffer as SharedArrayBuffer) : null, trim });
         }
         break;
