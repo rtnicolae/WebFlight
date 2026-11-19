@@ -28,6 +28,7 @@ import * as Cesium from "cesium";
 import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PixelDatatype, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import { LOOK } from "./lighting.ts";
+import { temporal } from "./temporal.ts";
 import { AERIAL_GLSL, SCENE_DIST_GLSL, type Atmosphere } from "./atmosphere.ts";
 import { cloudNoiseAsync } from "./cloud-noise.ts";
 
@@ -104,7 +105,8 @@ uniform vec3 u_E;             // and its east, north
 uniform vec3 u_N;
 uniform vec3 u_ambTop;
 uniform vec3 u_ambBase;
-uniform vec4 u_light;         // extinction per m at density 1, sun scale, sky scale, steps
+uniform vec4 u_light;
+uniform float u_frame;       // frame number (mod 64) while TAA runs, else 0         // extinction per m at density 1, sun scale, sky scale, steps
 uniform vec3 u_haze;          // without the atmosphere: the haze colour far clouds fade to
 uniform vec2 u_fade;          // haze starts, cloud gone [m]
 uniform vec2 u_ap0;           // with the atmosphere: haze scale, 1
@@ -217,7 +219,9 @@ void main() {
   float T = 1.0;
   float firstT = -1.0;
   // Per-pixel start offset against banding (the blend's filter smooths the pattern it leaves).
-  float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  // With temporal anti-aliasing (taa.ts) it changes every frame (u_frame), and the frames'
+  // average leaves no pattern at all; without, it stays put (no shimmer).
+  float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 5.588238 * u_frame, vec2(0.06711056, 0.00583715))));
   vec3 sunCol = czm_lightColor * u_light.y;
   for (int h = 0; h < SLOTS; h++) {
     if (h >= hits || T < 0.02) break;
@@ -404,6 +408,7 @@ export class VolumetricClouds {
         u_shape: () => self.tex.shape ?? self.tex.towers,
         u_detail: () => self.tex.detail ?? self.tex.towers,
         u_ready: () => (self.tex.shape ? 1 : 0),
+        u_frame: () => (temporal.on ? temporal.frame % 64 : 0),
       },
     });
     const blend = new PostProcessStage({ fragmentShader: BLEND_FS, pixelDatatype, uniforms: { u_clouds: march.name } });

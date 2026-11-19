@@ -23,6 +23,7 @@ import * as Cesium from "cesium";
 import { Cartesian2, Cartesian3, Matrix3, Matrix4, PixelDatatype, PostProcessStage, type Viewer } from "cesium";
 import { SCENE_DIST_GLSL } from "./atmosphere.ts";
 import { SHARPEN_FS } from "./scene.ts";
+import { temporal } from "./temporal.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const C = Cesium as any;
@@ -187,6 +188,7 @@ export class TemporalAA {
     this.sharpen.enabled = (opts.sharpen ?? 0.35) > 0;
     scene.postProcessStages.add(this.sharpen);
     scene.postProcessStages.fxaa.enabled = false;
+    temporal.on = true;
     this.off.push(scene.preRender.addEventListener(() => this.jitter()));
     this.off.push(scene.postRender.addEventListener(() => this.keep()));
   }
@@ -197,6 +199,7 @@ export class TemporalAA {
   }
   set enabled(v: boolean) {
     this.on = v;
+    temporal.on = v;
     this.stage.enabled = v;
     this.sharpen.enabled = v;
     this.viewer.scene.postProcessStages.fxaa.enabled = !v;
@@ -205,6 +208,7 @@ export class TemporalAA {
   }
 
   destroy(): void {
+    temporal.on = false;
     for (const f of this.off) f();
     this.setOffset(0, 0);
     const pp = this.viewer.scene.postProcessStages;
@@ -266,6 +270,7 @@ export class TemporalAA {
     const w = scene.drawingBufferWidth, h = scene.drawingBufferHeight;
     if (!w || !h || !f.fovy) return;
     const [jx, jy] = JITTER[this.k++ % JITTER.length]!;
+    temporal.frame = this.k;
     const ty = Math.tan(f.fovy / 2), tx = ty * f.aspectRatio;
     this.setOffset((jx * 2 * tx) / w, (jy * 2 * ty) / h);
   }
