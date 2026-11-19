@@ -5,10 +5,11 @@
  * is "from" a heading.
  *
  * With the day's wind profile, the horizontal wind is the one at the aircraft's height, as
- * FlightGear's environment gives its FDM (layered as windLevels), and below 10 m it slows
- * towards the ground as the surface layer does (surfaceLayerFactor), which FG leaves out: the
- * wind gradient a glider meets in the last metres of an approach. Ridge lift keeps the surface
- * wind, as FG's does.
+ * FlightGear's environment gives its FDM (layered as windLevels, over the weather model's own
+ * ground), and within 10 m of the ground under it the wind slows as the surface layer does
+ * (surfaceLayerFactor), which FG leaves out: the wind gradient a glider meets in the last metres
+ * of an approach. Ridge lift is FG's, driven by the wind at the aircraft's height (FG: the
+ * surface wind).
  */
 import { RidgeLift } from "./ridge.ts";
 import type { TerrariumTerrain } from "./terrain.ts";
@@ -91,8 +92,12 @@ export class Environment {
     if (ground !== undefined) this.lastGroundFt = ground;
     const groundFt = ground ?? this.lastGroundFt;
     const c = this.config;
+    // FG drives its ridge lift with the surface wind; the weather's is the model's 10 m wind over
+    // its own ground, a valley's among mountains (2 kt in the Brașov basin on 12 Nov 2026 while
+    // the crests stood in 20–40 kt). With the profile, the wind at the aircraft's height drives it.
+    const rw = c.profile ? windAt(c.profile, s.altFt * FT_TO_M) : { fromDeg: c.windFromDeg, kt: c.windKt };
     const ridge = this.ridge
-      ? this.ridge.update(dt, { latDeg: s.latDeg, lonDeg: s.lonDeg, groundElevM: groundFt * FT_TO_M, aglM: (s.altFt - groundFt) * FT_TO_M, windFromDeg: c.windFromDeg, windKt: c.windKt })
+      ? this.ridge.update(dt, { latDeg: s.latDeg, lonDeg: s.lonDeg, groundElevM: groundFt * FT_TO_M, aglM: (s.altFt - groundFt) * FT_TO_M, windFromDeg: rw.fromDeg, windKt: rw.kt })
       : 0;
     const thermal = this.thermals ? this.thermals.update(dt, s, this.wind) : 0;
     const here = this.windHere(s.altFt * FT_TO_M, groundFt * FT_TO_M);
@@ -113,7 +118,7 @@ export class Environment {
   windHere(altM: number, groundM: number): { fromDeg: number; kt: number } {
     const c = this.config, p = c.profile;
     if (!p) return { fromDeg: c.windFromDeg, kt: c.windKt };
-    const w = windAt(p, altM, groundM);
+    const w = windAt(p, altM);
     return { fromDeg: w.fromDeg, kt: w.kt * surfaceLayerFactor(altM - groundM) };
   }
 }

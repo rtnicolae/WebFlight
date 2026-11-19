@@ -104,11 +104,16 @@ export function soaringFrom(w: Weather): Soaring {
 }
 
 /**
- * The levels of the wind profile over a ground height [m], as FlightGear layers them
- * (environment_ctrl.cxx): the surface wind (10 m) and the boundary levels follow the ground under
- * the aircraft, the pressure levels stay at their heights above sea level. Pressure levels less
- * than FG's 500 ft boundary transition above the top boundary level are left out, so the wind
- * blends from the one to the other over at least that height.
+ * The levels of the wind profile over a ground height [m], layered as FlightGear does
+ * (environment_ctrl.cxx): the surface wind (10 m) and the boundary levels above that ground, the
+ * pressure levels at their heights above sea level. Pressure levels less than FG's 500 ft
+ * boundary transition above the top boundary level are left out, so the wind blends from the one
+ * to the other over at least that height.
+ *
+ * The ground is the weather model's own (its grid's mean terrain, `elevationM`), the default of
+ * windAt: its near-ground winds belong to that height. Over terrain far above it they are not
+ * the air there: 150 m above a 2,000 m crest near Brașov (model ground 620 m) on 12 Nov 2026 they
+ * gave the valley's 9 kt, where the free air at that height blew 25–40 kt.
  */
 export function windLevels(w: Pick<Weather, "windFromDeg" | "windKt" | "aloft" | "boundary">, groundM: number): WindLevel[] {
   const near: WindLevel[] = [{ altM: groundM + 10, fromDeg: w.windFromDeg, kt: w.windKt }, ...(w.boundary ?? []).filter((l) => l.aglM > 10).map((l) => ({ altM: groundM + l.aglM, fromDeg: l.fromDeg, kt: l.kt }))].sort((a, b) => a.altM - b.altM);
@@ -117,8 +122,8 @@ export function windLevels(w: Pick<Weather, "windFromDeg" | "windKt" | "aloft" |
 }
 
 /**
- * Wind at a height [m MSL] over a ground height [m] (default: the model grid's): the vector
- * linear in height between the levels of windLevels, the end levels' wind beyond them.
+ * Wind at a height [m MSL] (over the weather model's ground unless another is given): the
+ * vector linear in height between the levels of windLevels, the end levels' wind beyond them.
  */
 export function windAt(w: Pick<Weather, "elevationM" | "windFromDeg" | "windKt" | "aloft" | "boundary">, altM: number, groundM = w.elevationM): { fromDeg: number; kt: number } {
   const levels = windLevels(w, groundM);

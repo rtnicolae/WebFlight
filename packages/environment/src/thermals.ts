@@ -566,7 +566,7 @@ export class ThermalSky {
     }
     const baseMsl = w.elevationM + s.thermalTopAglM;
     const topM = (g: number) => Math.max(baseMsl, g + 0.6 * s.thermalTopAglM, g + 300);
-    const wind: WindAtFn = (alt, g) => windAt(w, alt, g);
+    const wind: WindAtFn = (alt) => windAt(w, alt);
     const out: Thermal[] = [];
     for (let k = 0; k < n; k++) {
       const group = cand.slice(4 * k, 4 * k + 4).sort((a, b) => b.score - a.score);

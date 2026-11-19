@@ -127,7 +127,7 @@ describe("Environment", () => {
   });
 
   it("flies in the day's wind at its height, slowing towards the ground below 10 m", () => {
-    const profile = { elevationM: 500, windFromDeg: 270, windKt: 8, boundary: [{ aglM: 180, fromDeg: 280, kt: 12 }], aloft: [{ altM: 1500, fromDeg: 300, kt: 20 }] };
+    const profile = { elevationM: 0, windFromDeg: 270, windKt: 8, boundary: [{ aglM: 180, fromDeg: 280, kt: 12 }], aloft: [{ altM: 1500, fromDeg: 300, kt: 20 }] };
     const env = new Environment({ windFromDeg: 270, windKt: 8, profile, ridgeLift: false, thermals: false });
     const at = (altM: number) => env.update(0.1, { latDeg: 47, lonDeg: 8, altFt: altM / 0.3048 });
     // (No terrain: the ground is at 0 m, so the near-ground levels are at 10 and 180 m.)
@@ -140,6 +140,31 @@ describe("Environment", () => {
     expect(Math.hypot(o.windNorthFps, o.windEastFps)).toBeCloseTo(20 * 1.6878099, 6);
     expect(o.windEastFps).toBeGreaterThan(0); // from 300°: blowing to the south-east
     expect(o.windNorthFps).toBeLessThan(0);
+  });
+
+  it("drives ridge lift with the wind at the glider's height, not the valley's 10 m wind", () => {
+    // A north–south crest at 2,000 m, its west face 1 in 2.5; the model's ground a basin at 620 m.
+    const mLon = 111_320 * Math.cos((45.5 * Math.PI) / 180);
+    const crest = { heightAt: (_la: number, lo: number) => Math.max(800, 2000 - 0.4 * Math.abs((lo - 25.2) * mLon)) } as unknown as ConstructorParameters<typeof Environment>[1];
+    const profile = { elevationM: 620, windFromDeg: 270, windKt: 2, aloft: [{ altM: 1500, fromDeg: 270, kt: 15 }, { altM: 3000, fromDeg: 270, kt: 40 }] };
+    const lift = (withProfile: boolean) => {
+      const env = new Environment({ windFromDeg: 270, windKt: 2, ...(withProfile ? { profile } : {}), ridgeLift: true, thermals: false }, crest);
+      const at = { latDeg: 45.5, lonDeg: 25.2 - 300 / mLon, altFt: (1880 + 150) / 0.3048 }; // 300 m west of the crest, 150 m up
+      let o = env.update(10, at);
+      for (let i = 0; i < 5; i++) o = env.update(10, at);
+      return o.ridgeLiftFps * 0.3048;
+    };
+    expect(lift(false)).toBeLessThan(0.5);
+    expect(lift(true)).toBeGreaterThan(3);
+  });
+
+  it("over terrain far above the weather model's ground, flies in the free air's wind at that height", () => {
+    // Model ground 620 m (a basin), its near-ground winds weak; 40 kt at 3 km. A crest at 2,000 m.
+    const profile = { elevationM: 620, windFromDeg: 285, windKt: 2, boundary: [{ aglM: 80, fromDeg: 280, kt: 5 }, { aglM: 180, fromDeg: 280, kt: 9 }], aloft: [{ altM: 1500, fromDeg: 280, kt: 10 }, { altM: 3000, fromDeg: 280, kt: 40 }] };
+    const crest = { heightAt: () => 2000 } as unknown as ConstructorParameters<typeof Environment>[1];
+    const env = new Environment({ windFromDeg: 285, windKt: 2, profile, ridgeLift: false, thermals: false }, crest);
+    const o = env.update(0.1, { latDeg: 45.5, lonDeg: 25.2, altFt: 2150 / 0.3048 });
+    expect(o.windKt).toBeCloseTo(10 + (30 * 650) / 1500, 1); // between 1,500 and 3,000 m, not the basin's 9 kt
   });
 });
 
