@@ -1,7 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
-import { applyLighting, setLook } from "./lighting.ts";
+import { applyLighting, reflectSky, setLook } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
 import { advance, TerrariumTerrain, ThermalSky } from "@webflight/environment";
@@ -211,6 +211,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);
+  let skyVersion = -1;
   const hudEl = document.getElementById("hud")!;
   const hud = new Hud(hudEl);
   life.onClose(() => hudEl.replaceChildren());
@@ -352,6 +353,16 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
 
     aircraft.showInterior(cam.mode === "cockpit");
     const m = aircraft.update(d, layout, dt);
+    // The glider mirrors the sky drawn round it (once the atmosphere has read it, and again
+    // as it re-reads it).
+    const gm = aircraft.gltfModel?.customShader;
+    if (gm && atmosphere && skyVersion !== atmosphere.ambientVersion) {
+      const sk = atmosphere.skyAmbient();
+      if (sk) {
+        skyVersion = atmosphere.ambientVersion;
+        reflectSky(gm, sk);
+      }
+    }
     cam.update(m, { phi: g("attitude/phi-rad"), theta: g("attitude/theta-rad"), psi: g("attitude/psi-rad") }, dt);
     launchView?.update(d, layout, dt, (g("position/geod-alt-ft") - g("position/h-agl-ft")) * M_PER_FT);
     scenery?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"));

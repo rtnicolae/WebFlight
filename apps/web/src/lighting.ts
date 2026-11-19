@@ -135,19 +135,44 @@ export function reflectionShader(): CustomShader {
     },
     fragmentShaderText: /* glsl */ `
 void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
-#ifdef USE_CLEARCOAT
   vec3 n = normalize(material.normalEC);
   vec3 v = normalize(-fsInput.attributes.positionEC);
-  float nv = max(dot(n, v), 0.0);
-  vec3 r = czm_inverseViewRotation * reflect(-v, n);
+  float nv = abs(dot(n, v));
+  vec3 r = czm_inverseViewRotation * reflect(-v, n * sign(dot(n, v) + 1e-6));
   float e = dot(normalize(r), normalize(czm_viewerPositionWC));
   vec3 sky = mix(u_horizon, u_zenith, smoothstep(0.0, 0.6, e));
   vec3 env = mix(u_ground * (0.75 + 0.25 * smoothstep(-0.5, 0.0, e)), sky, smoothstep(-0.015, 0.015, e));
   float F = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
+#ifdef USE_CLEARCOAT
   material.emissive += env * F * material.clearcoatFactor * material.occlusion * 0.9;
 #endif
+  // Canopy glass (translucent): it mirrors the sky, more at a glancing view, where it also
+  // lets less through. From outside (the chase view) a canopy reads as smoked glass with the
+  // sky across it, the cockpit behind it in shade; with the model's 15% tint and a true 4%
+  // reflection it was an empty frame. From the cockpit (glass within 2 m) it stays clear.
+  if (material.alpha < 0.95) {
+    float outside = smoothstep(2.0, 4.0, length(fsInput.attributes.positionEC));
+    float F2 = 0.07 + 0.93 * pow(1.0 - nv, 4.0);
+    float a = mix(max(material.alpha, F * 0.85), max(0.45, F2), outside);
+    material.diffuse *= mix(1.0, 0.3, outside);
+    material.emissive += env * mix(F * 0.85, F2 * 1.3, outside) / max(a, 0.05);
+    material.alpha = a;
+  }
 }`,
   });
+}
+
+/**
+ * The sky our atmosphere draws (atmosphere.ts, its zenith and horizon in scene units) as what
+ * the glider's gelcoat and canopy mirror: the same blue, the same sunset.
+ */
+export function reflectSky(shader: CustomShader, sky: { top: number[]; horizon: number[] }): void {
+  const v = (a: number[]) => new Cartesian3(a[0], a[1], a[2]);
+  shader.setUniform("u_zenith", v(sky.top));
+  shader.setUniform("u_horizon", v(sky.horizon));
+  // Below the horizon: the ground's light, a dim green-brown.
+  const l = 0.2126 * sky.horizon[0]! + 0.7152 * sky.horizon[1]! + 0.0722 * sky.horizon[2]!;
+  shader.setUniform("u_ground", new Cartesian3(0.25 * l, 0.28 * l, 0.2 * l));
 }
 
 /** World direction (ECEF) of azimuth/elevation [deg] at a place. */

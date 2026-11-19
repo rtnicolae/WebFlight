@@ -118,6 +118,8 @@ Still open: the clouds' half-resolution edges (now jittered and averaged, but no
 
 **Cirrus, 19 Nov 2026 (B7):** a high layer from the weather's high cloud cover (Open-Meteo `cloud_cover_high`, now in the weather snapshot; drawn only, the simulation doesn't read it). Painted with the sky (`atmosphere.ts`), so cumulus and mountains stand in front of it: at 9 km, in patches covering the weather's share, fibres bent and broken along the wind aloft and drifting with it, a milky veil when overcast (cirrostratus); lit by the sun as it is at that height (pink at sunset, a glow towards the sun) and the sky above. Checked on real days: 21 Jun 2024 13:00 (100%), 7 Jun 14:00 (59%), the sunset of 20 Jun (55%); 10 Jul 2024 has 3% and stays blue. No measurable cost. `?cirrus=0..1` tries a cover, `?cik=` its brightness.
 
+**Glider, 19 Nov 2026 (phase 5, E3):** the gelcoat and the canopy mirror the sky our atmosphere draws (its zenith and horizon, read back every 10 s: the same blue, the same sunset) instead of fixed colours. The canopy glass, seen from outside (more than ~3 m away), is smoked and mirrors the sky with Fresnel (from 7% face-on to most of it at a glancing view): before, with the model's 15% tint and a true 4% reflection, it was an empty frame. From the cockpit it stays as clear as before.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.
