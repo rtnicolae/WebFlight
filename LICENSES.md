@@ -76,6 +76,15 @@ work of the U.S. Government. Its strength is calibrated to the RASP soaring fore
 W* (Dr. Jack Glendening's parameter descriptions, e.g. as mirrored at
 https://rkriz.net/Projects/RASP/PARAMETER_DEFINITIONS.html): only that one relation is used.
 
+Mountain waves (`packages/environment/src/waves.ts`), implemented from the papers, no code
+ported: the linear theory of stratified flow over terrain (Queney 1948; Scorer 1949, Q. J. R.
+Meteorol. Soc. 75; Smith 1979, Adv. Geophys. 21, and 1980, Tellus 32); layer matching by
+vertical displacement and pressure as in Jiang, Doyle & Smith (2006), "Interaction between
+trapped waves and boundary layers", J. Atmos. Sci. 63, 617–633; the boundary layer's absorption
+at the ground (their eqs. 3, 6, 16, 22) and its parameter set for rough ground (section 8) from
+Smith, Jiang & Doyle (2006), "A theory of gravity wave absorption by a boundary layer",
+J. Atmos. Sci. 63, 774–781. The papers themselves are not in the repository.
+
 Physics used without porting code: the logarithmic surface-layer wind profile with WMO's
 standard roughness for open terrain, z0 = 0.03 m (WMO-No. 8, *Guide to Instruments and Methods
 of Observation*), for the wind below 10 m; a thermal column's drift as its air is carried by

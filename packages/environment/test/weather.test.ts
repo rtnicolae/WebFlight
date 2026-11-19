@@ -38,8 +38,8 @@ describe("weather", () => {
     expect(w.tempC).toBe(27.4);
     expect(w.windFromDeg).toBe(310);
     expect(w.aloft).toEqual([
-      { altM: 1532, fromDeg: 295, kt: 11 },
-      { altM: 3152, fromDeg: 280, kt: 19 },
+      { altM: 1532, fromDeg: 295, kt: 11, hPa: 850 },
+      { altM: 3152, fromDeg: 280, kt: 19, hPa: 700 },
     ]);
     expect(w.lowCloud).toBeCloseTo(0.2);
     expect(w.boundaryLayerM).toBe(1900);
@@ -107,7 +107,7 @@ describe("weather", () => {
     expect(u).toContain("timezone=auto");
     expect(u).toContain("timeformat=unixtime");
     expect(u).toContain("boundary_layer_height");
-    for (const k of ["wind_speed_80m", "wind_direction_180m", "wind_speed_925hPa", "geopotential_height_600hPa"]) expect(u).toContain(k);
+    for (const k of ["wind_speed_80m", "wind_direction_180m", "wind_speed_925hPa", "geopotential_height_600hPa", "temperature_700hPa", "wind_speed_400hPa"]) expect(u).toContain(k);
   });
 });
 

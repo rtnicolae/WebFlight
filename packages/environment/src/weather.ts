@@ -17,12 +17,16 @@
  * A Weather value is plain data, so a recorded day replays exactly (gym, bug reports).
  */
 import { sunPosition } from "./sun.ts";
+import type { SoundingLevel } from "./waves.ts";
 
 export interface WindLevel {
   /** Height above mean sea level [m]. */
   altM: number;
   fromDeg: number;
   kt: number;
+  /** Pressure [hPa] and temperature [°C] of a pressure level (for its stability: mountain waves). */
+  hPa?: number;
+  tempC?: number;
 }
 
 /** A wind level at a height above the ground (FlightGear's "boundary" layers). */
@@ -143,6 +147,11 @@ export function windAt(w: Pick<Weather, "elevationM" | "windFromDeg" | "windKt" 
   return { fromDeg: top.fromDeg, kt: top.kt };
 }
 
+/** The pressure levels with a temperature (what mountain waves are computed from); empty for the reanalysis. */
+export function sounding(w: Pick<Weather, "aloft">): SoundingLevel[] {
+  return w.aloft.flatMap((l) => (l.hPa !== undefined && l.tempC !== undefined ? [{ altM: l.altM, hPa: l.hPa, tempC: l.tempC, fromDeg: l.fromDeg, kt: l.kt }] : []));
+}
+
 /**
  * Roughness length of open, level ground with low grass [m]: WMO's standard exposure for
  * wind measured at 10 m (WMO-No. 8, Davenport class "open", z0 = 0.03 m).
@@ -164,8 +173,8 @@ export const OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive
 const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
 /** The forecast API serves up to 92 past days; older days come from the archive. */
 export const FORECAST_PAST_DAYS = 90;
-/** Pressure levels asked for winds aloft (≈ 0.8, 1, 1.5, 2, 3 and 4.2 km). */
-const LEVELS_HPA = [925, 900, 850, 800, 700, 600];
+/** Pressure levels asked for winds and temperatures aloft (≈ 0.8, 1, 1.5, 2, 3, 4.2, 5.6 and 7.2 km). */
+const LEVELS_HPA = [925, 900, 850, 800, 700, 600, 500, 400];
 /** Model wind heights near the ground [m] (the forecast's; the reanalysis has 100 m). */
 const BOUNDARY_M = [80, 120, 180];
 const HOURLY = [
@@ -175,7 +184,7 @@ const HOURLY = [
   "wind_direction_10m",
   "wind_gusts_10m",
   ...BOUNDARY_M.flatMap((m) => [`wind_speed_${m}m`, `wind_direction_${m}m`]),
-  ...LEVELS_HPA.flatMap((p) => [`wind_speed_${p}hPa`, `wind_direction_${p}hPa`, `geopotential_height_${p}hPa`]),
+  ...LEVELS_HPA.flatMap((p) => [`wind_speed_${p}hPa`, `wind_direction_${p}hPa`, `geopotential_height_${p}hPa`, `temperature_${p}hPa`]),
   "cloud_cover_low",
   "cloud_cover_high",
   "shortwave_radiation",
@@ -223,7 +232,8 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
   for (const p of LEVELS_HPA) {
     const kt = v(`wind_speed_${p}hPa`), dir = v(`wind_direction_${p}hPa`), z = v(`geopotential_height_${p}hPa`) ?? (p === 850 ? 1500 : p === 700 ? 3000 : undefined);
     // (A level below the model's ground is extrapolated: not air anyone flies in.)
-    if (kt !== undefined && dir !== undefined && z !== undefined && z > g + 10) aloft.push({ altM: z, fromDeg: dir, kt });
+    const t = v(`temperature_${p}hPa`);
+    if (kt !== undefined && dir !== undefined && z !== undefined && z > g + 10) aloft.push({ altM: z, fromDeg: dir, kt, hPa: p, ...(t !== undefined ? { tempC: t } : {}) });
   }
   aloft.sort((a, b) => a.altM - b.altM);
   const boundary: BoundaryWind[] = [];
