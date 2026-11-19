@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { advance, applyEnvironment, Environment, Thermal, thermalUpdraft } from "@webflight/environment";
+import { advance, applyEnvironment, buildWaveField, Environment, Thermal, thermalUpdraft, waveAt, type TerrariumTerrain } from "@webflight/environment";
 import { ASK21, createGlider, ensureAircraft } from "../src/gliders.ts";
 import { runLanding } from "../src/landing.ts";
 import { GRENCHEN, JURA_CREST } from "@webflight/environment";
@@ -87,6 +87,42 @@ describe("ASK21 over real terrain", () => {
     } finally {
       sim.fdm.destroy();
     }
+  }, 60_000);
+
+  it("climbs in the lee wave of a ridge, pointed into the wind; the same air without waves sinks", async () => {
+    // A north–south ridge, 1,000 m over a 600 m plain; a stable westerly strengthening with height.
+    const lat0 = 45.5, lon0 = 25.5, mLon = 111_320 * Math.cos((lat0 * Math.PI) / 180);
+    const ridge = (_la: number, lo: number) => 600 + 1000 * Math.exp(-((((lo - lon0) * mLon) / 4000) ** 2));
+    const fake = { load: async () => {}, heightAt: ridge, heightAtAsync: async (la: number, lo: number) => ridge(la, lo) } as unknown as TerrariumTerrain;
+    const levels = [
+      { altM: 1500, hPa: 850, tempC: 4, fromDeg: 270, kt: 20 },
+      { altM: 3000, hPa: 700, tempC: -4, fromDeg: 270, kt: 30 },
+      { altM: 5500, hPa: 500, tempC: -22, fromDeg: 270, kt: 40 },
+    ];
+    const field = buildWaveField({ centerLatDeg: lat0, centerLonDeg: lon0, heightAt: ridge, levels, n: 128, dx: 400 })!;
+    // The strongest lift at 2,800 m within 15 km downwind (east) of the crest.
+    let best = { e: 0, w: -Infinity };
+    for (let e = 2000; e <= 15_000; e += 200) {
+      const w = waveAt(field, lat0, lon0 + e / mLon, 2800)!;
+      if (w > best.w) best = { e, w };
+    }
+    expect(best.w).toBeGreaterThan(1.5);
+    const fly = async (withWaves: boolean) => {
+      const lon = lon0 + best.e / mLon;
+      const sim = await SoaringSim.create({ latDeg: lat0, lonDeg: lon, headingDeg: 270, aglM: 2800 - ridge(lat0, lon), easKmh: 80 }, { windFromDeg: 270, windKt: 15, profile: { elevationM: 600, windFromDeg: 270, windKt: 15, aloft: levels }, ridgeLift: true, thermals: false }, { terrain: fake });
+      try {
+        if (withWaves) sim.env.waves = field;
+        // (The start is trimmed in still air: the headwind's arrival zooms it up for ~10 s.)
+        sim.run(15, { headingDeg: 270, easKmh: 80 });
+        const a0 = sim.altM;
+        sim.run(30, { headingDeg: 270, easKmh: 80 });
+        return (sim.altM - a0) / 30;
+      } finally {
+        sim.fdm.destroy();
+      }
+    };
+    expect(await fly(true)).toBeGreaterThan(0.5);
+    expect(await fly(false)).toBeLessThan(-0.5);
   }, 60_000);
 
   it("lands on Grenchen's runway: touches down on the real ground height and stops", async () => {
