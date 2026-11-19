@@ -116,7 +116,11 @@ uniform vec4 u_light;
 uniform float u_frame;       // frame number (mod 64) while TAA runs, else 0         // extinction per m at density 1, sun scale, sky scale, steps
 uniform vec3 u_haze;          // without the atmosphere: the haze colour far clouds fade to
 uniform vec2 u_fade;          // haze starts, cloud gone [m]
-uniform vec2 u_ap0;           // with the atmosphere: haze scale, 1
+uniform vec4 u_ap0;           // with the atmosphere: haze scale, 1, the sky's scale
+// The air in front of a cloud: as the haze on the ground near by, as the sky round it far off
+// (through a long path a distant cloud fades into the sky's colour; with the ground haze's
+// darker scale it stood out as a grey silhouette).
+float apScale(float t) { return mix(u_ap0.x, u_ap0.z, smoothstep(30000.0, 90000.0, t)); }
 uniform float u_ready;
 uniform vec4 u_form;          // density scale, detail erosion, shape tile ÷ radius, detail tile [m]
 // The far field (beyond the volumes): a top-down map of the clouds, tangent to the ground at its
@@ -172,13 +176,42 @@ float density(int i, vec3 q, bool detail) {
   return d * u_d[i].y;
 }
 
+// Far-cloud density at v (relative to the far map's centre) and hgt above the base: the map's
+// heap (its top and how much of the texel it covers) as the volumes' towers are their coverage,
+// carved by the same Perlin–Worley noise in the world (a tile ~1.6 km), eroded at the rim and the
+// top, a short fade at the base. Returns density (the volumes' scale) and the height fraction.
+vec2 farDensity(vec3 v, float hgt) {
+  if (hgt < 0.0) return vec2(0.0);
+  vec2 uv = vec2(dot(v, u_farE), dot(v, u_farN)) / (2.0 * u_farC.w) + 0.5;
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec2(0.0);
+  vec4 m = texture(u_farMap, uv);
+  float cTop = m.r * ${MAX_TOWER_M.toFixed(1)};
+  if (m.g <= 0.0 || hgt > cTop * 1.3) return vec2(0.0);
+  float hn = hgt / max(cTop, 1.0);
+  // Coverage: the heap's share of the texel, falling off towards its top.
+  float cov = clamp(m.g * 1.3, 0.0, 1.0) * smoothstep(1.3, 0.55, hn);
+  vec3 w = vec3(dot(v, u_farE), dot(v, u_farN), hgt) / 1600.0;
+  vec4 sn = texture(u_shape, w);
+  float wf = sn.g * 0.625 + sn.b * 0.25 + sn.a * 0.125;
+  float base = remap(sn.r, wf - 1.0, 1.0, 0.0, 1.0);
+  float d = remap(base, 1.0 - cov, 1.0, 0.0, 1.0) * cov;
+  if (d <= 0.0) return vec2(0.0, hn);
+  // Detail: wisps at the base, rounded billows above (as the volumes' erosion).
+  vec4 dn = texture(u_detail, w * 3.0);
+  float df = dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125;
+  d = remap(d, mix(1.0 - df, df, clamp(hn * 4.0, 0.0, 1.0)) * u_form.y, 1.0, 0.0, 1.0);
+  return vec2(clamp(d * u_form.x, 0.0, 1.0) * smoothstep(0.0, 0.03, hn), hn);
+}
+
 // The far clouds along the ray between tMin and tMax: premultiplied colour (the air in front
 // already over it) and alpha. Height above sea level along the ray, with the earth's curvature
-// to second order: h(t) = a·t² + b·t + c.
-vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sunCol, float ph0, float ph1, float ph2, float jit) {
+// to second order: h(t) = a·t² + b·t + c. Lit as the volumes are: a march towards the sun for
+// their self-shadow (the sunlit side bright, the far side and the base in shade), three
+// scattering octaves, the powder term and the sky's light from above, darker below.
+vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sun, vec3 sunCol, float ph0, float ph1, float ph2, float jit) {
   if (u_farP.w < 0.5 || tMax <= tMin) return vec4(0.0);
   vec3 F = u_farC.xyz;
-  float R0 = u_farP.x, B = u_farP.y, top = B + u_farP.z;
+  float R0 = u_farP.x, B = u_farP.y, top = B + u_farP.z * 1.3;
   float s = dot(dir, u_farUp), f = dot(-F, u_farUp), dF = dot(dir, -F), F2 = dot(F, F);
   float qa = (1.0 - s * s) / (2.0 * R0), qb = s + (dF - s * f) / R0, qc = f + (F2 - f * f) / (2.0 * R0);
   // Below the top: between the roots of h = top.
@@ -191,6 +224,7 @@ vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sunCol, float ph0, float p
   float g0 = hi, g1 = hi;
   float dB = qb * qb - 4.0 * qa * (qc - B);
   if (dB > 0.0) { float sb = sqrt(dB); g0 = (-qb - sb) / (2.0 * qa); g1 = (-qb + sb) / (2.0 * qa); }
+  float sigma = u_light.x * 0.25, sunUp = dot(sun, u_farUp);
   vec3 col = vec3(0.0);
   float T = 1.0;
   for (int part = 0; part < 2; part++) {
@@ -198,37 +232,37 @@ vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sunCol, float ph0, float p
     float a1 = part == 0 ? (dB > 0.0 ? min(hi, g0) : hi) : hi;
     if (part == 1 && dB <= 0.0) break;
     if (a1 <= a0) continue;
-    float n = clamp((a1 - a0) / 300.0, 4.0, 48.0), dt = (a1 - a0) / n;
+    float n = clamp((a1 - a0) / 250.0, 4.0, 56.0), dt = (a1 - a0) / n;
     float t = a0 + dt * jit;
-    for (int k = 0; k < 48; k++) {
+    for (int k = 0; k < 56; k++) {
       if (float(k) >= n || T < 0.02) break;
-      vec3 v = dir * t + F * -1.0;
-      vec2 uv = vec2(dot(v, u_farE), dot(v, u_farN)) / (2.0 * u_farC.w) + 0.5;
-      if (all(greaterThan(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) {
-        vec4 m = texture(u_farMap, uv);
-        float hgt = qa * t * t + qb * t + qc - B, cTop = m.r * ${MAX_TOWER_M.toFixed(1)};
-        if (m.g > 0.0 && hgt >= 0.0 && hgt < cTop * 1.25) {
-          // Billows: the same noise as the volumes', in the world, lifting and cutting the domes.
-          float nz = texture(u_shape, vec3(dot(v, u_farE), dot(v, u_farN), hgt) / 2600.0).r;
-          float edge = cTop * (0.75 + 0.5 * nz);
-          // The rim frayed by the same noise (the map's texels would show as steps).
-          float rim = smoothstep(0.1, 0.45, m.g + (nz - 0.5) * 0.5);
-          if (hgt < edge && rim > 0.0) {
-          float hn = hgt / max(edge, 1.0);
-          float dens = rim * smoothstep(edge, edge * 0.85, hgt);
-          float tr = exp(-0.004 * dens * dt);
-          // Lit as the volumes' outer surface (the sun's three scattering octaves), darker
-          // towards the base, and the sky's light.
-          vec3 S = sunCol * (ph0 + 0.6 * ph1 + 0.4 * ph2) * (0.4 + 0.6 * hn) + mix(u_ambBase, u_ambTop, hn) * u_light.z;
-          vec3 c = S;
-          if (u_ap0.y > 0.5) {
-            vec4 ap = aerial(v_textureCoordinates, t / 1000.0);
-            c = S * ap.a + ap.rgb * u_ap0.x;
-          } else c = mix(S, u_haze, clamp(smoothstep(u_fade.x, u_fade.y, t) * 1.2, 0.0, 1.0));
-          col += T * c * (1.0 - tr);
-          T *= tr;
-          }
+      vec3 v = dir * t - F;
+      float hgt = qa * t * t + qb * t + qc - B;
+      vec2 dh = farDensity(v, hgt);
+      if (dh.x > 0.0) {
+        float dens = dh.x, hn = dh.y;
+        // Towards the sun, from where the ray met this cloud: the march's steps here are hundreds
+        // of metres, and a sample that deep inside would have the whole cloud between it and the
+        // sun (the volumes are lit at their surface). 4 steps, growing.
+        vec3 vs = v - dir * dt;
+        float hs = hgt - dot(dir, u_farUp) * dt;
+        float od = 0.0;
+        for (int l = 1; l <= 4; l++) {
+          float L = 60.0 * float(l * l);
+          od += farDensity(vs + sun * L, hs + sunUp * L).x * 60.0 * float(2 * l - 1);
         }
+        od *= sigma * 0.35;
+        float powder = mix(0.55, 1.0, 1.0 - exp(-dens * 6.0));
+        vec3 S = sunCol * (exp(-od) * ph0 * powder + 0.6 * exp(-0.3 * od) * ph1 + 0.4 * exp(-0.1 * od) * ph2);
+        S += mix(u_ambBase, u_ambTop, smoothstep(0.0, 0.85, hn)) * u_light.z;
+        float tr = exp(-u_light.x * dens * dt); // as dense as the volumes
+        vec3 c = S;
+        if (u_ap0.y > 0.5) {
+          vec4 ap = aerial(v_textureCoordinates, t / 1000.0);
+          c = S * ap.a + ap.rgb * apScale(t);
+        } else c = mix(S, u_haze, clamp(smoothstep(u_fade.x, u_fade.y, t) * 1.2, 0.0, 1.0));
+        col += T * c * (1.0 - tr);
+        T *= tr;
       }
       t += dt;
     }
@@ -293,7 +327,7 @@ void main() {
   }
   vec3 sunColFar = czm_lightColor * u_light.y;
   float jitF = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 5.588238 * u_frame, vec2(0.06711056, 0.00583715))));
-  if (hits == 0) { out_FragColor = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sunColFar, ph0, ph1, ph2, jitF); return; }
+  if (hits == 0) { out_FragColor = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sun, sunColFar, ph0, ph1, ph2, jitF); return; }
 
   float sigma = u_light.x;
   vec3 lin = vec3(0.0);
@@ -345,7 +379,7 @@ void main() {
   if (u_ap0.y > 0.5) {
     // The atmosphere's air between the camera and the cloud.
     vec4 ap = aerial(v_textureCoordinates, firstT / 1000.0);
-    col = col * ap.a + ap.rgb * u_ap0.x * a;
+    col = col * ap.a + ap.rgb * apScale(firstT) * a;
   } else {
     float hz = smoothstep(u_fade.x, u_fade.y, firstT);
     col = mix(col, u_haze * a, clamp(hz * 1.2, 0.0, 1.0));
@@ -356,7 +390,7 @@ void main() {
   a *= keep;
   // The far field behind what the volumes left.
   if (a < 0.98) {
-    vec4 far = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sunColFar, ph0, ph1, ph2, jitF);
+    vec4 far = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sun, sunColFar, ph0, ph1, ph2, jitF);
     col += (1.0 - a) * far.rgb;
     a += (1.0 - a) * far.a;
   }
@@ -510,7 +544,7 @@ export class VolumetricClouds {
         u_form: () => self.form,
         u_haze: new Cartesian3(lin(0.72 * LOOK.ground), lin(0.78 * LOOK.ground), lin(0.86 * LOOK.ground)),
         u_fade: new Cartesian2(15_000, VOLUME_RANGE_M * 1.4),
-        u_ap0: () => new Cartesian2(atmosphere ? atmosphere.scale.y : 0, hasAp ? 1 : 0),
+        u_ap0: () => new Cartesian4(atmosphere ? atmosphere.scale.y : 0, hasAp ? 1 : 0, atmosphere ? atmosphere.scale.x : 0, 0),
         u_ap: () => atmosphere?.apTexture ?? self.tex.towers,
         u_towers: () => self.tex.towers,
         u_shape: () => self.tex.shape ?? self.tex.towers,
@@ -560,7 +594,11 @@ export class VolumetricClouds {
     const bases: number[] = [];
     let maxTop = 0;
     for (const spec of live) {
-      const g = cloudGeometry(spec), R = Math.max(g.radius, 1), H = g.height;
+      // The visible body: the volumes' towers (centres within 0.65 of the radius, each 0.3–0.6 of
+      // it across) reach to about 0.9 of the radius they reserve.
+      const g = cloudGeometry(spec), R = Math.max(g.radius * 0.9, 1);
+      // A cloud narrower than a texel would stand as a texel-wide column at its full height.
+      const H = g.height * Math.min(1, R / (FAR_SIZE_M / FAR_N));
       Cartesian3.subtract(Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, 0, ell, p), this.farCentre, p);
       const ex = Cartesian3.dot(p, this.farE), ny = Cartesian3.dot(p, this.farN);
       const fx = (ex + half) / texel - 0.5, fy = (ny + half) / texel - 0.5, rt = R / texel + 1;
@@ -574,7 +612,7 @@ export class VolumetricClouds {
           const r = Math.max(0, Math.hypot(x - fx, y - fy) * texel - texel / 2), u = r / R;
           if (u >= 1) continue;
           // A rounded heap, thinning towards its rim (no cliff where the texels end).
-          const top = H * (1 - u * u), soft = 1 - u * u * u, i = (y * FAR_N + x) * 4;
+          const top = H * Math.sqrt(1 - u * u), soft = 1 - u * u * u, i = (y * FAR_N + x) * 4;
           d[i] = Math.max(d[i]!, Math.round((255 * top) / MAX_TOWER_M));
           d[i + 1] = Math.max(d[i + 1]!, Math.round(255 * spec.opacity * share * soft));
         }
