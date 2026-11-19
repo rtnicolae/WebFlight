@@ -26,6 +26,7 @@ import { Atmosphere, relativeHumidity } from "./atmosphere.ts";
 import { setOwnSky } from "./twilight-sky.ts";
 import { Water } from "./water.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
+import { RunwayPaint } from "./runway-paint.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
@@ -185,6 +186,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
+  // Runways painted on Google's tiles from the airfield data (runway-paint.ts). ?rwpaint=0: off.
+  const runways = google3d?.tileset.customShader && params.get("rwpaint") !== "0" ? new RunwayPaint(viewer, google3d.tileset.customShader, osmTiles, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href) : undefined;
+  if (runways) life.onClose(() => runways.destroy());
   // Our water on Google's tiles (water.ts): with our sky only. ?water3d=0: Google's photo.
   const water = google3d && atmosphere && params.get("water3d") !== "0" ? new Water(viewer, google3d, atmosphere, (la, lo, z) => renderTerrain.heightAt(la, lo, z), osmTiles) : undefined;
   // Last of the post-process stages (after the clouds and the water's reflections): bloom,
@@ -193,7 +197,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const hdrFinish = hdr ? new HdrFinish(viewer, { ...num("exposure"), ...num("bloom"), ...num("saturation"), ...num("contrast"), ...num("tone"), ...num("vignette") }) : undefined;
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
-      ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, tuft: params.has("grasstuft") ? Number(params.get("grasstuft")) : 6, ...(google3d ? { google3d } : {}) }, F.latDeg)
+      ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, tuft: params.has("grasstuft") ? Number(params.get("grasstuft")) : 6, ...(google3d ? { google3d } : {}), ...(runways ? { strip: () => runways.grassStrip() } : {}) }, F.latDeg)
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
   let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
@@ -391,7 +395,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, atmosphere, water, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, atmosphere, water, runways, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

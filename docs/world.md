@@ -104,6 +104,12 @@ From the glider at 220 m:
 
 ## Close range (MSFS-style)
 
+- **Runways** (`runway-paint.ts`, with Google's tiles): every runway within 20 km of the camera
+  (the four nearest at a time) painted in the tiles' fragment shader: OSM's line for where,
+  OurAirports for designators, width and material. Paved ones get ICAO Annex 14 markings from
+  their length and width (threshold stripes, designation, centreline, aiming point,
+  touchdown zone, side stripes), concrete slabs or asphalt grain, rubber where wheels touch
+  down; grass strips get mower lanes, also in the 3D grass. `rwpaint=0` turns it off.
 - **Grass** (`grass/grass-field.ts`): blades generated on the GPU (instanced, from a hash of
   their position), in tufts of 6 (`grasstuft=`), in rings to 75 m round the camera, 320 blades/m²
   under it (Ultra 500, `grassdensity=`), thinning as 1/d² while widening. Where it grows, how lush and what colour

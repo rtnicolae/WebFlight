@@ -87,6 +87,20 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
   - the plane gets a small pull towards the camera instead of clipping Google's tiles (clipping cost 20–25% fps).
 - **Cost:** about 4% where a lake fills the view.
 
+**Airfields, 19 Nov 2026:** runways painted on Google's tiles (C1, `runway-paint.ts`).
+- **How:** in the tiles' own shader, as a vertical projection of each runway near the camera. No heights to match, no extra geometry; the same light, haze and cloud shadows as the ground round it.
+- **From data, nothing per airport:**
+  - position and direction from OSM runway lines (as the sim resolves the runway the glider stands on);
+  - designators, width and the surface's material (asphalt, concrete, grass, gravel, dirt) from OurAirports, now kept in the airfield tiles.
+- **Paved:**
+  - markings after ICAO Annex 14 from length and width: threshold stripes, designation (letters L, C, R too), centreline, aiming point, touchdown zone on long wide runways, side stripes;
+  - asphalt or concrete (slab joints) with a CC0 asphalt grain close up, rubber in the touchdown zones;
+  - a little of the photo's tone kept, its melted paint clamped away, and its offset edge line darkened just outside ours.
+- **Grass strips:** mown lighter, in 4 m mower lanes that are lighter or darker with the view along them, on the ground and in the 3D grass (blades laid along the cut).
+- **Fixed on the way:** a long runway split in OSM's tiles came out in two halves (Bucharest 08L: 1,461 m of 3,500), which also moved where the glider starts on such runways.
+- **Cost:** about 1 fps (69.7 → 70.8 with it off on the Ghimbav strip, 75.1 → 76.1 low over Brașov's runway).
+- **Still open:** taxiways and aprons, windsocks and strip markers, hangars.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.

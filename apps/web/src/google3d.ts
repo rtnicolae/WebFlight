@@ -46,6 +46,7 @@ import * as CesiumAll from "cesium";
 import { cloudGeometry } from "./vclouds.ts";
 import { DETAIL_GLSL, detailSettings, detailTexturePixels, followCameraOnGround } from "./ground-detail.ts";
 import { LOOK } from "./lighting.ts";
+import { RUNWAY_GLSL, runwayUniforms } from "./runway-paint.ts";
 
 type GroundFn = (latDeg: number, lonDeg: number) => number | undefined;
 
@@ -151,8 +152,11 @@ export class Google3D {
         u_shadowCentre: { type: UniformType.VEC2, value: new Cartesian2() },
         u_shadowSize: { type: UniformType.FLOAT, value: SHADOW_M },
         u_shadowK: { type: UniformType.FLOAT, value: 0 },
+        // Runways painted on the tiles (runway-paint.ts).
+        ...runwayUniforms(),
       },
       fragmentShaderText: `${DETAIL_GLSL}
+${RUNWAY_GLSL}
 // Google's photos run grey-green on grass and blue-magenta to mauve on bare fields round here:
 // greens a little yellower and richer, the blue cast taken out, washed-out pinks (bare soil,
 // not red roofs: those are saturated) turned towards a warm brown (display values in and out).
@@ -191,7 +195,10 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   vec3 upW = normalize(czm_viewerPositionWC);
   vec3 faceEC = normalize(cross(dFdx(rel), dFdy(rel)));
   float level = smoothstep(0.8, 0.93, abs(dot(faceEC, czm_viewRotation * upW)));
-  if (u_grain > 0.5 && d < wfMacro.y && level > 0.0) {
+  // Runways (runway-paint.ts); paved ones bring their own grain.
+  float painted;
+  c = wfRunwayPaint(c, czm_inverseViewRotation * rel, level, painted);
+  if (u_grain > 0.5 && d < wfMacro.y && level > 0.0 && painted < 0.5) {
     vec3 relWC = czm_inverseViewRotation * rel;
     vec3 east = normalize(vec3(-upW.y, upW.x, 0.0));
     vec3 north = cross(upW, east);

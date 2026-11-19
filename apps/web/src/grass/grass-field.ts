@@ -22,7 +22,7 @@
  * Costly, so only near the ground: it fades out between 25 and 40 m above it.
  */
 import * as Cesium from "cesium";
-import { BoundingSphere, Cartesian2, Cartesian3, Cartographic, Intersect, Matrix4, Transforms, type Cartesian4, type Viewer } from "cesium";
+import { BoundingSphere, Cartesian2, Cartesian3, Cartographic, Cartesian4, Intersect, Matrix4, Transforms, type Viewer } from "cesium";
 import { LOOK } from "../lighting.ts";
 import type { Google3D } from "../google3d.ts";
 import type { FieldRequest, FieldResult } from "./grass-worker.ts";
@@ -96,6 +96,8 @@ uniform float u_seg;        // segments per blade in this ring
 uniform vec4 u_wind;        // direction (x, y), strength 0–1, time [s]
 uniform float u_fade;       // 0–1 with the camera's height
 uniform vec2 u_g3d;         // Google's tiles: x 1 once corrected, y their current offset [m] (subtracted)
+uniform vec4 u_strip;       // a grass runway: centre (field m), unit vector along it
+uniform vec2 u_stripSize;   // its half length and half width [m]; 0: none
 out vec3 v_positionEC;
 out vec3 v_col;
 out vec3 v_nEC;
@@ -189,6 +191,17 @@ void main() {
   float w = (kind > 0.5 ? 0.003 : mix(0.0065, 0.0055, meadow)) * wk * (0.75 + 0.5 * (TUFT_K > 1.0 ? b3 : r6));
   float ang = TUFT_K > 1.0 ? atan(off.y, off.x + 1e-6) + (b3 - 0.5) * 1.4 : r6 * 6.2831853 + r1 * 3.0;
   vec2 dir = vec2(cos(ang), sin(ang));
+  // On a grass runway: mower lanes 4 m wide (as painted on the ground, runway-paint.ts), the
+  // blades of alternate lanes laid the other way along it, so lighter seen along the cut and
+  // darker against it.
+  float lane = 0.0, onStrip = 0.0;
+  if (u_stripSize.x > 0.0) {
+    vec2 q = p - u_strip.xy;
+    float al = dot(q, u_strip.zw), ac = dot(q, vec2(u_strip.w, -u_strip.z));
+    onStrip = (1.0 - smoothstep(u_stripSize.y - 2.0, u_stripSize.y, abs(ac))) * (1.0 - smoothstep(u_stripSize.x - 4.0, u_stripSize.x, abs(al)));
+    lane = clamp(3.0 * sin(3.14159265 * ac / 4.0), -1.0, 1.0) * onStrip;
+    dir = normalize(mix(dir, u_strip.zw * sign(lane + 1e-6), 0.75 * abs(lane)) + 1e-4);
+  }
   // Wind: gusts travelling downwind, plus a quick flutter.
   vec2 wd = u_wind.xy;
   float gust = vnoise(world * 0.12 - wd * u_wind.w * (1.5 + 4.0 * u_wind.z)) ;
@@ -230,6 +243,11 @@ void main() {
   v_dry = dry;
   // Per-blade brightness: lively close up, calmer further out (speckle at 20 m).
   c *= 1.0 + ((TUFT_K > 1.0 ? 0.5 * (r2 + b2) : r2) - 0.5) * 0.3 * (1.0 - 0.7 * smoothstep(4.0, 25.0, d));
+  if (onStrip > 0.0) {
+    vec2 look = normalize(p - u_cam.xy + 1e-4);
+    // (Lighter, not greener: a green boost on the blades turned them lime under the grade.)
+    c *= mix(1.0, 1.05, onStrip) * (1.0 + 0.13 * lane * dot(look, u_strip.zw));
+  }
   if (kind > 1.5) {
     float f = vnoise(world * 0.04 + 23.0);
     v_col = f < 0.4 ? vec3(0.95, 0.94, 0.88) : f < 0.7 ? vec3(0.98, 0.82, 0.12) : vec3(0.62, 0.42, 0.78);
@@ -282,6 +300,16 @@ export interface GrassFieldOptions {
   tuft?: number;
   /** Re-made maps follow this (the glider). */
   google3d?: Google3D;
+  /** The grass runway nearest the camera (runway-paint.ts), for its mower lanes. */
+  strip?: () => GrassStrip | undefined;
+}
+
+/** A grass runway: centre and unit vector along it (world), half length and width [m]. */
+export interface GrassStrip {
+  centre: Cartesian3;
+  along: Cartesian3;
+  halfL: number;
+  halfW: number;
 }
 
 interface Field {
@@ -591,6 +619,15 @@ export class GrassField {
     const inv = Matrix4.inverseTransformation(f.model, new Matrix4());
     Matrix4.multiplyByPoint(inv, this.viewer.camera.positionWC, this.camLocal);
     const cam = this.camLocal;
+    // The grass runway in field metres.
+    const sr = this.o.strip?.();
+    const strip = new Cartesian4(), stripSize = new Cartesian2();
+    if (sr) {
+      const c = Matrix4.multiplyByPoint(inv, sr.centre, new Cartesian3()), a = Matrix4.multiplyByPointAsVector(inv, sr.along, new Cartesian3());
+      const l = Math.hypot(a.x, a.y) || 1;
+      Cartesian4.fromElements(c.x, c.y, a.x / l, a.y / l, strip);
+      Cartesian2.fromElements(sr.halfL, sr.halfW, stripSize);
+    }
     const K = this.o.tuft ?? 1;
     // Tufts per m² (the same blades per m²).
     const D0 = this.o.density / K;
@@ -676,6 +713,8 @@ export class GrassField {
         u_fade: () => fade,
         u_g3d: () => new Cartesian2(f.corrected ? 1 : 0, this.o.google3d?.offsetM ?? 0),
         u_seg: () => ring.segments,
+        u_strip: () => strip,
+        u_stripSize: () => stripSize,
       };
       frameState.commandList.push(rb.cmd);
     });
