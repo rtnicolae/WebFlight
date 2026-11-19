@@ -100,7 +100,8 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
 - **Fixed on the way:** a long runway split in OSM's tiles came out in two halves (Bucharest 08L: 1,461 m of 3,500), which also moved where the glider starts on such runways.
 - **Cost:** about 1 fps (69.7 → 70.8 with it off on the Ghimbav strip, 75.1 → 76.1 low over Brașov's runway).
 - **Windsocks** (`windsocks.ts`): placed as sims do without a survey (past the first threshold, left of the landing direction, clear of the edge; a second on runways of 1,500 m or more), pointing with the day's 10 m wind and drooping in light air; standing on Google's ground (height picked once their tiles are in view).
-- **Still open:** taxiways and aprons, strip markers, hangars.
+- **Taxiways and aprons, tried and dropped:** at large airports Google's photos are sharp from a few hundred metres (yellow lines, stands, slabs), and OSM's centrelines lie a few metres off theirs: painted over, the lines doubled and the aprons went flat.
+- **Still open:** strip markers, hangars.
 
 **Image quality, 19 Nov 2026 (A1):** "everything looks grainy/sandy". Measured first:
 - **Render scale:** 1.0–1.125× of 1440×900 on a 2880×1800 screen, so every aliased pixel shows as a 2×2 block.
@@ -114,6 +115,8 @@ Done:
 - **Temporal anti-aliasing** (`taa.ts`): a Halton sub-pixel jitter (as an angle: Cesium moves each pass's near plane), history reprojected by depth with the nearest surface's motion, things moving with the camera (glider, cockpit) kept to their screen spot, YCoCg variance clipping, Catmull-Rom history, then light contrast-adaptive sharpening (0.35). Still views converge to 8 samples a pixel; in flight the wings, the tow rope and the forest stay clean. About 5% (`?taa=0`: FXAA; `?taadbg=1` shows which history each pixel took).
 
 Still open: the clouds' half-resolution edges (now jittered and averaged, but not reconstructed), and the render scale itself.
+
+**Cirrus, 19 Nov 2026 (B7):** a high layer from the weather's high cloud cover (Open-Meteo `cloud_cover_high`, now in the weather snapshot; drawn only, the simulation doesn't read it). Painted with the sky (`atmosphere.ts`), so cumulus and mountains stand in front of it: at 9 km, in patches covering the weather's share, fibres bent and broken along the wind aloft and drifting with it, a milky veil when overcast (cirrostratus); lit by the sun as it is at that height (pink at sunset, a glow towards the sun) and the sky above. Checked on real days: 21 Jun 2024 13:00 (100%), 7 Jun 14:00 (59%), the sunset of 20 Jun (55%); 10 Jul 2024 has 3% and stays blue. No measurable cost. `?cirrus=0..1` tries a cover, `?cik=` its brightness.
 
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.

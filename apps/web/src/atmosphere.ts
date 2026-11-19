@@ -57,6 +57,10 @@ export interface AtmosphereOptions {
   hazeTopM: number;
   /** Relative humidity at the ground, 0–1. */
   humidity: number;
+  /** High cloud cover, 0–1 (the weather's): a cirrus layer. */
+  highCloud?: number;
+  /** The wind aloft (the highest level the weather has): the cirrus's fibres and drift. */
+  aloft?: { fromDeg: number; kt: number };
 }
 
 /**
@@ -330,6 +334,8 @@ uniform vec2 u_scale;  // sky, haze
 uniform vec2 u_disc;   // cos of the sun's angular radius, disc luminance
 uniform float u_debug;
 uniform vec2 u_tanHalf;
+uniform vec4 u_cirrus;   // cover 0–1, height [km], fibre direction [rad from east], drift [km]
+uniform vec3 u_camEN;    // camera east/north of the flight's start [km]; brightness
 in vec2 v_textureCoordinates;
 
 vec2 skyUv(vec3 d, float r) {
@@ -339,6 +345,58 @@ vec2 skyUv(vec3 d, float r) {
   float az = acos(clamp(dot(normalize(d.xy + vec2(1e-7, 0.0)), normalize(u_sunL.xy + vec2(1e-7, 0.0))), -1.0, 1.0));
   return vec2(az / PI, v);
 }
+// Cirrus: a thin ice layer at u_cirrus.y, in patches where the weather's high cloud is, drawn
+// out in fibres along the wind aloft (fibratus), with finer hooks; lit by the sun as it is at
+// that height (white by day, pink at sunset), scattering forwards (a glow towards the sun),
+// and by the sky above. Thinned towards the horizon, where it is far and in haze.
+float ciHash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float ciNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(ciHash(i), ciHash(i + vec2(1.0, 0.0)), f.x), mix(ciHash(i + vec2(0.0, 1.0)), ciHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float ciFbm(vec2 p, float octaves) {
+  float s = 0.0, a = 0.5, n = 0.0;
+  for (int i = 0; i < 5; i++) {
+    float w = clamp(octaves - float(i), 0.0, 1.0);
+    s += a * w * ciNoise(p);
+    n += a * w;
+    p = mat2(1.6, 1.2, -1.2, 1.6) * p + vec2(17.1, 3.7);
+    a *= 0.5;
+  }
+  return s / max(n, 1e-3);
+}
+vec4 cirrus(vec3 d) {
+  if (u_cirrus.x < 0.02 || d.z <= 0.0) return vec4(0.0);
+  float t = raySphere(vec3(0.0, 0.0, u_camR), d, BOT + u_cirrus.y);
+  if (t <= 0.0) return vec4(0.0);
+  vec2 xy = d.xy * t + u_camEN.xy;
+  vec2 ax = vec2(cos(u_cirrus.z), sin(u_cirrus.z)), ay = vec2(-ax.y, ax.x);
+  vec2 w = vec2(dot(xy, ax) - u_cirrus.w, dot(xy, ay));
+  // Fewer fine octaves far away (they would only sparkle).
+  float oct = mix(5.0, 2.0, smoothstep(15.0, 120.0, t));
+  // Where the layer is: patches covering the weather's share of the sky.
+  float patches = ciFbm(w / 25.0, 3.0);
+  float cov = smoothstep(1.0 - u_cirrus.x, 1.0 - u_cirrus.x + 0.22, (patches - 0.25) * 2.0);
+  // Fibres, bent and broken: the coordinates warped by broad noise, streaks 5:1, in clumps.
+  vec2 wp = w + vec2(2.0 * ciFbm(w / 9.0 + 4.1, 2.0), 3.0 * ciFbm(w / 7.0 + 9.3, 2.0) - 1.5);
+  float fib = ciFbm(vec2(wp.x / 4.5, wp.y / 0.85), oct);
+  float clump = smoothstep(0.35, 0.7, ciFbm(w / 6.0 + 2.7, 3.0));
+  float hook = ciFbm(vec2(wp.x / 1.6 + 0.4 * wp.y, wp.y / 0.3), oct - 1.0);
+  // A faint milky veil where it is overcast (cirrostratus), fibres in it.
+  float veil = 0.4 * smoothstep(0.6, 1.0, u_cirrus.x) * (0.75 + 0.5 * ciFbm(w / 12.0 + 7.7, 3.0));
+  float dens = cov * (veil + clump * smoothstep(0.45, 0.82, fib) * (0.5 + 0.5 * hook));
+  float a = (1.0 - exp(-dens * 1.1)) * smoothstep(0.0, 0.12, d.z);
+  if (a <= 0.001) return vec4(0.0);
+  float cs = dot(d, u_sunL);
+  vec3 sunT = texture(u_trans, transUv(BOT + u_cirrus.y, u_sunL.z)).rgb * smoothstep(-0.08, 0.0, u_sunL.z);
+  const float g = 0.65;
+  float hg = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cs, 1.5);
+  vec3 above = texture(u_sky, skyUv(vec3(0.0, 0.0, 1.0), u_camR)).rgb;
+  vec3 L = sunT * (0.25 + 0.75 * hg) * 0.11 * u_camEN.z + above * 0.9;
+  return vec4(L, a);
+}
+
 void main() {
   vec2 uv = v_textureCoordinates;
   vec4 c = texture(colorTexture, uv);
@@ -355,6 +413,9 @@ void main() {
       float limb = 1.0 - 0.6 * (1.0 - sqrt(max(0.0, 1.0 - rr * rr)));
       col += texture(u_trans, transUv(u_camR, d.z)).rgb * u_disc.y * limb;
     }
+    // The cirrus in front of the sky (and the sun).
+    vec4 ci = cirrus(d);
+    col = col * (1.0 - ci.a) + ci.rgb * u_scale.x * ci.a;
     // Behind it only Cesium's stars (drawn by day too): seen once the sky is dark enough.
     float skyLum = dot(col, vec3(0.2126, 0.7152, 0.0722));
     c.rgb = c.rgb * clamp(1.0 - skyLum * 40.0, 0.0, 1.0) + col;
@@ -392,6 +453,12 @@ export class Atmosphere {
   /** Sky and haze scale into scene units (with the twilight adaptation). */
   readonly scale: Cesium.Cartesian2;
   private ambientCache: { top: number[]; horizon: number[] } | undefined;
+  /** The cirrus layer (see COMPOSITE_FS) and where the camera is in it. */
+  private readonly cirrus = new Cesium.Cartesian4();
+  private readonly camEN = new Cartesian3();
+  private origin: { lat: number; lon: number } | undefined;
+  private cirrusSpeed = 0;
+  private readonly t0 = performance.now();
   private destroyed = false;
 
   constructor(
@@ -414,6 +481,16 @@ export class Atmosphere {
     const sun = opts.sun, az = (sun.azimuthDeg * Math.PI) / 180, el = (sun.elevationDeg * Math.PI) / 180;
     this.u.sunL = new Cartesian3(Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el));
     this.u.sunMu = Math.sin(el);
+    // Cirrus from the weather's high cloud (?cirrus=0..1 to try a cover), at 9 km, fibres
+    // along the wind aloft and drifting with it.
+    const cover = params.has("cirrus") ? Number(params.get("cirrus")) : opts.highCloud ?? 0;
+    const to = (((opts.aloft?.fromDeg ?? 270) + 180) * Math.PI) / 180;
+    this.cirrus.x = cover;
+    this.cirrus.y = 9;
+    this.cirrus.z = Math.atan2(Math.cos(to), Math.sin(to));
+    // Upper winds are stronger than the highest level we have (700 hPa): ×1.8, at least 10 m/s.
+    this.cirrusSpeed = (Math.max(10, 1.8 * (opts.aloft?.kt ?? 20) * 0.514)) / 1000;
+    this.camEN.z = params.has("cik") ? Number(params.get("cik")) : 1;
 
     const make = (w: number, h: number) =>
       new C.Texture({
@@ -455,6 +532,8 @@ export class Atmosphere {
         u_disc: () => disc,
         u_debug: () => (params.get("atmdbg") === "1" ? 1 : 0),
         u_tanHalf: () => u.tanHalf,
+        u_cirrus: () => this.cirrus,
+        u_camEN: () => this.camEN,
       },
     });
     this.saved = { sky: scene.skyAtmosphere?.show ?? false, sun: scene.sun?.show ?? false, fog: scene.fog.renderable };
@@ -469,6 +548,12 @@ export class Atmosphere {
   update(frameState: { commandList: unknown[] }): void {
     const cam = this.viewer.camera, u = this.u;
     const h = cam.positionCartographic.height / 1000;
+    // Where the camera is over the cirrus's ground (km from the flight's start), and its drift.
+    const pc = cam.positionCartographic, lat = (pc.latitude * 180) / Math.PI, lon = (pc.longitude * 180) / Math.PI;
+    this.origin ??= { lat, lon };
+    this.camEN.x = ((lon - this.origin.lon) * 111.32 * Math.cos((this.origin.lat * Math.PI) / 180));
+    this.camEN.y = (lat - this.origin.lat) * 111.132;
+    this.cirrus.w = ((performance.now() - this.t0) / 1000) * this.cirrusSpeed;
     u.camR = BOT + Math.max(0.005, h);
     const enu = Transforms.eastNorthUpToFixedFrame(cam.positionWC, undefined, new Matrix4());
     u.east = Cartesian3.fromElements(enu[0]!, enu[1]!, enu[2]!, u.east);

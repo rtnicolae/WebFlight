@@ -47,6 +47,8 @@ export interface Weather {
   aloft: WindLevel[];
   /** Low cloud cover [0–1]. */
   lowCloud: number;
+  /** High cloud cover [0–1] (cirrus; only drawn, the simulation doesn't use it). */
+  highCloud?: number;
   /** Global shortwave radiation at the ground [W/m²]. */
   shortwaveWm2: number;
   /** Convective boundary-layer depth above ground [m]. */
@@ -112,7 +114,7 @@ export function windAt(w: Weather, altM: number): { fromDeg: number; kt: number 
 export const OPEN_METEO = "https://api.open-meteo.com/v1/forecast";
 /** Historical weather (reanalysis): surface and 100 m only, no pressure levels. */
 export const OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive";
-const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "shortwave_radiation", "boundary_layer_height"];
+const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
 /** The forecast API serves up to 92 past days; older days come from the archive. */
 export const FORECAST_PAST_DAYS = 90;
 const HOURLY = [
@@ -128,6 +130,7 @@ const HOURLY = [
   "wind_direction_700hPa",
   "geopotential_height_700hPa",
   "cloud_cover_low",
+  "cloud_cover_high",
   "shortwave_radiation",
   "boundary_layer_height",
 ];
@@ -194,6 +197,7 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
     gustKt: v("wind_gusts_10m") ?? v("wind_speed_10m") ?? est.gustKt,
     aloft: aloft.length ? aloft : est.aloft,
     lowCloud: (v("cloud_cover_low") ?? est.lowCloud * 100) / 100,
+    ...(v("cloud_cover_high") !== undefined ? { highCloud: v("cloud_cover_high")! / 100 } : {}),
     shortwaveWm2: sw,
     boundaryLayerM: v("boundary_layer_height") ?? estimateBoundaryLayer(sw),
   };

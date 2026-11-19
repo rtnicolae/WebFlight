@@ -174,7 +174,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   let atmosphere: Atmosphere | undefined;
   if (ownAtmosphere) {
     const w = F.weather;
-    atmosphere = new Atmosphere(viewer, { sun, groundM: w.elevationM, hazeTopM: w.elevationM + Math.max(300, w.boundaryLayerM), humidity: relativeHumidity(w.tempC, w.dewPointC) });
+    const top = [...w.aloft].sort((x, y) => y.altM - x.altM)[0];
+    atmosphere = new Atmosphere(viewer, { sun, groundM: w.elevationM, hazeTopM: w.elevationM + Math.max(300, w.boundaryLayerM), humidity: relativeHumidity(w.tempC, w.dewPointC), ...(w.highCloud !== undefined ? { highCloud: w.highCloud } : {}), ...(top ? { aloft: { fromDeg: top.fromDeg, kt: top.kt } } : {}) });
     life.onClose(() => atmosphere?.destroy());
   }
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined, atmosphere);
