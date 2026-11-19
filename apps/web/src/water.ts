@@ -129,7 +129,8 @@ void main() {
   float hor = mix(u_hor[i0], u_hor[i1], fract(az));
   float el = asin(clamp(Rl.z, -1.0, 1.0));
   float skyLum = dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
-  vec3 hill = vec3(0.07, 0.085, 0.055) * (dot(czm_lightColorHdr, vec3(0.33)) * 0.5 + skyLum * 0.8);
+  // Dark green (wooded slopes, mostly in shade seen from the water); a grey-brown read as muddy.
+  vec3 hill = vec3(0.03, 0.06, 0.04) * (dot(czm_lightColorHdr, vec3(0.33)) * 0.5 + skyLum * 0.8);
   float skyPart = smoothstep(hor - 0.01, hor + 0.015, el);
   sky = mix(hill, sky, skyPart);
   // The water's own colour: deep blue-teal, lighter and greener where it is shallow or only
@@ -231,7 +232,8 @@ void main() {
   vec3 RW = normalize(czm_inverseViewRotation * R);
   vec3 skyR = wfSkyRadiance(RW);
   float skyLum = dot(wfSkyRadiance(u_wup), vec3(0.2126, 0.7152, 0.0722));
-  vec3 hill = vec3(0.07, 0.085, 0.055) * (dot(czm_lightColorHdr, vec3(0.33)) * 0.5 + skyLum * 0.8);
+  // Dark green (wooded slopes, mostly in shade seen from the water); a grey-brown read as muddy.
+  vec3 hill = vec3(0.03, 0.06, 0.04) * (dot(czm_lightColorHdr, vec3(0.33)) * 0.5 + skyLum * 0.8);
   vec3 fallback = mix(hill, skyR, skyPart);
   // Ours only if at least about as bright as the reflection it carries (the glint only adds):
   // where our plane lies just under Google's ground (a pond in a gorge) the mask still says
@@ -527,10 +529,12 @@ export class Water {
     const kx = 111_320 * Math.cos(centre.latitude), ky = 111_132;
     const size = new Cartesian2((east - west) * kx, (north - south) * ky);
     const frame = Transforms.eastNorthUpToFixedFrame(Cartographic.toCartesian(centre));
-    // Probes: pixels water most of the time (else at all), on a grid, at most 64 in all.
+    // Probes: pixels water most of the time (else at all), spread over all of them, at most 64.
+    // (On an 8-pixel grid a 50 m river, one or two pixels wide, fell between the points and its
+    // tile was never built.)
     const pick = (min: number) => {
       const out: [number, number][] = [];
-      for (let j = 4; j < 256; j += 8) for (let i = 4; i < 256; i += 8) if (a[j * 256 + i]! >= min) out.push([west + ((i + 0.5) / 256) * (east - west), north - ((j + 0.5) / 256) * (north - south)]);
+      for (let j = 0; j < 256; j++) for (let i = 0; i < 256; i++) if (a[j * 256 + i]! >= min) out.push([west + ((i + 0.5) / 256) * (east - west), north - ((j + 0.5) / 256) * (north - south)]);
       return out;
     };
     let probes = pick(140);
