@@ -3,7 +3,7 @@ export type { TerrainOptions } from "./terrain.ts";
 export { decodePng } from "./png.ts";
 export { RidgeLift } from "./ridge.ts";
 export type { RidgeInput } from "./ridge.ts";
-export { allenMeanUpdraft, allenRadius, allenUpdraft, CALIBRATION_CIRCLE_M, columnDrift, strengthFactor, Thermal, ThermalField, ThermalSky, thermalUpdraft, triggerScore, UPDRAFT_GAIN } from "./thermals.ts";
+export { allenMeanUpdraft, allenRadius, allenUpdraft, CALIBRATION_CIRCLE_M, columnDrift, skyCellOf, strengthFactor, Thermal, ThermalField, ThermalSky, thermalUpdraft, triggerScore, UPDRAFT_GAIN } from "./thermals.ts";
 export type { ThermalFieldOptions, ThermalSkyOptions, ThermalSpec, Updraft, UserState, WindAtFn, WindProfile } from "./thermals.ts";
 export { Environment } from "./environment.ts";
 export type { AircraftState, EnvironmentConfig, EnvironmentOutput, WindProfileData } from "./environment.ts";

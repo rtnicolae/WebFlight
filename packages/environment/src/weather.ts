@@ -8,7 +8,8 @@
  * height (clear sky, light westerly).
  *
  * Soaring from those (standard convective boundary-layer rules of thumb):
- *  - cumulus base = lifting condensation level ≈ 125 m × (T − Td) above ground
+ *  - cumulus base = lifting condensation level of the mixed-layer parcel (mixedLayerLcl), else
+ *    ≈ 125 m × (T − Td) above ground from the 2 m values
  *  - thermals reach the top of the boundary layer zi (or cloud base, if lower); if the
  *    condensation level is above zi the thermals are blue (no cumulus)
  *  - convective velocity scale w* = (g/T · Q · zi)^(1/3), Q the surface kinematic heat flux,
@@ -27,6 +28,8 @@ export interface WindLevel {
   /** Pressure [hPa] and temperature [°C] of a pressure level (for its stability: mountain waves). */
   hPa?: number;
   tempC?: number;
+  /** Dew point [°C] of a pressure level (for the mixed-layer parcel: cloud base). */
+  dewPointC?: number;
 }
 
 /** A wind level at a height above the ground (FlightGear's "boundary" layers). */
@@ -68,6 +71,8 @@ export interface Weather {
   shortwaveWm2: number;
   /** Convective boundary-layer depth above ground [m]. */
   boundaryLayerM: number;
+  /** Surface pressure [hPa] at the model's ground (with the levels' dew points: the mixed-layer parcel). */
+  surfacePressureHpa?: number;
   /** Why the estimate was used (e.g. "Open-Meteo: daily request limit reached"). */
   note?: string;
 }
@@ -90,9 +95,46 @@ export interface Soaring {
 const G = 9.81;
 const RHO_CP = 1.2 * 1005;
 
+/**
+ * Lifting condensation level [m above the model's ground] of the mixed-layer parcel, as severe-
+ * weather and soaring forecasts lift it in the afternoon (the US Storm Prediction Center's
+ * "ML" parcel): potential temperature and mixing ratio averaged over the lowest 100 hPa (the
+ * 2 m values and the pressure levels in it, by pressure), lifted dry-adiabatically until it
+ * saturates; the temperature there from Bolton (1980, eq. 15). The 2 m air alone is moister than
+ * the mixed layer and puts the base too low (12 Nov 2026 at Ghimbav: 150 m against 560 m).
+ * Undefined without the levels' dew points and the surface pressure (the reanalysis).
+ */
+export function mixedLayerLcl(w: Pick<Weather, "tempC" | "dewPointC" | "surfacePressureHpa" | "aloft">): number | undefined {
+  const ps = w.surfacePressureHpa;
+  if (ps === undefined) return undefined;
+  const es = (t: number) => 6.112 * Math.exp((17.67 * t) / (t + 243.5));
+  const mix = (td: number, p: number) => (0.622 * es(td)) / (p - es(td));
+  const pts = [{ p: ps, th: (w.tempC + 273.15) * (1000 / ps) ** 0.286, r: mix(w.dewPointC, ps) }];
+  for (const l of [...w.aloft].sort((a, b) => (b.hPa ?? 0) - (a.hPa ?? 0)))
+    if (l.hPa !== undefined && l.tempC !== undefined && l.dewPointC !== undefined && l.hPa < ps) pts.push({ p: l.hPa, th: (l.tempC + 273.15) * (1000 / l.hPa) ** 0.286, r: mix(l.dewPointC, l.hPa) });
+  if (pts.length < 2 || pts[1]!.p < ps - 100) return undefined;
+  // Trapezoids in pressure from the surface to 100 hPa above it.
+  const top = ps - 100;
+  let th = 0, r = 0;
+  for (let i = 0; i + 1 < pts.length && pts[i]!.p > top; i++) {
+    const a = pts[i]!, b = pts[i + 1]!, pb = Math.max(b.p, top), f = (a.p - pb) / (a.p - b.p);
+    const thb = a.th + (b.th - a.th) * f, rb = a.r + (b.r - a.r) * f;
+    th += ((a.th + thb) / 2) * (a.p - pb);
+    r += ((a.r + rb) / 2) * (a.p - pb);
+  }
+  const depth = ps - Math.max(top, pts[pts.length - 1]!.p);
+  th /= depth;
+  r /= depth;
+  // The parcel at the surface: temperature and dew point (from its vapour pressure).
+  const T = th * (ps / 1000) ** 0.286, e = (r * ps) / (0.622 + r), lnE = Math.log(e / 6.112);
+  const Td = 273.15 + (243.5 * lnE) / (17.67 - lnE);
+  const Tlcl = 1 / (1 / (Td - 56) + Math.log(T / Td) / 800) + 56; // Bolton (1980), eq. 15
+  return Math.max(0, (T - Tlcl) / 0.00976); // dry adiabat: 9.76 K per km
+}
+
 export function soaringFrom(w: Weather): Soaring {
   const spread = Math.max(0, w.tempC - w.dewPointC);
-  const lcl = Math.max(150, 125 * spread);
+  const lcl = mixedLayerLcl(w) ?? Math.max(150, 125 * spread);
   const zi = Math.max(0, w.boundaryLayerM);
   const q = (0.35 * Math.max(0, w.shortwaveWm2)) / RHO_CP;
   const wStar = zi > 200 && q > 0.01 ? Math.cbrt((G / (w.tempC + 273.15)) * q * zi) : 0;
@@ -184,7 +226,8 @@ const HOURLY = [
   "wind_direction_10m",
   "wind_gusts_10m",
   ...BOUNDARY_M.flatMap((m) => [`wind_speed_${m}m`, `wind_direction_${m}m`]),
-  ...LEVELS_HPA.flatMap((p) => [`wind_speed_${p}hPa`, `wind_direction_${p}hPa`, `geopotential_height_${p}hPa`, `temperature_${p}hPa`]),
+  ...LEVELS_HPA.flatMap((p) => [`wind_speed_${p}hPa`, `wind_direction_${p}hPa`, `geopotential_height_${p}hPa`, `temperature_${p}hPa`, `dew_point_${p}hPa`]),
+  "surface_pressure",
   "cloud_cover_low",
   "cloud_cover_high",
   "shortwave_radiation",
@@ -232,8 +275,8 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
   for (const p of LEVELS_HPA) {
     const kt = v(`wind_speed_${p}hPa`), dir = v(`wind_direction_${p}hPa`), z = v(`geopotential_height_${p}hPa`) ?? (p === 850 ? 1500 : p === 700 ? 3000 : undefined);
     // (A level below the model's ground is extrapolated: not air anyone flies in.)
-    const t = v(`temperature_${p}hPa`);
-    if (kt !== undefined && dir !== undefined && z !== undefined && z > g + 10) aloft.push({ altM: z, fromDeg: dir, kt, hPa: p, ...(t !== undefined ? { tempC: t } : {}) });
+    const t = v(`temperature_${p}hPa`), td = v(`dew_point_${p}hPa`);
+    if (kt !== undefined && dir !== undefined && z !== undefined && z > g + 10) aloft.push({ altM: z, fromDeg: dir, kt, hPa: p, ...(t !== undefined ? { tempC: t } : {}), ...(td !== undefined ? { dewPointC: td } : {}) });
   }
   aloft.sort((a, b) => a.altM - b.altM);
   const boundary: BoundaryWind[] = [];
@@ -264,6 +307,7 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
     ...(v("cloud_cover_high") !== undefined ? { highCloud: v("cloud_cover_high")! / 100 } : {}),
     shortwaveWm2: sw,
     boundaryLayerM: v("boundary_layer_height") ?? estimateBoundaryLayer(sw),
+    ...(v("surface_pressure") !== undefined ? { surfacePressureHpa: v("surface_pressure")! } : {}),
   };
 }
 

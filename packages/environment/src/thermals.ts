@@ -505,6 +505,11 @@ export function triggerScore(groundAt: (lat: number, lon: number) => number | un
 const SKY_M_LAT = 111_132;
 const SKY_M_LON = 111_320 * Math.cos((47 * Math.PI) / 180);
 
+/** The sky cell [x, y] of a position (as ThermalSky cuts the sky; ids start with "x:y:"). */
+export function skyCellOf(latDeg: number, lonDeg: number, cellM = 6000): [number, number] {
+  return [Math.floor((lonDeg * SKY_M_LON) / cellM), Math.floor((latDeg * SKY_M_LAT) / cellM)];
+}
+
 /**
  * Thermals everywhere, for cross-country flight: the sky is cut into cells (degrees scaled to
  * metres at a fixed 47° reference), each holding a few FG thermals seeded from (seed, cell),
@@ -564,14 +569,17 @@ export class ThermalSky {
       if (score === undefined || g === undefined) return undefined;
       cand.push({ lat, lon, score: score * (0.5 + jitter), g });
     }
+    // The air mass's cloud base (or the convective layer's top on a blue day) is one height
+    // above sea level; where the ground reaches it there is no thermal under a cumulus to have.
     const baseMsl = w.elevationM + s.thermalTopAglM;
-    const topM = (g: number) => Math.max(baseMsl, g + 0.6 * s.thermalTopAglM, g + 300);
+    const topM = (_g: number) => baseMsl;
     const wind: WindAtFn = (alt) => windAt(w, alt);
     const out: Thermal[] = [];
     for (let k = 0; k < n; k++) {
       const group = cand.slice(4 * k, 4 * k + 4).sort((a, b) => b.score - a.score);
       const c = group[0]!;
       if (c.score < 0.35) continue; // shaded slopes don't go
+      if (c.g >= baseMsl) continue; // at or above the cloud base
       const { widthK, strengthK } = thermalSize(rand);
       const updraft: Updraft = { wStarMs: s.wStarMs, gain: strengthK * Math.min(1.4, Math.max(0.7, c.score)), cumulus: s.cumulus };
       const diameterM = s.diameterM * widthK;

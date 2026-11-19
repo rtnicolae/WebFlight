@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateWeather, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
+import { estimateWeather, mixedLayerLcl, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
 
 // Shape of an Open-Meteo /v1/forecast response with timezone=auto&timeformat=unixtime.
 const fixture = {
@@ -108,6 +108,28 @@ describe("weather", () => {
     expect(u).toContain("timeformat=unixtime");
     expect(u).toContain("boundary_layer_height");
     for (const k of ["wind_speed_80m", "wind_direction_180m", "wind_speed_925hPa", "geopotential_height_600hPa", "temperature_700hPa", "wind_speed_400hPa"]) expect(u).toContain(k);
+  });
+});
+
+describe("cloud base", () => {
+  // A well-mixed layer: potential temperature and mixing ratio the same at 950 and 900 hPa.
+  const theta = (t: number, p: number) => (t + 273.15) * (1000 / p) ** 0.286;
+  const tAt = (th: number, p: number) => th * (p / 1000) ** 0.286 - 273.15;
+  const es = (t: number) => 6.112 * Math.exp((17.67 * t) / (t + 243.5));
+  const tdFor = (r: number, p: number) => { const e = (r * p) / (0.622 + r), l = Math.log(e / 6.112); return (243.5 * l) / (17.67 - l); };
+  const th0 = theta(28, 950), r0 = (0.622 * es(14)) / (950 - es(14));
+  const mixed = { tempC: 28, dewPointC: 14, surfacePressureHpa: 950, aloft: [{ altM: 980, fromDeg: 0, kt: 5, hPa: 900, tempC: tAt(th0, 900), dewPointC: tdFor(r0, 900) }] };
+
+  it("lifts the mixed-layer parcel: in a well-mixed layer, the 125 m per degree rule", () => {
+    const lcl = mixedLayerLcl(mixed)!;
+    expect(lcl).toBeGreaterThan(0.93 * 125 * 14);
+    expect(lcl).toBeLessThan(1.07 * 125 * 14);
+  });
+
+  it("puts the base higher than the 2 m air when the ground layer is moister than the layer above", () => {
+    const moistGround = { ...mixed, dewPointC: 18 };
+    expect(mixedLayerLcl(moistGround)!).toBeGreaterThan(125 * (28 - 18) + 150);
+    expect(mixedLayerLcl({ ...mixed, surfacePressureHpa: undefined })).toBeUndefined();
   });
 });
 
