@@ -30,6 +30,8 @@ export interface ThermalView {
   radiusM: number;
   strengthMs: number;
   phase: "forming" | "formed" | "dying" | "dead";
+  /** Seconds into its life cycle (FG's cycle timer: forming 0–300, formed –1200, dying –1500, dead –1800). */
+  cycleS?: number;
 }
 
 export type ToWorker =

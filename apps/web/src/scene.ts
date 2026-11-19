@@ -287,6 +287,7 @@ export function thermalView(t: Thermal): ThermalView {
     radiusM: t.spec.diameterFt * 0.3048 * 0.5,
     strengthMs: t.spec.strengthFps * 0.3048,
     phase: time <= 0.2 ? "forming" : time <= 0.8 ? "formed" : time <= 1 ? "dying" : "dead",
+    cycleS: t.cycleTimer,
   };
 }
 
@@ -299,14 +300,34 @@ function hash01(id: string, salt: number): number {
 }
 
 /**
+ * The cumulus through its thermal's life (FG's cycle, minutes). Forming (0–5) is the bubble
+ * rising from the ground: it reaches the condensation level, and lift reaches cloud base, at 5,
+ * so there is no cloud before (a cloud there promised lift that had not arrived: a pilot who
+ * went to a young cloud found nothing under it). Then it grows from a small cloud to full size
+ * over three minutes and stays so while the thermal feeds it (to 20); dying (20–25), the
+ * thermal is cut off from the ground up and the cloud shrinks and fades, gone when lift at its
+ * base stops. Without a cycle time, by phase as before.
+ */
+function cloudLife(t: ThermalView): { size: number; opacity: number } {
+  if (t.cycleS === undefined) return { size: t.phase === "formed" ? 1 : t.phase === "forming" ? 0.6 : t.phase === "dying" ? 0.75 : 0, opacity: t.phase === "dying" ? 0.55 : t.phase === "dead" ? 0 : 1 };
+  const m = t.cycleS / 60, smooth = (x: number) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+  if (m < 5 || m >= 25) return { size: 0, opacity: 0 };
+  if (m < 20) {
+    const g = smooth((m - 5) / 3);
+    return { size: 0.35 + 0.65 * g, opacity: Math.min(1, 0.35 + 1.3 * g) };
+  }
+  const d = smooth((m - 20) / 5);
+  return { size: 1 - 0.4 * d, opacity: 1 - d };
+}
+
+/**
  * The cumulus over a thermal, sized by it: as wide as 2.2 times the thermal (the thermal
  * model gives a skewed spread of widths, thermals.ts thermalSize), and the stronger the
  * thermal the taller the cloud (flat humilis ~0.5 of the radius over 1 m/s, towers ~2 over
  * 4 m/s), with a little of its own on top.
  */
 function cloudsOver(t: ThermalView): CloudSpec[] {
-  const size = t.phase === "formed" ? 1 : t.phase === "forming" ? 0.6 : t.phase === "dying" ? 0.75 : 0;
-  const opacity = t.phase === "dying" ? 0.55 : t.phase === "dead" ? 0 : 1;
+  const { size, opacity } = cloudLife(t);
   const strong = Math.min(1, Math.max(0, (t.strengthMs - 1) / 3));
   return [{ id: t.id, latDeg: t.latDeg, lonDeg: t.lonDeg, baseM: t.topM, groundM: t.groundM, radiusM: Math.max(200, t.radiusM * 2.2), tall: 0.5 + 1.4 * strong + 0.25 * hash01(t.id, 2), size, opacity }];
 }

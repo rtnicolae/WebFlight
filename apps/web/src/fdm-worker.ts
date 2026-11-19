@@ -147,6 +147,7 @@ function postEnvironment(): void {
     radiusM: (th.spec.diameterFt * M_PER_FT) / 2,
     strengthMs: th.spec.strengthFps * M_PER_FT,
     phase: th.phase,
+    cycleS: th.cycleTimer,
   }));
   post({
     type: "environment",
