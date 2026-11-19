@@ -15,10 +15,15 @@ export interface RunwayData {
   lengthM: number | null;
   widthM: number | null;
   surface: "paved" | "grass" | "other";
+  /** What it is made of, for drawing it (older data: from `surface`). */
+  material: RunwayMaterial;
   /** End coordinates, if known. */
   leLatLon: [number, number] | null;
   heLatLon: [number, number] | null;
 }
+
+export type RunwayMaterial = "asphalt" | "concrete" | "grass" | "gravel" | "dirt" | "water" | "other";
+const MATERIALS: Record<string, RunwayMaterial> = { a: "asphalt", c: "concrete", g: "grass", v: "gravel", d: "dirt", w: "water", o: "other" };
 
 export interface AirfieldData {
   ident: string;
@@ -41,6 +46,7 @@ export interface Runway {
   lengthM: number;
   widthM: number;
   paved: boolean;
+  material: RunwayMaterial;
   /** Where the geometry came from. */
   source: "osm" | "ourairports" | "designator";
 }
@@ -52,7 +58,7 @@ export interface OsmRunwayLine {
   b: [number, number];
 }
 
-type Row = [string, string, number, number, number, "s" | "m" | "l", string, string, [string, string, number | null, number | null, RunwayData["surface"], number | null, number | null, number | null, number | null][]];
+type Row = [string, string, number, number, number, "s" | "m" | "l", string, string, [string, string, number | null, number | null, RunwayData["surface"], number | null, number | null, number | null, number | null, string?][]];
 
 export function parseAirfields(json: { airfields: unknown[] }): AirfieldData[] {
   return (json.airfields as Row[]).map(([ident, name, latDeg, lonDeg, elevM, kind, municipality, country, rws]) => ({
@@ -64,12 +70,13 @@ export function parseAirfields(json: { airfields: unknown[] }): AirfieldData[] {
     kind,
     municipality,
     country,
-    runways: rws.map(([le, he, lengthM, widthM, surface, a, b, c, d]) => ({
+    runways: rws.map(([le, he, lengthM, widthM, surface, a, b, c, d, m]) => ({
       le,
       he,
       lengthM,
       widthM,
       surface,
+      material: (m && MATERIALS[m]) || (surface === "paved" ? "asphalt" : surface === "grass" ? "grass" : "other"),
       leLatLon: a !== null && b !== null ? [a, b] : null,
       heLatLon: c !== null && d !== null ? [c, d] : null,
     })),
@@ -122,13 +129,13 @@ export function resolveRunway(field: AirfieldData, rw: RunwayData, osm: OsmRunwa
     let { a, b } = best.line;
     // Orient along the `le` designator.
     if (design !== undefined && angleDiff(bearingDeg(a[0], a[1], b[0], b[1]), design) > 90) [a, b] = [b, a];
-    return { name, latDeg: (a[0] + b[0]) / 2, lonDeg: (a[1] + b[1]) / 2, headingDeg: bearingDeg(a[0], a[1], b[0], b[1]), lengthM: distanceM(a[0], a[1], b[0], b[1]), widthM, paved, source: "osm" };
+    return { name, latDeg: (a[0] + b[0]) / 2, lonDeg: (a[1] + b[1]) / 2, headingDeg: bearingDeg(a[0], a[1], b[0], b[1]), lengthM: distanceM(a[0], a[1], b[0], b[1]), widthM, paved, material: rw.material, source: "osm" };
   }
   if (rw.leLatLon && rw.heLatLon) {
     const [a, b] = [rw.leLatLon, rw.heLatLon];
-    return { name, latDeg: (a[0] + b[0]) / 2, lonDeg: (a[1] + b[1]) / 2, headingDeg: bearingDeg(a[0], a[1], b[0], b[1]), lengthM: rw.lengthM ?? distanceM(a[0], a[1], b[0], b[1]), widthM, paved, source: "ourairports" };
+    return { name, latDeg: (a[0] + b[0]) / 2, lonDeg: (a[1] + b[1]) / 2, headingDeg: bearingDeg(a[0], a[1], b[0], b[1]), lengthM: rw.lengthM ?? distanceM(a[0], a[1], b[0], b[1]), widthM, paved, material: rw.material, source: "ourairports" };
   }
-  return { name, latDeg: field.latDeg, lonDeg: field.lonDeg, headingDeg: design ?? 0, lengthM: rw.lengthM ?? 800, widthM, paved, source: "designator" };
+  return { name, latDeg: field.latDeg, lonDeg: field.lonDeg, headingDeg: design ?? 0, lengthM: rw.lengthM ?? 800, widthM, paved, material: rw.material, source: "designator" };
 }
 
 /** Airfields matching a query (ident, name or town; accents ignored), best first. */
