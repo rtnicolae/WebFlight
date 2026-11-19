@@ -70,7 +70,8 @@ is chosen must be compatible with these:
 
 Physics used without porting code: the logarithmic surface-layer wind profile with WMO's
 standard roughness for open terrain, z0 = 0.03 m (WMO-No. 8, *Guide to Instruments and Methods
-of Observation*), for the wind below 10 m.
+of Observation*), for the wind below 10 m; a thermal column's drift as its air is carried by
+the wind while it rises (`columnDrift`).
 | `packages/launch/src/winch.ts`, `aerotow.ts` | FGData `Nasal/towing/hitch.nas` (D-NXKT, Bea Wolf) |
 | `packages/launch/src/tug.ts` | ASK21 `Nasal/dragrobot.nas` (Klaus Kerner, Bea Wolf) |
 

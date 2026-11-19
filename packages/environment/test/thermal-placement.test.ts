@@ -26,9 +26,27 @@ describe("thermal placement from terrain and sun", () => {
   it("puts more thermals on the sunny side of a ridge", () => {
     const sky = new ThermalSky({ seed: 3, weather: W, groundAt: (lat) => ridge(lat) });
     const ts = sky.thermalsAround(45.7, 25.5, 30_000);
-    const south = ts.filter((t) => t.spec.latDeg < 45.7 - 300 / M_LAT && t.spec.latDeg > 45.7 - 2000 / M_LAT).length;
-    const north = ts.filter((t) => t.spec.latDeg > 45.7 + 300 / M_LAT && t.spec.latDeg < 45.7 + 2000 / M_LAT).length;
+    const foot = (t: (typeof ts)[number]) => t.footLatLon[0];
+    const south = ts.filter((t) => foot(t) < 45.7 - 300 / M_LAT && foot(t) > 45.7 - 2000 / M_LAT).length;
+    const north = ts.filter((t) => foot(t) > 45.7 + 300 / M_LAT && foot(t) < 45.7 + 2000 / M_LAT).length;
     expect(south).toBeGreaterThan(north);
+  });
+
+  it("stands each thermal on its trigger and carries its top, where the cloud is, downwind", () => {
+    // The estimate's wind: from the west, 7 kt at the ground to 14 kt at 1,500 m.
+    const sky = new ThermalSky({ seed: 1, weather: W, groundAt: () => 530 });
+    const ts = sky.thermalsAround(45.7, 25.5, 15_000);
+    expect(ts.length).toBeGreaterThan(10);
+    const mLon = 111_320 * Math.cos((45.7 * Math.PI) / 180);
+    for (const t of ts) {
+      const [lat, lon] = t.footLatLon;
+      const east = (t.spec.lonDeg - lon) * mLon, north = (t.spec.latDeg - lat) * M_LAT;
+      const depth = t.spec.heightMslFt * 0.3048 - 530, w = t.spec.strengthFps * 0.3048;
+      // Between the surface and the 1,500 m wind, over the depth at the thermal's rise speed.
+      expect(east).toBeGreaterThan((depth * 7 * 0.5144) / w);
+      expect(east).toBeLessThan((depth * 14 * 0.5144) / w);
+      expect(Math.abs(north)).toBeLessThan(0.15 * east);
+    }
   });
 
   it("sizes the sky from the weather: count from spacing, strength from w*, tops from the boundary layer", () => {

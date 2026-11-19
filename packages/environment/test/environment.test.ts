@@ -83,6 +83,33 @@ describe("FG thermals", () => {
     expect(th.run(0.1, { latDeg: 47.2, lonDeg: 8, altFt: 3500 }, wind)).toBe(-1); // global sink
   });
 
+  it("leans the column upwind below its top in a wind either side of north (FG's angle average flipped it)", () => {
+    // From 350° at the ground and 010° aloft: the air goes south, so below the top the column is to the north.
+    const th = new Thermal({ ...spec }, () => 0);
+    th.cycleTimer = 10 * 60;
+    th.run(0.1, { latDeg: 47, lonDeg: 8, altFt: 3500 }, { groundFromDeg: 350, groundKt: 10, aloftFromDeg: 10, aloftKt: 10 });
+    expect(th.sliceLatDeg).toBeGreaterThan(47 + 100 / 111_132);
+    expect(Math.abs(th.sliceLonDeg - 8) * 111_320 * Math.cos((47 * Math.PI) / 180)).toBeLessThan(5);
+  });
+
+  it("with the day's wind, leans as its air is carried: u/w metres downwind per metre risen", () => {
+    // 10 kt from the west at every height, a 10 ft/s (3.05 m/s) thermal, 5,000 ft deep.
+    const west = () => ({ fromDeg: 270, kt: 10 });
+    const th = new Thermal({ ...spec }, () => 0, undefined, west);
+    th.cycleTimer = 10 * 60;
+    const mPerDegLon = 111_320 * Math.cos((47 * Math.PI) / 180);
+    const at = (aglFt: number) => (th.run(0.1, { latDeg: 47, lonDeg: 8, altFt: 1000 + aglFt }, wind), (th.sliceLonDeg - 8) * mPerDegLon);
+    const slope = (10 * 1852) / 3600 / (10 * 0.3048); // 1.69: about 59° from the vertical
+    expect(at(5000)).toBeCloseTo(0, 6); // the top is the thermal's position
+    expect(at(2500)).toBeCloseTo(-2500 * 0.3048 * slope, 0);
+    const [footLat, footLon] = th.footLatLon;
+    expect(footLat).toBeCloseTo(47, 9);
+    expect((footLon - 8) * mPerDegLon).toBeCloseTo(-5000 * 0.3048 * slope, 0);
+    // Placed by its foot, the top moves downwind.
+    th.standOn(47, 8);
+    expect((th.spec.lonDeg - 8) * mPerDegLon).toBeCloseTo(5000 * 0.3048 * slope, 0);
+  });
+
   it("is reproducible from a seed", () => {
     const make = (seed: number) => new ThermalField({ seed, centerLatDeg: 47, centerLonDeg: 8, count: 5 }).thermals.map((t) => [t.spec.latDeg, t.spec.strengthFps, t.cycleTimer]);
     expect(make(42)).toEqual(make(42));

@@ -6,10 +6,45 @@
  *  - the column leans downwind (slice centre moves with height)
  *  - updraft core (cosine), sink ring around it, -1 ft/s global sink outside
  * FlightGear's rand() calls use a seeded generator here, so a seed reproduces the sky.
+ *
+ * Lean. FG tilts the column by a fixed 2° per knot of a wind it blends linearly from the surface
+ * to 9,000 ft. With the day's wind profile the column here leans as its air is carried instead:
+ * the air rises at the thermal's core speed w and moves with the wind at each height, so at a
+ * height h above the foot the column is ∫₀ʰ u(z) dz / w downwind of it (in 10 kt and 3 m/s,
+ * about 60° from the vertical, where FG gives 20°). A glider circling in it climbs slower than
+ * the air, so it still drifts out downwind and has to move upwind as it climbs, as in a real
+ * thermal, at u·(sink/w) rather than at the full wind speed. As in FG the thermal's position is
+ * its top (where the cumulus sits); the foot, where the sun and terrain trigger it, is upwind.
  */
 import { sunPosition } from "./sun.ts";
 import { advance, distanceM, mulberry32 } from "./util.ts";
-import { soaringFrom, type Soaring, type Weather } from "./weather.ts";
+import { soaringFrom, windAt, type Soaring, type Weather } from "./weather.ts";
+
+/** Wind at a height [m MSL] over a ground height [m]. */
+export type WindAtFn = (altM: number, groundM: number) => { fromDeg: number; kt: number };
+
+const KT_TO_MS = 1852 / 3600;
+
+/**
+ * Where a thermal's air has been carried by the time it reaches each height: east and north
+ * offsets [m] from the foot at heights 0, dz, 2dz, … above it, for air rising at `riseMs`.
+ */
+export function columnDrift(wind: WindAtFn, groundM: number, heightM: number, riseMs: number): { dz: number; east: Float64Array; north: Float64Array } {
+  const steps = 40, dz = heightM / steps;
+  const east = new Float64Array(steps + 1), north = new Float64Array(steps + 1);
+  for (let k = 1; k <= steps; k++) {
+    const v = wind(groundM + (k - 0.5) * dz, groundM);
+    const to = ((v.fromDeg + 180) * Math.PI) / 180, run = (v.kt * KT_TO_MS * dz) / riseMs;
+    east[k] = east[k - 1]! + Math.sin(to) * run;
+    north[k] = north[k - 1]! + Math.cos(to) * run;
+  }
+  return { dz, east, north };
+}
+
+/** A point moved east and north [m] (small offsets). */
+function offsetDeg(latDeg: number, lonDeg: number, eastM: number, northM: number): [number, number] {
+  return [latDeg + northM / 111_132, lonDeg + eastM / (111_320 * Math.cos((latDeg * Math.PI) / 180))];
+}
 
 const FT_TO_M = 0.3048;
 const NM_TO_FT = 6076.11549;
@@ -69,10 +104,40 @@ export class Thermal {
     private readonly rand: () => number,
     /** Ground [m] at a position, if known, and the thermal top [m MSL] over a ground height. */
     private readonly ground?: { at: (latDeg: number, lonDeg: number) => number | undefined; topM: (groundM: number) => number },
+    /** The day's wind by height: the column leans as its air is carried (else FG's lean). */
+    private readonly windAt?: WindAtFn,
   ) {
     this.cycleTimer = 60 * Math.floor(rand() * 31);
     this.sliceLatDeg = spec.latDeg;
     this.sliceLonDeg = spec.lonDeg;
+  }
+
+  private drift: { key: string; dz: number; east: Float64Array; north: Float64Array } | undefined;
+
+  /** The column's offset [east, north m] from its foot at a height above the foot [m]. */
+  private driftAt(hM: number): [number, number] {
+    const s = this.spec, g = s.groundElevFt * FT_TO_M, top = Math.max(100, s.heightMslFt * FT_TO_M - g), w = Math.max(0.5, s.strengthFps * FT_TO_M);
+    const key = `${g}|${top}|${w}`;
+    // To 1.1 × the top: FG's thermal reaches that far above it.
+    if (this.drift?.key !== key) this.drift = { key, ...columnDrift(this.windAt!, g, 1.1 * top + 50, w) };
+    const d = this.drift, x = Math.max(0, Math.min(hM / d.dz, d.east.length - 1));
+    const i = Math.floor(x), j = Math.min(i + 1, d.east.length - 1), f = x - i;
+    return [d.east[i]! + f * (d.east[j]! - d.east[i]!), d.north[i]! + f * (d.north[j]! - d.north[i]!)];
+  }
+
+  /** Where the column starts on the ground (upwind of its top with the day's wind). */
+  get footLatLon(): [number, number] {
+    const s = this.spec;
+    if (!this.windAt) return [s.latDeg, s.lonDeg];
+    const [e, n] = this.driftAt(s.heightMslFt * FT_TO_M - s.groundElevFt * FT_TO_M);
+    return offsetDeg(s.latDeg, s.lonDeg, -e, -n);
+  }
+
+  /** Stand the column on a foot (its top, the thermal's position, follows the wind's drift). */
+  standOn(latDeg: number, lonDeg: number): void {
+    const s = this.spec;
+    const [e, n] = this.windAt ? this.driftAt(s.heightMslFt * FT_TO_M - s.groundElevFt * FT_TO_M) : [0, 0];
+    [s.latDeg, s.lonDeg] = offsetDeg(latDeg, lonDeg, e, n);
   }
 
   /** FGAIThermal::Run */
@@ -81,7 +146,7 @@ export class Thermal {
     // FGAIThermal: ground elevation under the thermal, every 10 s.
     this.groundTimer += dt;
     if (this.ground && this.groundTimer >= 10) {
-      const g = this.ground.at(this.spec.latDeg, this.spec.lonDeg);
+      const g = this.ground.at(...this.footLatLon);
       if (g !== undefined) {
         this.groundTimer = 0;
         this.spec.groundElevFt = g / FT_TO_M;
@@ -128,17 +193,25 @@ export class Thermal {
     const rUp = this.rUpFrac * rSink;
     const vUpMax = avail * maxUp, vUpMin = avail * minUp;
 
-    // Drift of the column with height: lean by tan(2° per kt of wind) × height above the user.
-    const groundFrom = Math.PI / 2 - (Math.PI * wind.groundFromDeg) / 180;
-    const aloftFrom = Math.PI / 2 - (Math.PI * wind.aloftFromDeg) / 180;
-    const windHeading = Math.PI + 0.5 * (groundFrom + aloftFrom);
-    const windKt = wind.groundKt + userAlt * ((wind.aloftKt - wind.groundKt) / 9000);
-    const dCenter = -Math.tan(0.034906 * windKt) * (altitudeAglFt - userAgl);
-    const latRad = (s.latDeg * Math.PI) / 180;
-    const ftPerDegLat = 366468.96 - 3717.12 * Math.cos(latRad);
-    const ftPerDegLon = 365228.16 * Math.cos(latRad);
-    this.sliceLonDeg = s.lonDeg + (dCenter * Math.cos(windHeading)) / ftPerDegLon;
-    this.sliceLatDeg = s.latDeg + (dCenter * Math.sin(windHeading)) / ftPerDegLat;
+    if (this.windAt) {
+      // The column at the user's height, from its top: back along the drift above the user.
+      const [et, nt] = this.driftAt(altitudeAglFt * FT_TO_M), [eu, nu] = this.driftAt(userAgl * FT_TO_M);
+      [this.sliceLatDeg, this.sliceLonDeg] = offsetDeg(s.latDeg, s.lonDeg, eu - et, nu - nt);
+    } else {
+      // FG: lean by tan(2° per kt of wind) × height above the user. FG averages the two wind
+      // directions' angles, which points the lean backwards when they lie either side of north
+      // (350° and 010° give 180°); the mean of their directions is taken here instead.
+      const groundFrom = Math.PI / 2 - (Math.PI * wind.groundFromDeg) / 180;
+      const aloftFrom = Math.PI / 2 - (Math.PI * wind.aloftFromDeg) / 180;
+      const windHeading = Math.PI + Math.atan2(Math.sin(groundFrom) + Math.sin(aloftFrom), Math.cos(groundFrom) + Math.cos(aloftFrom));
+      const windKt = wind.groundKt + userAlt * ((wind.aloftKt - wind.groundKt) / 9000);
+      const dCenter = -Math.tan(0.034906 * windKt) * (altitudeAglFt - userAgl);
+      const latRad = (s.latDeg * Math.PI) / 180;
+      const ftPerDegLat = 366468.96 - 3717.12 * Math.cos(latRad);
+      const ftPerDegLon = 365228.16 * Math.cos(latRad);
+      this.sliceLonDeg = s.lonDeg + (dCenter * Math.cos(windHeading)) / ftPerDegLon;
+      this.sliceLatDeg = s.latDeg + (dCenter * Math.sin(windHeading)) / ftPerDegLat;
+    }
     const dist = distanceM(this.sliceLatDeg, this.sliceLonDeg, user.latDeg, user.lonDeg) / 1852; // nm
 
     let vUp: number;
@@ -333,6 +406,7 @@ export class ThermalSky {
     }
     const baseMsl = w.elevationM + s.thermalTopAglM;
     const topM = (g: number) => Math.max(baseMsl, g + 0.6 * s.thermalTopAglM, g + 300);
+    const wind: WindAtFn = (alt, g) => windAt(w, alt, g);
     const out: Thermal[] = [];
     for (let k = 0; k < n; k++) {
       const group = cand.slice(4 * k, 4 * k + 4).sort((a, b) => b.score - a.score);
@@ -351,7 +425,10 @@ export class ThermalSky {
         },
         rand,
         ground ? { at: ground, topM } : undefined,
+        wind,
       );
+      // The sun and terrain trigger the foot; the wind carries the column (and its cloud) on.
+      t.standOn(c.lat, c.lon);
       t.id = `${cx}:${cy}:${k}`;
       out.push(t);
     }
