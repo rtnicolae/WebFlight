@@ -84,7 +84,7 @@ const GOOGLE3D = page.get("world") !== "globe" && IMAGERY === "photo";
 function appKey(p: URLSearchParams): string {
   const im = imageryOf(p);
   const world = p.get("world") === "globe" || im !== "photo" ? "globe" : "google3d";
-  return [qualityOf(p), im, world, ...["aircraft", "shadows", "sharpen", "shadowdist", "dynres", "g3dsse", "g3dgrade", "g3dreq", "gdetail", "aerial", "nosab", "pin"].map((k) => p.get(k) ?? "")].join("|");
+  return [qualityOf(p), im, world, ...["aircraft", "shadows", "sharpen", "shadowdist", "dynres", "g3dsse", "g3dgrade", "g3dreq", "g3daniso", "msaa", "gdetail", "aerial", "nosab", "pin"].map((k) => p.get(k) ?? "")].join("|");
 }
 
 async function startState(F: Flight, params: URLSearchParams): Promise<StartState> {
@@ -118,7 +118,7 @@ let app: App | undefined;
 function ensureApp(time: Date): App {
   if (app) return app;
   const renderTerrain = new TerrariumTerrain({ zoom: 13, maxTiles: 512 });
-  const viewer = createViewer(document.getElementById("cesium")!, { time, shadows: page.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: page.has("sharpen") ? Number(page.get("sharpen")) : 0, ...(page.has("shadowdist") ? { shadowDistanceM: Number(page.get("shadowdist")) } : {}) });
+  const viewer = createViewer(document.getElementById("cesium")!, { time, shadows: page.get("shadows") !== "0" && QUALITY !== "low", quality: QUALITY, terrain: renderTerrain, sharpen: page.has("sharpen") ? Number(page.get("sharpen")) : 0, ...(page.has("msaa") ? { msaa: Number(page.get("msaa")) } : {}), ...(page.has("shadowdist") ? { shadowDistanceM: Number(page.get("shadowdist")) } : {}) });
   return (app = { viewer, renderTerrain, googleTried: false });
 }
 /** Google 3D tiles in place of the globe (google3d.ts); the globe with the photo if they can't be had. */
@@ -126,7 +126,7 @@ async function ensureGoogle3D(a: App): Promise<Google3D | undefined> {
   if (!GOOGLE3D || a.googleTried) return a.google3d;
   a.googleTried = true;
   try {
-    a.google3d = await Google3D.create(a.viewer, (lat, lon) => a.renderTerrain.heightAt(lat, lon), { screenSpaceError: page.has("g3dsse") ? Number(page.get("g3dsse")) : QUALITY === "low" ? 16 : 8, ...(page.get("gdetail") !== "0" ? { texBase: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href } : {}), ...(page.has("g3dgrade") ? { grade: Number(page.get("g3dgrade")) } : {}), ...(page.has("g3dreq") ? { maxRequests: Number(page.get("g3dreq")) } : {}) });
+    a.google3d = await Google3D.create(a.viewer, (lat, lon) => a.renderTerrain.heightAt(lat, lon), { screenSpaceError: page.has("g3dsse") ? Number(page.get("g3dsse")) : QUALITY === "low" ? 16 : 8, ...(page.get("gdetail") !== "0" ? { texBase: new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href } : {}), ...(page.has("g3dgrade") ? { grade: Number(page.get("g3dgrade")) } : {}), ...(page.has("g3dreq") ? { maxRequests: Number(page.get("g3dreq")) } : {}), ...(page.has("g3daniso") ? { anisotropy: Number(page.get("g3daniso")) } : {}) });
   } catch (e) {
     console.warn("Google 3D tiles unavailable; the globe with the aerial photo instead:", e);
   }
@@ -431,7 +431,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
 /** The page-wide parameters of p, for links within the app (appKey). */
 function appParams(p: URLSearchParams): string {
   const o = new URLSearchParams();
-  for (const k of ["quality", "imagery", "world", "aircraft", "shadows", "sharpen", "shadowdist", "dynres", "g3dsse", "g3dgrade", "g3dreq", "gdetail", "aerial", "nosab", "pin"]) {
+  for (const k of ["quality", "imagery", "world", "aircraft", "shadows", "sharpen", "shadowdist", "dynres", "g3dsse", "g3dgrade", "g3dreq", "g3daniso", "msaa", "gdetail", "aerial", "nosab", "pin"]) {
     const v = p.get(k);
     if (v !== null) o.set(k, v);
   }

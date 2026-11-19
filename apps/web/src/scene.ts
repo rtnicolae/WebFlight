@@ -36,6 +36,8 @@ export interface LookOptions {
   quality?: "low" | "high" | "ultra";
   /** Contrast-adaptive sharpening, 0 (off) to 1. */
   sharpen?: number;
+  /** MSAA samples (default: 4 on ultra, else 1). */
+  msaa?: number;
   /** How far shadows reach [m] (default: with the glider's height, see followShadows). */
   shadowDistanceM?: number;
 }
@@ -107,7 +109,7 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
     fullscreenButton: false,
     infoBox: false,
     selectionIndicator: false,
-    msaaSamples: opts.quality === "ultra" ? 4 : 1,
+    msaaSamples: opts.msaa ?? (opts.quality === "ultra" ? 4 : 1),
     shadows: opts.shadows,
     terrainShadows: opts.shadows ? ShadowMode.RECEIVE_ONLY : ShadowMode.DISABLED,
   });

@@ -72,6 +72,32 @@ function photoLight(viewer: Viewer): Cartesian3 {
  * (a WeakMap on Cesium's attribute objects; tile geometry never changes). Internal API, so
  * guarded: without it picks work as before.
  */
+/**
+ * Google's tiles leave their textures' sampler unset, and Cesium's glTF default for that is
+ * plain LINEAR: no mipmaps, no anisotropic filtering. Wherever a tile's 256 px photo is
+ * minified (every slanting view from a glider: fields, forest, roofs towards the horizon) it
+ * was point-sampled: moiré in crop rows, sand in tree crowns, shimmer as the camera moves.
+ * Every glTF texture without a mipmapped filter now gets trilinear mipmaps (generated as the
+ * tile loads) and 8× anisotropic filtering. Compressed textures without mipmaps are left as
+ * they are (WebGL can't generate theirs). Internal API, so guarded.
+ */
+let texturesFiltered = false;
+function filterTextures(anisotropy: number): void {
+  if (texturesFiltered) return;
+  texturesFiltered = true;
+  type Sampler = { wrapS: number; wrapT: number; minificationFilter: number; magnificationFilter: number; maximumAnisotropy: number };
+  const C = CesiumAll as unknown as { GltfLoaderUtil?: { createSampler?: (o: { compressedTextureNoMipmap?: boolean }) => Sampler }; Sampler?: new (o: Partial<Sampler>) => Sampler };
+  const U = C.GltfLoaderUtil, orig = U?.createSampler, Sampler = C.Sampler;
+  if (!U || typeof orig !== "function" || !Sampler) return;
+  U.createSampler = (o) => {
+    const s = orig.call(U, o);
+    if (o.compressedTextureNoMipmap) return s;
+    const min = s.minificationFilter;
+    const mip = min === TextureMinificationFilter.LINEAR ? TextureMinificationFilter.LINEAR_MIPMAP_LINEAR : min === TextureMinificationFilter.NEAREST ? TextureMinificationFilter.NEAREST_MIPMAP_LINEAR : min;
+    return new Sampler({ wrapS: s.wrapS, wrapT: s.wrapT, minificationFilter: mip, magnificationFilter: s.magnificationFilter, maximumAnisotropy: Math.max(s.maximumAnisotropy, anisotropy) });
+  };
+}
+
 /** The fog's light on the tiles in HDR, relative to LDR (see relight). */
 const HDR_FOG = 0.45;
 let readbackCached = false;
@@ -117,7 +143,9 @@ export class Google3D {
     private readonly groundAt: GroundFn,
   ) {}
 
-  static async create(viewer: Viewer, groundAt: GroundFn, opts: { screenSpaceError?: number; texBase?: string; grade?: number; maxRequests?: number } = {}): Promise<Google3D> {
+  static async create(viewer: Viewer, groundAt: GroundFn, opts: { screenSpaceError?: number; texBase?: string; grade?: number; maxRequests?: number; anisotropy?: number } = {}): Promise<Google3D> {
+    // Before the first tile loads. ?g3daniso=0: Cesium's own filtering.
+    if ((opts.anisotropy ?? 8) > 0) filterTextures(opts.anisotropy ?? 8);
     // Tiles downloading at once from Google (Cesium's default 18 per server).
     // 6, not 18: fewer tiles arriving in one frame (3 min at 180 km/h: frames over 33 ms 133 → 103,
     // the slowest 5% 27 → 24 ms, same detail at the end).
