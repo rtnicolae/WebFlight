@@ -27,6 +27,7 @@ import { setOwnSky } from "./twilight-sky.ts";
 import { Water } from "./water.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { RunwayPaint } from "./runway-paint.ts";
+import { TemporalAA } from "./taa.ts";
 import { CockpitInteraction } from "./interaction.ts";
 import { LAUNCH_PROPERTIES, LaunchView } from "./launch-view.ts";
 
@@ -195,6 +196,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // exposure, the grade, the tonemap (?exposure=, ?bloom=, … for tuning).
   const num = (k: string) => (params.has(k) ? { [k]: Number(params.get(k)) } : {});
   const hdrFinish = hdr ? new HdrFinish(viewer, { ...num("exposure"), ...num("bloom"), ...num("saturation"), ...num("contrast"), ...num("tone"), ...num("vignette") }) : undefined;
+  // Temporal anti-aliasing (taa.ts), after it: the very last stage. ?taa=0: Cesium's FXAA.
+  const taa = hdrFinish && params.get("taa") !== "0" ? new TemporalAA(viewer, { ...(params.has("taasharp") ? { sharpen: Number(params.get("taasharp")) } : {}) }) : undefined;
+  if (taa) life.onClose(() => taa.destroy());
   const grass =
     osmTiles && (grassParam === "1" || (grassParam !== "0" && QUALITY !== "low"))
       ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, tuft: params.has("grasstuft") ? Number(params.get("grasstuft")) : 6, ...(google3d ? { google3d } : {}), ...(runways ? { strip: () => runways.grassStrip() } : {}) }, F.latDeg)
@@ -395,7 +399,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, atmosphere, water, runways, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, get layout() { return layout; }, get reader() { return reader; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

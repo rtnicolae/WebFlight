@@ -101,6 +101,19 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
 - **Cost:** about 1 fps (69.7 → 70.8 with it off on the Ghimbav strip, 75.1 → 76.1 low over Brașov's runway).
 - **Still open:** taxiways and aprons, windsocks and strip markers, hangars.
 
+**Image quality, 19 Nov 2026 (A1):** "everything looks grainy/sandy". Measured first:
+- **Render scale:** 1.0–1.125× of 1440×900 on a 2880×1800 screen, so every aliased pixel shows as a 2×2 block.
+- **Google's textures:** no mipmaps, no anisotropic filtering (their samplers are unset; Cesium's default is plain LINEAR). Slanting views point-sampled their photos: moiré in crop rows, sand in tree crowns.
+- **Grass:** far blades were lone bright green pixels.
+- **4× MSAA:** 15–28% of the frame rate for smoother geometry edges only. Not the default (`?msaa=4`).
+
+Done:
+- **Mipmaps and 8× anisotropic filtering** on Google's textures (`google3d.ts`; 4× was softer towards the horizon, 16× no sharper).
+- **Grass:** blades past ~6 m take a patch's average light instead of glinting.
+- **Temporal anti-aliasing** (`taa.ts`): a Halton sub-pixel jitter (as an angle: Cesium moves each pass's near plane), history reprojected by depth with the nearest surface's motion, things moving with the camera (glider, cockpit) kept to their screen spot, YCoCg variance clipping, Catmull-Rom history, then light contrast-adaptive sharpening (0.35). Still views converge to 8 samples a pixel; in flight the wings, the tow rope and the forest stay clean. About 5% (`?taa=0`: FXAA; `?taadbg=1` shows which history each pixel took).
+
+Still open: the clouds' half-resolution edges (now jittered and averaged, but not reconstructed), and the render scale itself.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.

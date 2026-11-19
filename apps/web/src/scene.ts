@@ -47,7 +47,7 @@ export interface LookOptions {
  * four neighbours by an amount that shrinks where local contrast is already high, so texture
  * detail softened by mip filtering at grazing angles comes back without halos at edges.
  */
-const SHARPEN_FS = `
+export const SHARPEN_FS = `
 uniform sampler2D colorTexture;
 uniform float sharpness;
 in vec2 v_textureCoordinates;
