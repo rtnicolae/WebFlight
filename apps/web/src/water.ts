@@ -524,7 +524,10 @@ export class Water {
           g.drawImage(bmp, 0, 0);
           return g.getImageData(0, 0, 256, 256).data;
         })().catch(() => undefined),
-        this.osmUrl ? riverMask(fill(this.osmUrl), z, tileLat(y + 0.5, z)).catch(() => undefined) : Promise.resolve(undefined),
+        // OSM's rivers only in the near tiles: in the far ones (zoom 11, ~54 m a pixel) a 40 m
+        // river is under a pixel, drawn a pixel wide and levelled from coarse answers, so it
+        // showed as dark dashes along the horizon (Google's photo has those rivers anyway).
+        this.osmUrl && z >= 13 ? riverMask(fill(this.osmUrl), z, tileLat(y + 0.5, z)).catch(() => undefined) : Promise.resolve(undefined),
       ]);
       if (!this.tiles.has(key) || (!jrc && !rivers)) return;
       const t = this.build(z, x, y, jrc, rivers);
