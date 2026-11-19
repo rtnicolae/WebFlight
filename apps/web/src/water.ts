@@ -69,6 +69,35 @@ void main() {
   gl_Position = czm_projection * p;
 }`;
 
+/**
+ * Ripples: a tileable normal map (CesiumJS's waterNormals.jpg) in three layers, 7, 19 and 53 m
+ * across, turned against each other and drifting with the wind at their own speeds, in slow gust
+ * patches. Mipmapping averages them away with distance (calm, mirror-like water far off, no
+ * aliased stripes). Replaces ten sine wave trains, whose interference read as diagonal,
+ * periodic bands. Needs uniforms u_normals, u_wind (direction x, y, strength, time); p in metres
+ * east/north.
+ */
+const RIPPLES_GLSL = /* glsl */ `
+uniform sampler2D u_normals;
+float wHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float wNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(wHash(i), wHash(i + vec2(1, 0)), f.x), mix(wHash(i + vec2(0, 1)), wHash(i + vec2(1, 1)), f.x), f.y);
+}
+vec2 rippleSlope(vec2 p) {
+  vec2 w = normalize(u_wind.xy + vec2(1e-4));
+  float t = u_wind.w, spd = 0.25 + 0.75 * u_wind.z;
+  // Rotations by 3-4-5 angles (no shared axes between the layers).
+  mat2 r1 = mat2(0.8, 0.6, -0.6, 0.8), r2 = mat2(0.28, -0.96, 0.96, 0.28);
+  vec2 a = texture(u_normals, p / 7.3 + w * (t * spd * 0.09)).xy * 2.0 - 1.0;
+  vec2 b = texture(u_normals, r1 * p / 19.1 + (r1 * w) * (t * spd * 0.025) + 0.37).xy * 2.0 - 1.0;
+  vec2 c = texture(u_normals, r2 * p / 53.0 + (r2 * w) * (t * spd * 0.006) + 0.71).xy * 2.0 - 1.0;
+  float gust = 0.6 + 0.8 * wNoise(p / 140.0 + w * t * 0.03);
+  return (a * 0.45 + transpose(r1) * b * 0.35 + transpose(r2) * c * 0.3) * (0.05 + 0.11 * u_wind.z) * gust;
+}
+`;
+
 const FS = /* glsl */ `${SKY_LOOKUP_GLSL}
 in vec3 v_posEC;
 in vec2 v_xy;
@@ -79,31 +108,7 @@ uniform vec4 u_wind;     // direction to (x east, y north), strength 0–1, time
 uniform vec3 u_body;     // the water's own colour, relative to the sky's light
 uniform float u_glint;   // the sun's glint strength
 uniform float u_hor[16]; // the terrain's horizon round this water: elevation [rad] every 22.5° from north
-float wHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float wNoise(vec2 p) {
-  vec2 i = floor(p), f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(wHash(i), wHash(i + vec2(1, 0)), f.x), mix(wHash(i + vec2(0, 1)), wHash(i + vec2(1, 1)), f.x), f.y);
-}
-// Slopes of ten wave trains scattered round the wind (east, north), each faded where it is
-// smaller than a few pixels (from the screen footprint, so grazing views don't shimmer in
-// stripes), in slow gust patches.
-vec2 waveSlope(vec2 p, float fp) {
-  vec2 w = normalize(u_wind.xy + vec2(1e-4));
-  float t = u_wind.w, k = 0.6 + 1.4 * u_wind.z;
-  float gust = 0.55 + 0.9 * wNoise(p / 90.0 + w * t * 0.05);
-  vec2 g = vec2(0.0);
-  for (int i = 0; i < 10; i++) {
-    float fi = float(i);
-    float L = 0.3 * pow(1.55, fi) * k;                    // wavelength 0.3 m … 15 m
-    float a = (wHash(vec2(fi, 3.7)) - 0.5) * 2.2;          // angle off the wind
-    vec2 d = vec2(w.x * cos(a) - w.y * sin(a), w.x * sin(a) + w.y * cos(a));
-    float kk = 6.2831853 / L, om = sqrt(9.81 * kk);        // deep-water dispersion
-    float s = 0.045 * (0.4 + 0.6 * u_wind.z) * gust * (1.0 - smoothstep(L * 0.08, L * 0.3, fp));
-    g += d * s * cos(dot(d, p) * kk - om * t + 6.2831853 * wHash(vec2(fi, 9.1)));
-  }
-  return g;
-}
+${RIPPLES_GLSL}
 void main() {
   // Only where the satellites have seen water (a little dilated, made on the CPU); the
   // shoreline itself is where Google's banks rise above our surface.
@@ -111,7 +116,7 @@ void main() {
   if (occ < 0.015) discard;
   if (v_uv.x > u_cut.x && v_uv.y > u_cut.y && v_uv.x < u_cut.z && v_uv.y < u_cut.w) discard;
   float fp = max(length(dFdx(v_xy)), length(dFdy(v_xy)));
-  vec2 sl = waveSlope(v_xy, fp);
+  vec2 sl = rippleSlope(v_xy);
   // The normal in the polygon's frame, then eye space.
   vec3 n = normalize(czm_normal * normalize(vec3(-sl, 1.0)));
   vec3 V = normalize(-v_posEC);
@@ -141,8 +146,8 @@ void main() {
   vec3 body = bodyCol * dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
   vec3 col = mix(body, sky, F);
   // The sun's glint: GGX. Where the ripples are too small to draw (far, grazing) they become
-  // roughness, and the path glitters: many small facets catch the sun, most don't (a hashed
-  // sparkle mask on a fine grid; a solid lobe was a sheet of white).
+  // roughness. The glitter comes from the ripple normals themselves (a hashed grid of sparkles
+  // read as a pattern).
   vec3 L = czm_lightDirectionEC;
   float NL = max(dot(n, L), 0.0);
   if (NL > 0.0) {
@@ -152,9 +157,7 @@ void main() {
     float dd = NH * NH * (a2 - 1.0) + 1.0;
     float D = a2 / (3.14159265 * dd * dd);
     float Fs = 0.02 + 0.98 * pow(1.0 - max(dot(H, V), 0.0), 5.0);
-    vec2 cell = floor(v_xy / max(fp * 1.5, 0.4) + u_wind.w * 0.7);
-    float sparkle = mix(1.0, step(0.9, wHash(cell)) * 5.0, clamp(fp * 0.5, 0.0, 0.9));
-    col += min(czm_lightColorHdr * D * Fs / (4.0 * NV + 1e-3) * u_glint * sparkle, vec3(15.0));
+    col += min(czm_lightColorHdr * D * Fs / (4.0 * NV + 1e-3) * u_glint, vec3(15.0));
   }
 #ifdef WATER_DEBUG
   col = vec3(4.0, 0.0, 0.0);
@@ -177,9 +180,11 @@ void main() {
  * their alpha (the water shader's), which also says how much of the fallback was sky.
  */
 const REFLECT_FS = /* glsl */ `${SCENE_DIST_GLSL}${SKY_LOOKUP_GLSL}
+uniform vec4 u_wind;
+${RIPPLES_GLSL}
 uniform sampler2D colorTexture;
 uniform sampler2D depthTexture;
-uniform vec2 u_camEN;   // the camera's position, metres east/north, mod 1000 (ripples stay put)
+uniform vec2 u_camEN;   // the camera's position, metres east/north, mod 4096 (as the water's)
 uniform sampler2D u_mask;  // the water shader's mask: flag, sky part, distance
 uniform float u_time;
 in vec2 v_textureCoordinates;
@@ -215,9 +220,8 @@ void main() {
   // The water's normal: up at the camera, with slow world-anchored ripples (a little).
   vec3 rel = czm_inverseViewRotation * P;
   vec2 en = vec2(dot(rel, u_weast), dot(rel, u_wnorth)) + u_camEN;
-  // (Faded where they are under a few pixels: far away they aliased into dashed stripes.)
-  float fpx = max(length(dFdx(en)), length(dFdy(en)));
-  vec2 sl = 0.006 * (1.0 - smoothstep(0.2, 0.8, fpx)) * vec2(sin(en.x * 0.9 + u_time * 1.3) + 0.6 * sin(en.y * 1.7 - u_time * 1.9), sin(en.y * 1.1 + u_time * 1.1) + 0.6 * sin((en.x + en.y) * 1.4 + u_time * 2.3));
+  // The water shader's ripples, weaker (the reflection only wobbles).
+  vec2 sl = 0.35 * rippleSlope(en);
   vec3 nW = normalize(u_wup - u_weast * sl.x - u_wnorth * sl.y);
   vec3 n = czm_viewRotation * nW;
   vec3 R = reflect(V, n);
@@ -383,6 +387,20 @@ export class Water {
   readonly smear: PostProcessStage;
   /** The reflection pass's mask target (drawing-buffer sized). */
   private mask: { tex: unknown; fb: unknown; w: number; h: number; clear: unknown } | undefined;
+  /** The ripple normal map (CesiumJS's waterNormals.jpg), once loaded. */
+  private normals: unknown;
+  private flat: unknown;
+  private blank(): unknown {
+    if (!this.flat) {
+      const context = (this.viewer.scene as unknown as { context: unknown }).context;
+      this.flat = new C.Texture({ context, width: 1, height: 1, source: { arrayBufferView: new Uint8Array([128, 128, 255, 255]) }, flipY: false });
+    }
+    return this.flat;
+  }
+  private windVec(): Cartesian4 {
+    const w = this.wind;
+    return new Cartesian4(w.dir.x, w.dir.y, w.strength, (performance.now() - this.t0) / 1000);
+  }
   /** ?wglint= the sun's glint strength (tuning). */
   private readonly glint = Number(new URLSearchParams(location.search).get("wglint") ?? 0.25);
   /** The near tiles' bounds [deg] (cut out of the far ones). */
@@ -400,6 +418,18 @@ export class Water {
   ) {
     this.sky = atmosphere.skyUniforms();
     viewer.scene.primitives.add(this);
+    void (async () => {
+      const r = await fetch(C.buildModuleUrl("Assets/Textures/waterNormals.jpg"));
+      const bmp = await createImageBitmap(await r.blob());
+      const context = (viewer.scene as unknown as { context: unknown }).context;
+      const tex = new C.Texture({
+        context,
+        source: bmp,
+        sampler: new C.Sampler({ wrapS: C.TextureWrap.REPEAT, wrapT: C.TextureWrap.REPEAT, minificationFilter: C.TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR, maximumAnisotropy: 8 }),
+      });
+      tex.generateMipmap();
+      this.normals = tex;
+    })().catch((e: unknown) => console.warn("water: ripple normals not loaded", e));
     viewer.creditDisplay.addStaticCredit(this.credit);
     // The reflections: after the clouds, before the tonemap (main.ts adds that later).
     const t0 = this.t0, camEN = new Cartesian2();
@@ -412,8 +442,10 @@ export class Water {
         u_mask: () => this.mask?.tex ?? null,
         u_camEN: () => {
           const c = viewer.camera.positionCartographic, kx = 111_320 * Math.cos(c.latitude);
-          return Cartesian2.fromElements(((Cesium.Math.toDegrees(c.longitude) * kx) % 1000 + 1000) % 1000, ((Cesium.Math.toDegrees(c.latitude) * 111_132) % 1000 + 1000) % 1000, camEN);
+          return Cartesian2.fromElements(((Cesium.Math.toDegrees(c.longitude) * kx) % 4096 + 4096) % 4096, ((Cesium.Math.toDegrees(c.latitude) * 111_132) % 4096 + 4096) % 4096, camEN);
         },
+        u_normals: () => this.normals ?? this.blank(),
+        u_wind: () => this.windVec(),
       },
     });
     viewer.scene.postProcessStages.add(this.reflect);
@@ -732,7 +764,7 @@ export class Water {
 
   /** One tile's uniforms (all of them, in one place). */
   private uniforms(t: Tile, wind: Cartesian4): Record<string, () => unknown> {
-    return { ...this.sky, u_origin: () => t.origin, u_tile: () => new Cartesian4(t.size.x, t.size.y, 0, 0), u_level: () => t.levelTex, u_occ: () => t.occ, u_cut: () => t.cut, u_wind: () => wind, u_body: () => this.body, u_glint: () => this.glint, u_hor: () => t.horizon };
+    return { ...this.sky, u_origin: () => t.origin, u_tile: () => new Cartesian4(t.size.x, t.size.y, 0, 0), u_level: () => t.levelTex, u_occ: () => t.occ, u_cut: () => t.cut, u_wind: () => wind, u_normals: () => this.normals ?? this.blank(), u_body: () => this.body, u_glint: () => this.glint, u_hor: () => t.horizon };
   }
 
   /** Cesium primitive interface. */
