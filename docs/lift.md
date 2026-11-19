@@ -8,10 +8,10 @@ gives its JSBSim.
 | Part | Model | Data | Checked against |
 |---|---|---|---|
 | Wind by height | the weather's levels (10, 80, 120, 180 m over the model's own ground; 925–400 hPa), layered as FlightGear's environment (`environment_ctrl.cxx`); within 10 m of the ground the logarithmic surface layer (WMO open terrain, z0 0.03 m) | Open-Meteo forecast, or the reanalysis (10 and 100 m, a power law above) | 1 Oct 2026: 4 kt at the ground, 18 kt at 1,630 m in a browser flight |
-| Thermals: where, how many, how high | FlightGear's thermal (life cycle, nearest-thermal rule); placement by sun and terrain; cloud base from the condensation level, tops from the boundary layer, strength scale w* (Deardorff) | temperature, dew point, sunshine, boundary-layer depth | — |
+| Thermals: where, how many, how high | FlightGear's thermal (life cycle, nearest-thermal rule); placement by sun and terrain; cloud base: the mixed-layer parcel's condensation level (lowest 100 hPa averaged, as the US Storm Prediction Center lifts it; Bolton 1980), else 125 m per degree of 2 m spread; one height above sea level for the air mass, no thermal where the ground reaches it; tops from the boundary layer; strength scale w* (Deardorff) | temperature and dew point at 2 m and the pressure levels, surface pressure, sunshine, boundary-layer depth | 12 Nov 2026: base 150 m by the 2 m rule, 736 m by the parcel (the model: 86 % low cloud, no thermals) |
 | Thermals: the lift in them | NASA's updraft model (Allen 2006, from Lenschow & Stephens' and Konovalov's measurements); strength ×1.46 so an average thermal at mid-height gives a glider w*, RASP's rule (vario = w* − sink); under cumulus the updraft holds up to the base (RASP: stronger than the dry figure, no number given: our profile) | as above | Allen's check case (r2 79.4 m); 10 Jul 2024: ASK21 (JSBSim) centring an average thermal climbs 1.3–1.7 m/s at every height, in calm and in the day's wind |
 | Thermal lean | the column's air carried by the wind at each height while it rises at the thermal's core speed | wind by height | — |
-| Clouds over thermals | appear when the thermal reaches cloud base, grow, fade as it dies (visual) | — | 10 Jul 2024: a visible cloud has climbable lift under it 85 % of the time; lift at mid-height ~550 m upwind of the cloud's centre |
+| Clouds over thermals | appear when the thermal reaches cloud base, grow, fade as it dies (visual); ray-marched volumes to 45 km, beyond them to ~160 km the same sky model's clouds drawn from a top-down map in the same pass (sprites under the atmosphere's sky were painted over by it: nothing showed past 45 km) | — | 10 Jul 2024: a visible cloud has climbable lift under it 85 % of the time; lift at mid-height ~550 m upwind of the cloud's centre; from the runway the field now reaches the horizon |
 | Ridge lift | FlightGear's ridge lift, driven by the wind at the glider's height (FG: the surface wind) | terrain, wind by height | Jura (test); 12 Nov 2026, Bucegi crest: +4.3 windward, −3.8 lee in a browser flight |
 | Mountain waves | linear theory (Queney, Scorer, Smith); layers joined by displacement and pressure (Jiang, Doyle & Smith 2006); absorption at critical levels (Booker & Bretherton 1967); the boundary layer absorbing at the ground with Smith, Jiang & Doyle (2006)'s values for rough ground; near the slopes FG's ridge lift, the waves taking over as it fades with height | terrain; wind and temperature at the pressure levels (forecast days only) | Queney's exact solution (8 %); the papers' worked example (R̂, q̂); trapped-wave decay in the simulations' range; undamped limit (< 1 %); 12 Nov 2026: ASK21 crabbing along the Bucegi lee wave climbs +224 m in 4 min in a browser flight (Node: same path) |
 
@@ -27,6 +27,8 @@ gives its JSBSim.
 - **No turbulence:** JSBSim's MIL-spec model is not switched on.
 - **The weather is the start hour's** for the whole flight.
 - **Cumulus thermals' profile** above mid-height is ours (see the table).
+- **Overcast days are drawn clear:** when the model's low cloud cover is high (stratus, as on
+  many November days) there are no cumulus, but no cloud deck is drawn either.
 
 ## Tests
 

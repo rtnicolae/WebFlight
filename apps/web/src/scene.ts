@@ -411,7 +411,8 @@ export class ThermalLayer {
         else far.push({ ...c, lod: 0.2 });
       }
       this.volumes.set(near);
-      this.sprites.set(far);
+      // Beyond, the volumes' far map: sprites under the atmosphere's sky are painted over by it.
+      this.volumes.setFar(far);
     } else this.sprites.set(specs);
     this.shadows?.(specs);
   }

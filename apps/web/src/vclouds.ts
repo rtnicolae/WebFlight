@@ -48,6 +48,13 @@ const MAX = 128;
 const TOWERS = 7;
 /** Clouds farther than this are not drawn as volumes [m]. */
 export const VOLUME_RANGE_M = 45_000;
+/**
+ * Beyond the volumes, clouds out to this far are drawn from a top-down map (setFar) [m]: a
+ * cumulus field runs to the horizon (from the ground at its base 1.6 km up, clouds 150 km off
+ * stand half a degree above it). A square of FAR_N² texels, FAR_SIZE_M across.
+ */
+export const FAR_RANGE_M = 160_000;
+const FAR_N = 1024, FAR_SIZE_M = 340_000;
 
 /** A cloud's size [m] and its towers: east, north, centre height, radius [m] (TOWERS × 4). */
 export interface CloudGeometry {
@@ -112,6 +119,14 @@ uniform vec2 u_fade;          // haze starts, cloud gone [m]
 uniform vec2 u_ap0;           // with the atmosphere: haze scale, 1
 uniform float u_ready;
 uniform vec4 u_form;          // density scale, detail erosion, shape tile ÷ radius, detail tile [m]
+// The far field (beyond the volumes): a top-down map of the clouds, tangent to the ground at its
+// centre: r = top above the base ÷ MAX_TOWER_M, g = opacity.
+uniform sampler2D u_farMap;
+uniform vec4 u_farC;          // map centre relative to the camera (world) [m], half its size [m]
+uniform vec3 u_farE;          // the map's east, north, up (world)
+uniform vec3 u_farN;
+uniform vec3 u_farUp;
+uniform vec4 u_farP;          // earth radius at the centre [m], cloud base [m above sea level], highest top [m], on
 
 float remap(float v, float a, float b, float c, float d) { return c + (v - a) / (b - a) * (d - c); }
 
@@ -157,6 +172,70 @@ float density(int i, vec3 q, bool detail) {
   return d * u_d[i].y;
 }
 
+// The far clouds along the ray between tMin and tMax: premultiplied colour (the air in front
+// already over it) and alpha. Height above sea level along the ray, with the earth's curvature
+// to second order: h(t) = a·t² + b·t + c.
+vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sunCol, float ph0, float ph1, float ph2, float jit) {
+  if (u_farP.w < 0.5 || tMax <= tMin) return vec4(0.0);
+  vec3 F = u_farC.xyz;
+  float R0 = u_farP.x, B = u_farP.y, top = B + u_farP.z;
+  float s = dot(dir, u_farUp), f = dot(-F, u_farUp), dF = dot(dir, -F), F2 = dot(F, F);
+  float qa = (1.0 - s * s) / (2.0 * R0), qb = s + (dF - s * f) / R0, qc = f + (F2 - f * f) / (2.0 * R0);
+  // Below the top: between the roots of h = top.
+  float dTop = qb * qb - 4.0 * qa * (qc - top);
+  if (dTop <= 0.0) return vec4(0.0);
+  float sq = sqrt(dTop);
+  float lo = max(tMin, (-qb - sq) / (2.0 * qa)), hi = min(tMax, (-qb + sq) / (2.0 * qa));
+  if (hi <= lo) return vec4(0.0);
+  // Above the base: outside the roots of h = base.
+  float g0 = hi, g1 = hi;
+  float dB = qb * qb - 4.0 * qa * (qc - B);
+  if (dB > 0.0) { float sb = sqrt(dB); g0 = (-qb - sb) / (2.0 * qa); g1 = (-qb + sb) / (2.0 * qa); }
+  vec3 col = vec3(0.0);
+  float T = 1.0;
+  for (int part = 0; part < 2; part++) {
+    float a0 = part == 0 ? lo : max(lo, g1);
+    float a1 = part == 0 ? (dB > 0.0 ? min(hi, g0) : hi) : hi;
+    if (part == 1 && dB <= 0.0) break;
+    if (a1 <= a0) continue;
+    float n = clamp((a1 - a0) / 300.0, 4.0, 48.0), dt = (a1 - a0) / n;
+    float t = a0 + dt * jit;
+    for (int k = 0; k < 48; k++) {
+      if (float(k) >= n || T < 0.02) break;
+      vec3 v = dir * t + F * -1.0;
+      vec2 uv = vec2(dot(v, u_farE), dot(v, u_farN)) / (2.0 * u_farC.w) + 0.5;
+      if (all(greaterThan(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) {
+        vec4 m = texture(u_farMap, uv);
+        float hgt = qa * t * t + qb * t + qc - B, cTop = m.r * ${MAX_TOWER_M.toFixed(1)};
+        if (m.g > 0.0 && hgt >= 0.0 && hgt < cTop * 1.25) {
+          // Billows: the same noise as the volumes', in the world, lifting and cutting the domes.
+          float nz = texture(u_shape, vec3(dot(v, u_farE), dot(v, u_farN), hgt) / 2600.0).r;
+          float edge = cTop * (0.75 + 0.5 * nz);
+          // The rim frayed by the same noise (the map's texels would show as steps).
+          float rim = smoothstep(0.1, 0.45, m.g + (nz - 0.5) * 0.5);
+          if (hgt < edge && rim > 0.0) {
+          float hn = hgt / max(edge, 1.0);
+          float dens = rim * smoothstep(edge, edge * 0.85, hgt);
+          float tr = exp(-0.004 * dens * dt);
+          // Lit as the volumes' outer surface (the sun's three scattering octaves), darker
+          // towards the base, and the sky's light.
+          vec3 S = sunCol * (ph0 + 0.6 * ph1 + 0.4 * ph2) * (0.4 + 0.6 * hn) + mix(u_ambBase, u_ambTop, hn) * u_light.z;
+          vec3 c = S;
+          if (u_ap0.y > 0.5) {
+            vec4 ap = aerial(v_textureCoordinates, t / 1000.0);
+            c = S * ap.a + ap.rgb * u_ap0.x;
+          } else c = mix(S, u_haze, clamp(smoothstep(u_fade.x, u_fade.y, t) * 1.2, 0.0, 1.0));
+          col += T * c * (1.0 - tr);
+          T *= tr;
+          }
+        }
+      }
+      t += dt;
+    }
+  }
+  return vec4(col, 1.0 - T);
+}
+
 float hg(float c, float g) {
   float g2 = g * g;
   return (1.0 - g2) / (4.0 * 3.14159265 * pow(1.0 + g2 - 2.0 * g * c, 1.5));
@@ -167,7 +246,7 @@ float phase2(float c, float e) {
 }
 
 void main() {
-  if (u_n == 0 || u_ready < 0.5) { out_FragColor = vec4(0.0); return; }
+  if ((u_n == 0 && u_farP.w < 0.5) || u_ready < 0.5) { out_FragColor = vec4(0.0); return; }
   float sceneT = wfSceneDist(depthTexture, v_textureCoordinates);
   vec3 dirEC = normalize(wfEyeRay(v_textureCoordinates));
   vec3 dir = normalize(czm_inverseViewRotation * dirEC);
@@ -212,7 +291,9 @@ void main() {
     t0s[k] = a0; t1s[k] = a1; ids[k] = i;
     hits = min(hits + 1, SLOTS);
   }
-  if (hits == 0) { out_FragColor = vec4(0.0); return; }
+  vec3 sunColFar = czm_lightColor * u_light.y;
+  float jitF = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 5.588238 * u_frame, vec2(0.06711056, 0.00583715))));
+  if (hits == 0) { out_FragColor = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sunColFar, ph0, ph1, ph2, jitF); return; }
 
   float sigma = u_light.x;
   vec3 lin = vec3(0.0);
@@ -271,7 +352,15 @@ void main() {
   }
   // Gone by the far limit.
   float keep = 1.0 - smoothstep(u_fade.y * 0.85, u_fade.y, firstT);
-  out_FragColor = vec4(col * keep, a * keep);
+  col *= keep;
+  a *= keep;
+  // The far field behind what the volumes left.
+  if (a < 0.98) {
+    vec4 far = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sunColFar, ph0, ph1, ph2, jitF);
+    col += (1.0 - a) * far.rgb;
+    a += (1.0 - a) * far.a;
+  }
+  out_FragColor = vec4(col, a);
 }
 `;
 
@@ -322,7 +411,7 @@ export class VolumetricClouds {
   private readonly east = new Cartesian3();
   private readonly north = new Cartesian3();
   private readonly towerData = new Float32Array(TOWERS * 4 * MAX);
-  private readonly tex: { towers: unknown; shape?: unknown; detail?: unknown };
+  private readonly tex: { towers: unknown; far: unknown; shape?: unknown; detail?: unknown };
   private readonly ambTop: Cartesian3;
   private readonly ambBase: Cartesian3;
   private ambFromSky = false;
@@ -330,6 +419,15 @@ export class VolumetricClouds {
   private readonly light: Cartesian4;
   private readonly form: Cartesian4;
   readonly stage: PostProcessStageComposite;
+  private readonly farData = new Uint8Array(FAR_N * FAR_N * 4);
+  private readonly farCentre = new Cartesian3();
+  private readonly farC = new Cartesian4();
+  private readonly farE = new Cartesian3();
+  private readonly farN = new Cartesian3();
+  private readonly farUp = new Cartesian3();
+  private readonly farP = new Cartesian4();
+  /** Far clouds drawn from the map (for checks). */
+  farCount = 0;
 
   constructor(
     private readonly viewer: Viewer,
@@ -363,6 +461,16 @@ export class VolumetricClouds {
         source: { arrayBufferView: this.towerData },
         flipY: false,
         sampler: new C.Sampler({ minificationFilter: C.TextureMinificationFilter.NEAREST, magnificationFilter: C.TextureMagnificationFilter.NEAREST }),
+      }),
+      far: new C.Texture({
+        context,
+        width: FAR_N,
+        height: FAR_N,
+        pixelFormat: C.PixelFormat.RGBA,
+        pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE,
+        source: { arrayBufferView: this.farData },
+        flipY: false,
+        sampler: new C.Sampler({ wrapS: C.TextureWrap.CLAMP_TO_EDGE, wrapT: C.TextureWrap.CLAMP_TO_EDGE, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }),
       }),
     };
     // The noise is made in a worker; no clouds until it is in (it is, behind the loading screen).
@@ -409,6 +517,12 @@ export class VolumetricClouds {
         u_detail: () => self.tex.detail ?? self.tex.towers,
         u_ready: () => (self.tex.shape ? 1 : 0),
         u_frame: () => (temporal.on ? temporal.frame % 64 : 0),
+        u_farMap: () => self.tex.far,
+        u_farC: () => self.farC,
+        u_farE: () => self.farE,
+        u_farN: () => self.farN,
+        u_farUp: () => self.farUp,
+        u_farP: () => self.farP,
       },
     });
     const blend = new PostProcessStage({ fragmentShader: BLEND_FS, pixelDatatype, uniforms: { u_clouds: march.name } });
@@ -420,6 +534,58 @@ export class VolumetricClouds {
   destroy(): void {
     this.destroyed = true;
     for (const t of Object.values(this.tex)) (t as { destroy?(): void } | undefined)?.destroy?.();
+  }
+
+  /**
+   * The clouds beyond the volumes, drawn into the far map round the camera's ground position:
+   * each cloud its footprint (as wide as its volume would be) with a dome on top (its height),
+   * the tallest and densest where clouds meet. The base is one height for the air mass.
+   */
+  setFar(specs: CloudSpec[]): void {
+    const live = specs.filter((s) => s.size > 0 && s.opacity > 0);
+    this.farCount = live.length;
+    if (!live.length) {
+      this.farP.w = 0;
+      return;
+    }
+    const carto = this.viewer.camera.positionCartographic;
+    const ell = this.viewer.scene.globe.ellipsoid;
+    Cartesian3.fromRadians(carto.longitude, carto.latitude, 0, ell, this.farCentre);
+    ell.geodeticSurfaceNormal(this.farCentre, this.farUp);
+    Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, this.farUp, this.farE), this.farE);
+    Cartesian3.cross(this.farUp, this.farE, this.farN);
+    const d = this.farData;
+    d.fill(0);
+    const texel = FAR_SIZE_M / FAR_N, half = FAR_SIZE_M / 2, p = new Cartesian3();
+    const bases: number[] = [];
+    let maxTop = 0;
+    for (const spec of live) {
+      const g = cloudGeometry(spec), R = Math.max(g.radius, 1), H = g.height;
+      Cartesian3.subtract(Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, 0, ell, p), this.farCentre, p);
+      const ex = Cartesian3.dot(p, this.farE), ny = Cartesian3.dot(p, this.farN);
+      const fx = (ex + half) / texel - 0.5, fy = (ny + half) / texel - 0.5, rt = R / texel + 1;
+      if (fx < -rt || fy < -rt || fx > FAR_N + rt || fy > FAR_N + rt) continue;
+      bases.push(spec.baseM);
+      maxTop = Math.max(maxTop, H);
+      // A cloud narrower than a texel still marks its texel, as thin as its share of it.
+      const share = Math.min(1, (Math.PI * R * R) / (texel * texel));
+      for (let y = Math.max(0, Math.floor(fy - rt)); y <= Math.min(FAR_N - 1, Math.ceil(fy + rt)); y++)
+        for (let x = Math.max(0, Math.floor(fx - rt)); x <= Math.min(FAR_N - 1, Math.ceil(fx + rt)); x++) {
+          const r = Math.max(0, Math.hypot(x - fx, y - fy) * texel - texel / 2), u = r / R;
+          if (u >= 1) continue;
+          // A rounded heap, thinning towards its rim (no cliff where the texels end).
+          const top = H * (1 - u * u), soft = 1 - u * u * u, i = (y * FAR_N + x) * 4;
+          d[i] = Math.max(d[i]!, Math.round((255 * top) / MAX_TOWER_M));
+          d[i + 1] = Math.max(d[i + 1]!, Math.round(255 * spec.opacity * share * soft));
+        }
+    }
+    bases.sort((a, b) => a - b);
+    (this.tex.far as { copyFrom(o: unknown): void }).copyFrom({ source: { width: FAR_N, height: FAR_N, arrayBufferView: d } });
+    this.farP.x = Cartesian3.magnitude(this.farCentre);
+    this.farP.y = bases.length ? bases[Math.floor(bases.length / 2)]! : 0;
+    this.farP.z = maxTop;
+    this.farP.w = bases.length ? 1 : 0;
+    this.farC.w = half;
   }
 
   set(specs: CloudSpec[]): void {
@@ -479,5 +645,9 @@ export class VolumetricClouds {
       this.towerData.set(c.geo.towers, i * TOWERS * 4);
     });
     (this.tex.towers as { copyFrom(o: unknown): void }).copyFrom({ source: { width: TOWERS, height: MAX, arrayBufferView: this.towerData } });
+    // The far map's centre relative to the camera.
+    this.farC.x = this.farCentre.x - cam.x;
+    this.farC.y = this.farCentre.y - cam.y;
+    this.farC.z = this.farCentre.z - cam.z;
   }
 }

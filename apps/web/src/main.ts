@@ -4,7 +4,7 @@ import { pinGroundToGlider } from "./ground-lod.ts";
 import { applyLighting, reflectSky, setLook } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
-import { advance, TerrariumTerrain, ThermalSky } from "@webflight/environment";
+import { advance, skyCellOf, TerrariumTerrain, ThermalSky } from "@webflight/environment";
 import { AircraftView } from "./aircraft.ts";
 import { ChaseCamera } from "./camera.ts";
 import { Hud } from "./hud.ts";
@@ -301,10 +301,19 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   let gliderAt = { latDeg: start.latDeg, lonDeg: start.lonDeg };
   if (cumulus && F.environment.thermalSky) {
     const farSky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 7, groundAt: (la, lo) => renderTerrain.heightAt(la, lo, 11) });
+    // And on to the horizon (~160 km): the same sky on coarse terrain (zoom 9, ~25 tiles), its
+    // cells beyond the ring above; drawn from the clouds' far map (vclouds.ts).
+    const outerSky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 27, groundAt: (la, lo) => renderTerrain.heightAt(la, lo, 9) });
     const e = F.environment, wind = { groundFromDeg: e.windFromDeg, groundKt: e.windKt, aloftFromDeg: e.aloftFromDeg ?? e.windFromDeg, aloftKt: e.aloftKt ?? e.windKt };
     const tickFar = () => {
       farSky.update(3, { ...gliderAt, altFt: 0 }, wind);
-      thermalLayer.setFar(farSky.thermals.map(thermalView));
+      outerSky.update(3, { ...gliderAt, altFt: 0 }, wind);
+      const [cx, cy] = skyCellOf(gliderAt.latDeg, gliderAt.lonDeg);
+      const beyond = outerSky.thermals.filter((t) => {
+        const [x, y] = t.id.split(":").map(Number) as [number, number];
+        return Math.abs(x - cx) > 7 || Math.abs(y - cy) > 7;
+      });
+      thermalLayer.setFar([...farSky.thermals, ...beyond].map(thermalView));
     };
     tickFar();
     setInterval(tickFar, 3000);
