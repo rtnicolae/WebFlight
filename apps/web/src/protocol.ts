@@ -54,6 +54,8 @@ export type ToWorker =
   | { type: "set"; props: Record<string, number> }
   /** Launch: clutch the winch / start the tow plane; open the hook; winch faster/slower. */
   | { type: "launch"; action: "start" | "release" | "faster" | "slower" }
+  /** The mountain-wave field round the aircraft (wave-worker.ts), replacing any before. */
+  | { type: "waves"; field: import("@webflight/environment").WaveFieldData }
   /** Change the wind (other environment settings stay). */
   | { type: "wind"; fromDeg: number; kt: number }
   | { type: "reset"; start: StartState }
@@ -71,7 +73,7 @@ export type FromWorker =
   | { type: "log"; line: string }
   /** About once a second: thermals and the air at the aircraft. */
   /** windFromDeg/windKt: the wind at the aircraft; surfaceFromDeg/surfaceKt: the 10 m wind. */
-  | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; surfaceFromDeg: number; surfaceKt: number; thermalLiftMs: number; ridgeLiftMs: number; groundM: number | undefined }
+  | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; surfaceFromDeg: number; surfaceKt: number; thermalLiftMs: number; ridgeLiftMs: number; waveLiftMs?: number; groundM: number | undefined }
   /** Pilot messages (screen.log / popupTip in FG). */
   | { type: "messages"; lines: string[] }
   | { type: "error"; message: string };

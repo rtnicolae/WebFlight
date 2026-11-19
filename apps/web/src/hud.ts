@@ -22,7 +22,7 @@ export interface HudData {
   view: string;
   paused: boolean;
   /** Air at the aircraft (from the worker, ~1 Hz). */
-  air?: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number };
+  air?: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number; waveLiftMs?: number };
   site?: string;
   /** Launch status line. */
   launch?: string;
@@ -187,7 +187,8 @@ export class Hud {
       style(this.windArrow, "transform", `rotate(${rel.toFixed(0)}deg)`);
       style(this.windArrow, "opacity", a.windKt > 0.5 ? "1" : "0.25");
       html(this.windText, a.windKt > 0.5 ? `<b>${a.windKt.toFixed(0)}</b> kt <span>from ${a.windFromDeg.toFixed(0).padStart(3, "0")}°</span>` : "<b>Calm</b>");
-      html(this.lift, `<span data-sign="${a.thermalLiftMs > 0.2 ? "up" : "zero"}">Thermal ${signed(a.thermalLiftMs)}</span><span data-sign="${a.ridgeLiftMs > 0.2 ? "up" : a.ridgeLiftMs < -0.2 ? "down" : "zero"}">Ridge ${signed(a.ridgeLiftMs)}</span>`);
+      const sign = (v: number) => (v > 0.2 ? "up" : v < -0.2 ? "down" : "zero");
+      html(this.lift, `<span data-sign="${a.thermalLiftMs > 0.2 ? "up" : "zero"}">Thermal ${signed(a.thermalLiftMs)}</span><span data-sign="${sign(a.ridgeLiftMs)}">Ridge ${signed(a.ridgeLiftMs)}</span>${a.waveLiftMs !== undefined ? `<span data-sign="${sign(a.waveLiftMs)}">Wave ${signed(a.waveLiftMs)}</span>` : ""}`);
     }
     text(this.launch, d.launch ?? "");
     if (this.launch.hidden !== !d.launch) this.launch.hidden = !d.launch;

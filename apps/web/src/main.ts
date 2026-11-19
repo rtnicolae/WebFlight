@@ -15,7 +15,7 @@ import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, highResPhotoAt, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
-import { soaringFrom, sunPosition } from "@webflight/environment";
+import { distanceM, soaringFrom, sounding, sunPosition, type WaveFieldData } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
@@ -209,7 +209,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
       ? new GrassField(viewer, osmTiles, S2CLOUDLESS, { density: params.has("grassdensity") ? Number(params.get("grassdensity")) : QUALITY === "ultra" ? 500 : 320, tuft: params.has("grasstuft") ? Number(params.get("grasstuft")) : 6, ...(google3d ? { google3d } : {}), ...(runways ? { strip: () => runways.grassStrip() } : {}) }, F.latDeg)
       : undefined;
   const launchView = LAUNCH ? new LaunchView(viewer.scene, new URL("bundles/_models/", new URL(import.meta.env.BASE_URL, location.href)).href) : undefined;
-  let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number } | undefined;
+  let waveBuildMs: number | undefined;
+  let air: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number; waveLiftMs?: number } | undefined;
   const aircraft = new AircraftView(manifest, BUNDLE);
   let skyVersion = -1;
   const hudEl = document.getElementById("hud")!;
@@ -275,7 +276,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
           break;
         case "environment":
           thermalLayer.update(m.thermals);
-          air = { windFromDeg: m.windFromDeg, windKt: m.windKt, thermalLiftMs: m.thermalLiftMs, ridgeLiftMs: m.ridgeLiftMs };
+          air = { windFromDeg: m.windFromDeg, windKt: m.windKt, thermalLiftMs: m.thermalLiftMs, ridgeLiftMs: m.ridgeLiftMs, ...(m.waveLiftMs !== undefined ? { waveLiftMs: m.waveLiftMs } : {}) };
           grass?.setWind(m.surfaceFromDeg, m.surfaceKt);
           water?.setWind(m.surfaceFromDeg, m.surfaceKt);
           break;
@@ -307,6 +308,31 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     };
     tickFar();
     setInterval(tickFar, 3000);
+  }
+  // Mountain waves (waves.ts) for the day's pressure levels: built off the main thread round the
+  // glider, again when it is 20 km from the last centre; the flight model adds them to the air.
+  // (No levels with temperatures, as for reanalysis days: no waves.) ?waves=0 turns them off.
+  const levels = sounding(F.weather);
+  if (levels.length >= 2 && params.get("waves") !== "0") {
+    const ww = new Worker(new URL("./wave-worker.ts", import.meta.url), { type: "module" });
+    let centre: { latDeg: number; lonDeg: number } | undefined, busy = false, id = 0;
+    const want = () => {
+      const c = gliderAt;
+      if (busy || (centre && distanceM(c.latDeg, c.lonDeg, centre.latDeg, centre.lonDeg) < 20_000)) return;
+      busy = true;
+      centre = { ...c };
+      ww.postMessage({ id: ++id, latDeg: c.latDeg, lonDeg: c.lonDeg, levels });
+    };
+    ww.onmessage = (ev: MessageEvent<{ field: WaveFieldData | null; ms?: number; error?: string }>) => {
+      busy = false;
+      const f = ev.data.field;
+      if (f) worker.postMessage({ type: "waves", field: f } satisfies ToWorker, [f.data.buffer]);
+      else console.warn("waves:", ev.data.error ?? "no field");
+      waveBuildMs = ev.data.ms;
+    };
+    want();
+    const timer = setInterval(want, 5000);
+    life.onClose(() => (clearInterval(timer), ww.terminate()));
   }
   hud.message(F.weatherText);
   const warm = Promise.all([[13, 5000], [12, 9000], [11, 16000], [10, 30000], [9, 60000], [8, 120000]].map(([z, r]) => renderTerrain.load(start.latDeg, start.lonDeg, r!, z!))).catch(() => {});
@@ -415,7 +441,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, windsocks, get layout() { return layout; }, get reader() { return reader; }, get air() { return air; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, windsocks, get layout() { return layout; }, get reader() { return reader; }, get air() { return air; }, get waveBuildMs() { return waveBuildMs; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

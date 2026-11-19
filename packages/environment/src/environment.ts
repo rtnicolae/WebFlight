@@ -10,10 +10,16 @@
  * (surfaceLayerFactor), which FG leaves out: the wind gradient a glider meets in the last metres
  * of an approach. Ridge lift is FG's, driven by the wind at the aircraft's height (FG: the
  * surface wind).
+ *
+ * Mountain waves (waves.ts), when a field has been built for the day: near the slopes the air's
+ * rise over them is FG's ridge lift, so the waves come in as FG's ridge lift fades with height
+ * (its own height factor): w = thermal + ridge + (1 − f_ridge)·wave, the slope's flow counted
+ * once.
  */
 import { RidgeLift } from "./ridge.ts";
 import type { TerrariumTerrain } from "./terrain.ts";
 import { ThermalField, ThermalSky, type ThermalFieldOptions, type ThermalSkyOptions, type WindProfile } from "./thermals.ts";
+import { waveAt, type WaveFieldData } from "./waves.ts";
 import { surfaceLayerFactor, windAt, type Weather } from "./weather.ts";
 
 /** The parts of the weather that make the wind profile. */
@@ -21,6 +27,7 @@ export type WindProfileData = Pick<Weather, "elevationM" | "windFromDeg" | "wind
 
 const KT_TO_FPS = 1.6878099;
 const FT_TO_M = 0.3048;
+const M_TO_FT = 1 / FT_TO_M;
 
 export interface EnvironmentConfig {
   /** Surface wind. */
@@ -56,6 +63,8 @@ export interface EnvironmentOutput {
   windDownFps: number;
   thermalLiftFps: number;
   ridgeLiftFps: number;
+  /** Mountain-wave vertical air motion (as weighted in); undefined without a wave field there. */
+  waveLiftFps: number | undefined;
   /** The horizontal wind at the aircraft (FG: /environment/wind-from-heading-deg, wind-speed-kt). */
   windFromDeg: number;
   windKt: number;
@@ -64,6 +73,8 @@ export interface EnvironmentOutput {
 export class Environment {
   readonly ridge: RidgeLift | undefined;
   readonly thermals: ThermalField | ThermalSky | undefined;
+  /** The mountain-wave field round the aircraft, when one has been built for the day. */
+  waves: WaveFieldData | undefined;
   private lastGroundFt = 0;
 
   constructor(
@@ -100,15 +111,18 @@ export class Environment {
       ? this.ridge.update(dt, { latDeg: s.latDeg, lonDeg: s.lonDeg, groundElevM: groundFt * FT_TO_M, aglM: (s.altFt - groundFt) * FT_TO_M, windFromDeg: rw.fromDeg, windKt: rw.kt })
       : 0;
     const thermal = this.thermals ? this.thermals.update(dt, s, this.wind) : 0;
+    const wv = this.waves ? waveAt(this.waves, s.latDeg, s.lonDeg, s.altFt * FT_TO_M) : undefined;
+    const wave = wv === undefined ? undefined : (1 - (this.ridge?.heightFactor ?? 0)) * wv * M_TO_FT;
     const here = this.windHere(s.altFt * FT_TO_M, groundFt * FT_TO_M);
     const from = (here.fromDeg * Math.PI) / 180;
     return {
       groundElevFt: ground,
       windNorthFps: -here.kt * KT_TO_FPS * Math.cos(from),
       windEastFps: -here.kt * KT_TO_FPS * Math.sin(from),
-      windDownFps: -(thermal + ridge),
+      windDownFps: -(thermal + ridge + (wave ?? 0)),
       thermalLiftFps: thermal,
       ridgeLiftFps: ridge,
+      waveLiftFps: wave,
       windFromDeg: here.fromDeg,
       windKt: here.kt,
     };

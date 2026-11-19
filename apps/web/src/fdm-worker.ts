@@ -54,9 +54,12 @@ let launch: Launch | undefined;
 const extras = new Map<string, number>();
 const pendingMessages: string[] = [];
 
+let pendingWaves: import("@webflight/environment").WaveFieldData | undefined;
+
 function setupWorld(w: WorldConfig): void {
   terrain = w.terrain === "terrarium" ? new TerrariumTerrain({ zoom: 13 }) : undefined;
   env = new Environment(w.environment, terrain);
+  if (pendingWaves) env.waves = pendingWaves;
 }
 
 /** Keep the tiles around the aircraft (and the ridge probes upwind) loaded ahead of time. */
@@ -77,6 +80,7 @@ function stepEnvironment(dt: number): void {
     const t = host.tree;
     t.set("/environment/thermal-lift-fps", envOut.thermalLiftFps);
     t.set("/environment/ridge-lift-fps", envOut.ridgeLiftFps);
+    t.set("/environment/wave-lift-fps", envOut.waveLiftFps ?? 0); // (a WebFlight addition)
     // At the aircraft, as FG's environment gives them.
     t.set("/environment/wind-from-heading-deg", envOut.windFromDeg);
     t.set("/environment/wind-speed-kt", envOut.windKt);
@@ -158,6 +162,7 @@ function postEnvironment(): void {
     surfaceKt: env.config.windKt,
     thermalLiftMs: envOut.thermalLiftFps * M_PER_FT,
     ridgeLiftMs: envOut.ridgeLiftFps * M_PER_FT,
+    ...(envOut.waveLiftFps !== undefined ? { waveLiftMs: envOut.waveLiftFps * M_PER_FT } : {}),
     groundM: envOut.groundElevFt === undefined ? undefined : envOut.groundElevFt * M_PER_FT,
   });
 }
@@ -346,6 +351,10 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           else if (msg.action === "faster") launch.winch?.faster();
           else launch.winch?.slower();
         }
+        break;
+      case "waves":
+        pendingWaves = msg.field;
+        if (env) env.waves = msg.field;
         break;
       case "wind":
         if (env) {
