@@ -7,6 +7,15 @@
  *  - updraft core (cosine), sink ring around it, -1 ft/s global sink outside
  * FlightGear's rand() calls use a seeded generator here, so a seed reproduces the sky.
  *
+ * Lift of the day's thermals (ThermalSky with weather). FG's cosine core and its profile, weakest
+ * low down and strongest at cloud base, are a game's shapes: in JSBSim an ASK21 circling an
+ * average one on a w* 2.4 m/s day sank below a third of the height and climbed under 0.5 m/s
+ * above it. The weather's thermals use NASA's updraft model instead (Allen 2006, below), from
+ * measured thermals: strongest from a tenth to half the height, narrower low down, the bell
+ * shapes of measured profiles, a ring of sink round the upper half, sink between thermals from
+ * conservation of mass. Its strength is calibrated once to the soaring-forecast rule a glider
+ * climbs at w* less its sink (UPDRAFT_GAIN). FG's life cycle, lean and nearest-thermal rule stay.
+ *
  * Lean. FG tilts the column by a fixed 2° per knot of a wind it blends linearly from the surface
  * to 9,000 ft. With the day's wind profile the column here leans as its air is carried instead:
  * the air rises at the thermal's core speed w and moves with the wind at each height, so at a
@@ -44,6 +53,115 @@ export function columnDrift(wind: WindAtFn, groundM: number, heightM: number, ri
 /** A point moved east and north [m] (small offsets). */
 function offsetDeg(latDeg: number, lonDeg: number, eastM: number, northM: number): [number, number] {
   return [latDeg + northM / 111_132, lonDeg + eastM / (111_320 * Math.cos((latDeg * Math.PI) / 180))];
+}
+
+/*
+ * NASA's updraft model: M. J. Allen, "Updraft Model for Development of Autonomous Soaring
+ * Uninhabited Air Vehicles", AIAA 2006-1510 (NASA Dryden), ported from its Appendix B code
+ * (run_model2_3.m). Built on measurements: the mean updraft and its radius through the
+ * convective layer from Lenschow & Stephens (1980), the radial profiles of Konovalov (1970) as a
+ * family of bell shapes, the ring of sinking air round a thermal's upper part (Bradbury), and the
+ * sink between thermals from conservation of mass. (Where the paper's Table 3 and the code
+ * differ, the code's fourth shape constant, which closes the updraft off near its outer radius,
+ * is used: it is what made the paper's figures.)
+ */
+
+/** r1/r2 of the seven bell shapes and their constants k1–k4 (Allen, Appendix B). */
+const SHAPE_R1R2 = [0.14, 0.25, 0.36, 0.47, 0.58, 0.69, 0.8];
+const SHAPE_K: readonly (readonly [number, number, number, number])[] = [
+  [1.5352, 2.5826, -0.0113, -0.195],
+  [1.5265, 3.6054, -0.0176, -0.1265],
+  [1.4866, 4.8356, -0.032, -0.0818],
+  [1.2042, 7.7904, 0.0848, -0.0445],
+  [0.8816, 13.972, 0.3404, -0.0216],
+  [0.7067, 23.994, 0.5689, -0.0099],
+  [0.6189, 42.7965, 0.7157, -0.0033],
+];
+
+/** Mean updraft over a thermal's area / w* at a height ratio z/zi (Allen eq. 11, from Lenschow). */
+export function allenMeanUpdraft(zr: number): number {
+  return zr <= 0 ? 0 : Math.cbrt(zr) * (1 - 1.1 * zr);
+}
+
+/** A thermal's outer radius / zi at a height ratio z/zi (Allen eq. 12, from Lenschow). */
+export function allenRadius(zr: number): number {
+  return zr <= 0 ? 0 : 0.102 * Math.cbrt(zr) * (1 - 0.25 * zr);
+}
+
+/**
+ * Allen's updraft (run_model2_3): vertical air velocity [m/s] at `r` [m] from the centre of an
+ * updraft of outer radius `r2` [m] whose mean updraft is `wt` [m/s], at height ratio `zr` (no
+ * updraft core at or above zi), `wtbar` the mean updraft of the layer's average thermal there
+ * (it sets the sink between thermals).
+ */
+export function allenUpdraft(r: number, r2In: number, wt: number, wtbar: number, zr: number): number {
+  const r2 = Math.max(10, r2In);
+  const r1r2 = r2 < 600 ? 0.0011 * r2 + 0.14 : 0.8;
+  const r1 = r1r2 * r2;
+  // Peak of the revolved trapezoid with this mean (eq. 15).
+  const wc = (3 * wt * (r2 ** 3 - r2 ** 2 * r1)) / (r2 ** 3 - r1 ** 3);
+  const rr2 = r / r2;
+  let ws = 0;
+  if (zr < 1) {
+    let i = 0;
+    while (i < SHAPE_R1R2.length - 1 && r1r2 >= 0.5 * (SHAPE_R1R2[i]! + SHAPE_R1R2[i + 1]!)) i++;
+    const [ka, kb, kc, kd] = SHAPE_K[i]!;
+    ws = Math.max(0, 1 / (1 + (ka * Math.abs(rr2 + kc)) ** kb) + kd * rr2);
+  }
+  // The ring of sinking air round the upper half of the layer (eqs. 17, 18).
+  const w1 = r > r1 && rr2 < 2 ? (Math.PI / 6) * Math.sin(Math.PI * rr2) : 0;
+  const swd = zr > 0.5 && zr <= 0.9 ? 2.5 * (zr - 0.5) : 0;
+  const wd = Math.min(0, swd * w1);
+  const w2 = ws * wc + wd * wt;
+  // Sink between thermals: their upward mass flux balanced over the rest of the area, with
+  // Allen's thermal count N = 0.6·X·Y/(zi·r2) (eqs. 20, 21): area fraction 0.6π·r2/zi.
+  const f = 0.6 * Math.PI * allenRadius(Math.min(zr, 1));
+  const we = Math.min(0, -(f * wtbar * (1 - swd)) / (1 - f));
+  // Stretched to meet the sink at the edge (eq. 23).
+  if (r <= r1 || Math.abs(wc) < 1e-9) return w2 + (r <= r1 ? 0 : we);
+  return w2 * (1 - we / wc) + we;
+}
+
+/** The radius at which the calibration circles (a two-seat trainer at 40–45° bank, 80–85 km/h). */
+export const CALIBRATION_CIRCLE_M = 65;
+
+/**
+ * How much stronger the thermals a glider uses are than Allen's average updraft: chosen so that
+ * on the median day of Allen's data (w* 2.56 m/s, zi 1,401 m) a glider circling an average
+ * thermal at mid-height, 65 m from its centre, meets air rising at w*, so that its vario reads w*
+ * minus its own sink: the rule of RASP's soaring forecasts ("W*: average dry thermal updraft
+ * strength near mid-BL height. Subtract glider descent rate to get average vario reading for
+ * cloudless thermals", Glendening). Allen's thermals are every updraft Lenschow measured;
+ * ours are the few a pilot centres in, one per 1.5 zi. About 1.46.
+ */
+export const UPDRAFT_GAIN = (() => {
+  const zi = 1401, topRadius = Math.min(700, Math.max(180, 0.25 * zi)) / 2; // soaringFrom's width
+  const r2 = (topRadius * allenRadius(0.5)) / allenRadius(1);
+  const wt = allenMeanUpdraft(0.5);
+  return 1 / allenUpdraft(CALIBRATION_CIRCLE_M, r2, wt, wt, 0.5);
+})();
+
+/** A weather thermal's updraft: the day's w*, this thermal's strength relative to the day's, cumulus or blue. */
+export interface Updraft {
+  wStarMs: number;
+  gain: number;
+  cumulus: boolean;
+}
+
+/**
+ * The vertical air velocity [m/s] at `r` [m] from a thermal's centre at height ratio `zr` above
+ * its foot (1 = its top: cloud base, or the top of the convective layer when blue), `topRadiusM`
+ * its outer radius at the top (it narrows below as Allen's radius does). Under cumulus the
+ * updraft keeps its strength from a quarter of the height up to the cloud base instead of
+ * slowing into the top of the layer as dry thermals do (RASP: thermals are stronger than the dry
+ * figure under cumulus, "cloudsuck"); nothing in or above the cloud, nor above a blue top.
+ */
+export function thermalUpdraft(r: number, zr: number, topRadiusM: number, u: Updraft): number {
+  if (zr <= 0 || zr >= 1) return 0;
+  const shape = u.cumulus ? allenMeanUpdraft(Math.min(zr, 0.25)) : allenMeanUpdraft(zr);
+  const wtbar = UPDRAFT_GAIN * u.wStarMs * shape;
+  const r2 = (topRadiusM * allenRadius(zr)) / allenRadius(1);
+  return allenUpdraft(r, r2, wtbar * u.gain, wtbar, zr);
 }
 
 const FT_TO_M = 0.3048;
@@ -106,6 +224,8 @@ export class Thermal {
     private readonly ground?: { at: (latDeg: number, lonDeg: number) => number | undefined; topM: (groundM: number) => number },
     /** The day's wind by height: the column leans as its air is carried (else FG's lean). */
     private readonly windAt?: WindAtFn,
+    /** The day's convection: Allen's updraft in place of FG's cosine core and sink ring. */
+    readonly updraft?: Updraft,
   ) {
     this.cycleTimer = 60 * Math.floor(rand() * 31);
     this.sliceLatDeg = spec.latDeg;
@@ -160,6 +280,7 @@ export class Thermal {
     if (time >= t4) this.cycleTimer = 60 * Math.floor(this.rand() * 31);
 
     const s = this.spec;
+    if (this.updraft) return this.runUpdraft(time, t1, t2, t3, user);
     const maxUp = s.strengthFps, minUp = -s.strengthFps * 0.25;
     const rMax = s.diameterFt / NM_TO_FT / 2; // nm, as FG (diameter-ft / 6076 / 2)
     const shaping = 0.8;
@@ -193,11 +314,8 @@ export class Thermal {
     const rUp = this.rUpFrac * rSink;
     const vUpMax = avail * maxUp, vUpMin = avail * minUp;
 
-    if (this.windAt) {
-      // The column at the user's height, from its top: back along the drift above the user.
-      const [et, nt] = this.driftAt(altitudeAglFt * FT_TO_M), [eu, nu] = this.driftAt(userAgl * FT_TO_M);
-      [this.sliceLatDeg, this.sliceLonDeg] = offsetDeg(s.latDeg, s.lonDeg, eu - et, nu - nt);
-    } else {
+    if (this.windAt) this.lean(altitudeAglFt * FT_TO_M, userAgl * FT_TO_M);
+    else {
       // FG: lean by tan(2° per kt of wind) × height above the user. FG averages the two wind
       // directions' angles, which points the lean backwards when they lie either side of north
       // (350° and 010° give 180°); the mean of their directions is taken here instead.
@@ -224,6 +342,48 @@ export class Thermal {
     this.strength = vUp;
     this.range = dist;
     return vUp;
+  }
+
+  /** The column at a height above the foot [m], from its top: back along the drift above it. */
+  private lean(topAglM: number, aglM: number): void {
+    const s = this.spec;
+    const [et, nt] = this.driftAt(topAglM), [eu, nu] = this.driftAt(aglM);
+    [this.sliceLatDeg, this.sliceLonDeg] = offsetDeg(s.latDeg, s.lonDeg, eu - et, nu - nt);
+  }
+
+  /**
+   * Run with Allen's updraft and FG's life cycle: while forming, the bubble rises from the
+   * ground (the profile squeezed under the fraction of the height it has reached, as weak as
+   * that fraction, as FG's); formed, the whole column; dying, its bottom lifts off the ground
+   * (nothing below the fraction gone); dead, only the sink between thermals.
+   */
+  private runUpdraft(time: number, t1: number, t2: number, t3: number, user: UserState): number {
+    const s = this.spec, u = this.updraft!;
+    const topAglM = Math.max(1, (s.heightMslFt - s.groundElevFt) * FT_TO_M);
+    const aglM = (Math.max(1, user.altFt) - s.groundElevFt) * FT_TO_M;
+    const altRel = aglM / topAglM;
+    let zr = altRel, amp = 1;
+    if (time <= t1) {
+      const xx = time / t1;
+      (zr = altRel / Math.max(1e-6, xx)), (amp = xx);
+      this.phase = "forming";
+    } else if (time <= t2) this.phase = "formed";
+    else if (time <= t3) {
+      if (altRel < (time - t2) / (1 - t2)) amp = 0;
+      this.phase = "dying";
+    } else {
+      amp = 0;
+      this.phase = "dead";
+    }
+    if (this.windAt) this.lean(topAglM, aglM);
+    else [this.sliceLatDeg, this.sliceLonDeg] = [s.latDeg, s.lonDeg];
+    const distM = distanceM(this.sliceLatDeg, this.sliceLonDeg, user.latDeg, user.lonDeg);
+    const topRadiusM = (s.diameterFt * FT_TO_M) / 2;
+    // (Outside the updraft, above a forming bubble and under a dying one: the sink between thermals.)
+    const w = amp > 0 && zr < 1 ? thermalUpdraft(distM, zr, topRadiusM, { ...u, gain: u.gain * amp }) : thermalUpdraft(1e9, altRel, topRadiusM, u);
+    this.strength = w / FT_TO_M;
+    this.range = distM / 1852;
+    return this.strength;
   }
 
   /** Is the thermal producing lift (for drawing a cloud)? */
@@ -413,19 +573,22 @@ export class ThermalSky {
       const c = group[0]!;
       if (c.score < 0.35) continue; // shaded slopes don't go
       const { widthK, strengthK } = thermalSize(rand);
-      const strengthMs = s.wStarMs * 1.25 * strengthK * Math.min(1.4, Math.max(0.7, c.score));
+      const updraft: Updraft = { wStarMs: s.wStarMs, gain: strengthK * Math.min(1.4, Math.max(0.7, c.score)), cumulus: s.cumulus };
+      const diameterM = s.diameterM * widthK;
       const t = new Thermal(
         {
           latDeg: c.lat,
           lonDeg: c.lon,
           heightMslFt: topM(c.g) / FT_TO_M,
-          strengthFps: strengthMs / FT_TO_M,
-          diameterFt: (s.diameterM * widthK) / FT_TO_M,
+          // Its core at mid-height (what the cloud over it and the column's lean go by).
+          strengthFps: thermalUpdraft(0, 0.5, diameterM / 2, updraft) / FT_TO_M,
+          diameterFt: diameterM / FT_TO_M,
           groundElevFt: c.g / FT_TO_M,
         },
         rand,
         ground ? { at: ground, topM } : undefined,
         wind,
+        updraft,
       );
       // The sun and terrain trigger the foot; the wind carries the column (and its cloud) on.
       t.standOn(c.lat, c.lon);

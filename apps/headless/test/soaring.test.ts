@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { advance, applyEnvironment, Environment } from "@webflight/environment";
+import { advance, applyEnvironment, Environment, Thermal, thermalUpdraft } from "@webflight/environment";
 import { ASK21, createGlider, ensureAircraft } from "../src/gliders.ts";
 import { runLanding } from "../src/landing.ts";
 import { GRENCHEN, JURA_CREST } from "@webflight/environment";
@@ -63,6 +63,30 @@ describe("ASK21 over real terrain", () => {
     };
     expect(await run(6 * 60)).toBeGreaterThan(30); // formed
     expect(await run(26 * 60)).toBeLessThan(-100); // dead
+  }, 60_000);
+
+  it("an average thermal of a w* 2.4 m/s day lifts a circling ASK21 by about w* less its sink (RASP's rule)", async () => {
+    // 10 Jul 2024 at Ghimbav, 13:00 (reanalysis): w* 2.44 m/s, cumulus base 1,588 m above the
+    // ground; the thermal as ThermalSky makes an average one (gain 1, the day's width).
+    const centre = { lat: 47.15, lon: 7.3 };
+    const ground = await terrain.heightAtAsync(centre.lat, centre.lon);
+    const updraft = { wStarMs: 2.44, gain: 1, cumulus: true }, diameterM = 397;
+    const spec = { latDeg: centre.lat, lonDeg: centre.lon, heightMslFt: (ground + 1588) / 0.3048, strengthFps: thermalUpdraft(0, 0.5, diameterM / 2, updraft) / 0.3048, diameterFt: diameterM / 0.3048, groundElevFt: ground / 0.3048 };
+    const th = new Thermal(spec, () => 0, undefined, undefined, updraft);
+    th.cycleTimer = 6 * 60; // formed
+    const [lat, lon] = advance(centre.lat, centre.lon, 270, 60);
+    const sim = await SoaringSim.create({ latDeg: lat, lonDeg: lon, headingDeg: 0, aglM: 0.5 * 1588, easKmh: 80 }, { windFromDeg: 0, windKt: 0, ridgeLift: false, thermals: false }, { terrain });
+    try {
+      // This one thermal as the environment's.
+      (sim.env as unknown as { thermals: unknown }).thermals = { thermals: [th], strengthFps: 0, update: (dt: number, u: { latDeg: number; lonDeg: number; altFt: number }, w: never) => th.run(dt, u, w) };
+      const a0 = sim.altM;
+      sim.run(120, { bankDeg: 40, easKmh: 80 });
+      // The plain bank-holding autopilot circles off-centre and ~0.3 m/s worse than a pilot
+      // (2026-11 runs: +0.6 m/s; a centring pilot model climbed 1.3–1.7 m/s at every height).
+      expect((sim.altM - a0) / 120).toBeGreaterThan(0.3);
+    } finally {
+      sim.fdm.destroy();
+    }
   }, 60_000);
 
   it("lands on Grenchen's runway: touches down on the real ground height and stops", async () => {

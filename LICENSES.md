@@ -68,6 +68,14 @@ is chosen must be compatible with these:
 | `packages/environment/src/ridge.ts`, `thermals.ts` | FlightGear `src/Environment/ridge_lift.cxx`, `src/AIModel/AIThermal.cxx`, `AIManager.cxx` |
 | `packages/environment/src/weather.ts` (`windLevels`: wind levels above the ground near the surface, above sea level aloft, the 500 ft boundary transition) | FlightGear `src/Environment/environment_ctrl.cxx`, FGData `Environment/environment.xml` |
 
+Ported from a published model: `packages/environment/src/thermals.ts` (`allenUpdraft`,
+`thermalUpdraft`) follows the MATLAB code in Appendix B of M. J. Allen, "Updraft Model for
+Development of Autonomous Soaring Uninhabited Air Vehicles", AIAA 2006-1510 (NASA Dryden Flight
+Research Center; NASA document 20060004052, https://ntrs.nasa.gov/citations/20060004052), a
+work of the U.S. Government. Its strength is calibrated to the RASP soaring forecasts' rule for
+W* (Dr. Jack Glendening's parameter descriptions, e.g. as mirrored at
+https://rkriz.net/Projects/RASP/PARAMETER_DEFINITIONS.html): only that one relation is used.
+
 Physics used without porting code: the logarithmic surface-layer wind profile with WMO's
 standard roughness for open terrain, z0 = 0.03 m (WMO-No. 8, *Guide to Instruments and Methods
 of Observation*), for the wind below 10 m; a thermal column's drift as its air is carried by

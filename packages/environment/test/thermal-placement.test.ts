@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateWeather, soaringFrom, ThermalSky, triggerScore } from "../src/index.ts";
+import { allenRadius, allenUpdraft, allenMeanUpdraft, CALIBRATION_CIRCLE_M, estimateWeather, soaringFrom, Thermal, thermalUpdraft, ThermalSky, triggerScore, UPDRAFT_GAIN } from "../src/index.ts";
 
 // Summer early afternoon over Brașov; estimated (deterministic) weather.
 const NOON = new Date("2026-07-15T11:00:00Z");
@@ -101,3 +101,50 @@ describe("thermal placement from terrain and sun", () => {
   });
 });
 
+
+describe("NASA's updraft model (Allen 2006)", () => {
+  it("reproduces the paper's check case: w* 2.56 m/s, zi 1,401 m, z 280 m", () => {
+    const zi = 1401, zr = 280 / zi, r2 = allenRadius(zr) * zi, wt = allenMeanUpdraft(zr) * 2.56;
+    expect(r2).toBeCloseTo(79.4, 1); // "yielded 79.4 m"
+    expect(allenUpdraft(0, r2, wt, wt, zr)).toBeCloseTo(2.74, 2); // the peak of Figure 12
+    // Closed off near the outer radius; beyond it, the sink between thermals.
+    const sink = allenUpdraft(1e6, r2, wt, wt, zr);
+    expect(sink).toBeLessThan(0);
+    expect(allenUpdraft(1.2 * r2, r2, wt, wt, zr)).toBeCloseTo(sink, 9);
+    // Mean updraft: at most 0.45 w*, near z/zi = 0.25, and none from 0.9 up.
+    expect(allenMeanUpdraft(0.25)).toBeCloseTo(0.457, 3); // "maximum vertical velocity of 0.45 w*"
+    expect(allenMeanUpdraft(0.91)).toBeLessThan(0);
+  });
+
+  it("is calibrated so a glider circling an average thermal at mid-height meets w* (RASP's rule)", () => {
+    expect(UPDRAFT_GAIN).toBeGreaterThan(1.3);
+    expect(UPDRAFT_GAIN).toBeLessThan(1.6);
+    const zi = 1401, radius = (0.25 * zi) / 2;
+    expect(thermalUpdraft(CALIBRATION_CIRCLE_M, 0.5, radius, { wStarMs: 2.56, gain: 1, cumulus: false })).toBeCloseTo(2.56, 9);
+  });
+
+  it("fades towards a blue top, holds up to a cumulus base, and stops there", () => {
+    const at = (zr: number, cumulus: boolean) => thermalUpdraft(CALIBRATION_CIRCLE_M, zr, 200, { wStarMs: 2.4, gain: 1, cumulus });
+    expect(at(0.85, false)).toBeLessThan(0.3 * at(0.4, false));
+    expect(at(0.95, true)).toBeGreaterThan(0.9 * at(0.4, true));
+    expect(at(1, true)).toBe(0);
+    expect(at(1.05, false)).toBe(0);
+    // Narrower low down: at 20 % of the height the lift 150 m out is a fraction of mid-height's.
+    expect(thermalUpdraft(150, 0.2, 200, { wStarMs: 2.4, gain: 1, cumulus: false })).toBeLessThan(0.5 * thermalUpdraft(150, 0.5, 200, { wStarMs: 2.4, gain: 1, cumulus: false }));
+  });
+
+  it("keeps FG's life cycle: a bubble rising while forming, the bottom lifting off while dying", () => {
+    const spec = { latDeg: 45.7, lonDeg: 25.5, heightMslFt: 2000 / 0.3048, strengthFps: 10, diameterFt: 400 / 0.3048, groundElevFt: 500 / 0.3048 };
+    const th = new Thermal(spec, () => 0, undefined, undefined, { wStarMs: 2.4, gain: 1, cumulus: true });
+    const wind = { groundFromDeg: 0, groundKt: 0, aloftFromDeg: 0, aloftKt: 0 };
+    const lift = (cycleS: number, aglM: number) => ((th.cycleTimer = cycleS), th.run(0, { latDeg: 45.7, lonDeg: 25.5, altFt: (500 + aglM) / 0.3048 }, wind) * 0.3048);
+    const between = thermalUpdraft(1e9, 0.3, 200, { wStarMs: 2.4, gain: 1, cumulus: true });
+    expect(lift(10 * 60, 450)).toBeGreaterThan(2); // formed, 30 % up
+    expect(lift(2.5 * 60, 450)).toBeGreaterThan(0.5); // half formed: the bubble is 750 m up
+    expect(lift(2.5 * 60, 1200)).toBeCloseTo(thermalUpdraft(1e9, 0.8, 200, { wStarMs: 2.4, gain: 1, cumulus: true }), 9); // above it
+    expect(lift(22.5 * 60, 450)).toBeCloseTo(between, 9); // dying: the bottom half gone
+    expect(lift(22.5 * 60, 1200)).toBeGreaterThan(2);
+    expect(lift(27 * 60, 1200)).toBeLessThanOrEqual(0); // dead
+    expect(th.phase).toBe("dead");
+  });
+});
