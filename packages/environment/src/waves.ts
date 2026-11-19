@@ -8,6 +8,9 @@
  *    ŵ = A·e^{imz} + B·e^{−imz}, m² = K²(N²/σ² − 1), σ = kU + lV the intrinsic frequency.
  *  - Layers meet with continuous vertical displacement ŵ/σ and pressure σ·∂ŵ/∂z (Jiang, Doyle &
  *    Smith 2006, section 2a); above the top level, radiation (waves go up and away).
+ *  - Where the wind along a wave turns through zero (a critical level, the wind turning with
+ *    height) the wave is absorbed, what passes cut by e^{−π√(Ri − ¼)} (Booker & Bretherton 1967,
+ *    J. Fluid Mech. 27, 513–539).
  *  - At the ground the boundary layer partly absorbs the waves (Smith, Jiang & Doyle 2006,
  *    "A theory of gravity wave absorption by a boundary layer", J. Atmos. Sci. 63, 774–781): its
  *    lower condition (their eq. 22) ŵ = γ/(im)·∂ŵ/∂z + iσĥ, γ = i(U/U_B)·H·m·R̂ with the boundary
@@ -24,7 +27,9 @@
  * (1e-8 s⁻¹) keeps critical levels (where the wind turns across a wave's crests) finite. The
  * answer is the undamped limit (12 Nov 2026 over the Bucegi: 0.5 % rms change from 1e-8 to 1e-9,
  * 0.1 % to 1e-10) and does not depend on the grid (256² at 400 m vs 512² at 200 m: correlation
- * 0.999).
+ * 0.999). The profile is followed in layers of at most 62.5 m (halving them changed that day's
+ * field by 4–12 % from 2.8 to 6.4 km, by up to 20 % below 1.6 km where the wind was light and
+ * turned sharply).
  *
  * Linear theory assumes the terrain is low against U/N; over the Carpathians in strong winds it
  * is not, and real flow can be weaker (blocked) or stronger (breaking, rotors, which it lacks).
@@ -124,26 +129,41 @@ export interface SoundingLevel {
 }
 
 /**
- * Layers from the pressure levels above `baseM` [m MSL]: each level's wind over the layer round
- * it (boundaries half way between levels, the lowest from the base), N² = (g/θ)·dθ/dz from the
- * potential temperatures of the levels either side (θ = T·(1000/p)^0.286). Unstable or neutral
- * air gets N = 0: no waves, only flow over the hills that fades with height.
+ * Layers from the pressure levels above `baseM` [m MSL]: between two levels the wind is linear in
+ * height and the potential temperature too (θ = T·(1000/p)^0.286), so N² = (g/θ)·Δθ/Δz is the
+ * interval's; the interval is cut into layers no thicker than `maxDzM` with the wind at their
+ * middle, so the profile is followed closely (layers of constant wind 1 km apart put steps in
+ * the field where the wind jumps). Below the lowest level its wind, above the top level the top
+ * one. Unstable or neutral air gets N = 0: no waves, only flow over the hills fading with height.
  */
-export function waveLayers(levels: SoundingLevel[], baseM: number): WaveLayer[] {
+export function waveLayers(levels: SoundingLevel[], baseM: number, maxDzM = 62.5): WaveLayer[] {
   const L = levels.filter((l) => l.altM > baseM + 50).sort((a, b) => a.altM - b.altM);
+  if (!L.length) return [];
   const theta = (l: SoundingLevel) => (l.tempC + 273.15) * (1000 / l.hPa) ** 0.286;
-  return L.map((l, i) => {
-    const a = L[Math.max(0, i - 1)]!, b = L[Math.min(L.length - 1, i + 1)]!;
-    const N2 = a === b ? 0 : ((9.81 / theta(l)) * (theta(b) - theta(a))) / (b.altM - a.altM);
+  const uv = (l: SoundingLevel): [number, number] => {
     const to = ((l.fromDeg + 180) * Math.PI) / 180, ms = (l.kt * 1852) / 3600;
-    return {
-      z0: i === 0 ? 0 : (L[i - 1]!.altM + l.altM) / 2 - baseM,
-      z1: i === L.length - 1 ? Infinity : (l.altM + L[i + 1]!.altM) / 2 - baseM,
-      N: Math.sqrt(Math.max(0, N2)),
-      U: ms * Math.sin(to),
-      V: ms * Math.cos(to),
-    };
-  });
+    return [ms * Math.sin(to), ms * Math.cos(to)];
+  };
+  const N = (a: SoundingLevel, b: SoundingLevel) => {
+    const th = (theta(a) + theta(b)) / 2, N2 = ((9.81 / th) * (theta(b) - theta(a))) / (b.altM - a.altM);
+    return Math.sqrt(Math.max(0, N2));
+  };
+  const out: WaveLayer[] = [];
+  const first = L[0]!, [u0, v0] = uv(first);
+  // From the base to the first level: its wind, the stability of the first interval.
+  const n0 = L.length > 1 ? N(first, L[1]!) : 0;
+  if (first.altM - baseM > 1) out.push({ z0: 0, z1: first.altM - baseM, N: n0, U: u0, V: v0 });
+  for (let i = 0; i + 1 < L.length; i++) {
+    const a = L[i]!, b = L[i + 1]!, [ua, va] = uv(a), [ub, vb] = uv(b), nn = N(a, b);
+    const parts = Math.max(1, Math.ceil((b.altM - a.altM) / maxDzM));
+    for (let k = 0; k < parts; k++) {
+      const f = (k + 0.5) / parts;
+      out.push({ z0: a.altM + ((b.altM - a.altM) * k) / parts - baseM, z1: a.altM + ((b.altM - a.altM) * (k + 1)) / parts - baseM, N: nn, U: ua + (ub - ua) * f, V: va + (vb - va) * f });
+    }
+  }
+  const top = L[L.length - 1]!, [ut, vt] = uv(top);
+  out.push({ z0: top.altM - baseM, z1: Infinity, N: L.length > 1 ? N(L[L.length - 2]!, top) : 0, U: ut, V: vt });
+  return out;
 }
 
 /** Smith, Jiang & Doyle (2006)'s boundary layer: displacement depth H [m], friction at the ground and at its top [1/s]. */
@@ -191,7 +211,7 @@ export function solveWaves(h: Float64Array, nx: number, ny: number, dx: number, 
     const j = layers.findIndex((L) => zz >= L.z0 && zz < L.z1);
     return { j: j < 0 ? nL - 1 : j, zp: zz - layers[j < 0 ? nL - 1 : j]!.z0 };
   });
-  const sig: C[] = new Array(nL), ms: C[] = new Array(nL), q: C[] = new Array(nL), A: C[] = new Array(nL);
+  const sig: C[] = new Array(nL), ms: C[] = new Array(nL), q: C[] = new Array(nL), A: C[] = new Array(nL), crit: boolean[] = new Array(nL).fill(false);
   for (let jy = 0; jy < ny; jy++)
     for (let jx = 0; jx < nx; jx++) {
       const k = (2 * Math.PI * (jx <= nx / 2 ? jx : jx - nx)) / (nx * dx), l = ny === 1 ? 0 : (2 * Math.PI * (jy <= ny / 2 ? jy : jy - ny)) / (ny * dx);
@@ -204,10 +224,19 @@ export function solveWaves(h: Float64Array, nx: number, ny: number, dx: number, 
         if (m[1] < 0) m = [-m[0], -m[1]];
         ms[j] = m;
       }
-      // Down from the top: in layer j, ŵ = A·(e^{imz'} + q·e^{im(2d − z')}), z' from its bottom.
-      q[nL - 1] = [0, 0];
-      for (let j = nL - 2; j >= 0; j--) {
-        const mu = ms[j + 1]!, rho: C = j + 1 === nL - 1 ? [0, 0] : cmul(q[j + 1]!, cexp(cmul([0, 2 * d[j + 1]!], mu)));
+      // Critical levels: where the wind along the wave (σ/K) changes sign between layers. Booker &
+      // Bretherton (1967): a wave is absorbed there, not reflected, and what passes is cut by
+      // e^{−π√(Ri − ¼)}. So each run of layers between critical levels radiates at its top (no wave
+      // comes back down from it), and the next run starts from the attenuated wave.
+      // (Without this the waves bounce off near-zero-wind layers and the answer hangs on the layering.)
+      for (let j = 0; j < nL; j++) crit[j] = j > 0 && Math.sign(sig[j]![0]) !== Math.sign(sig[j - 1]![0]) && sig[j - 1]![0] !== 0;
+      // Down from each run's top: in layer j, ŵ = A·(e^{imz'} + q·e^{im(2d − z')}), z' from its bottom.
+      for (let j = nL - 1; j >= 0; j--) {
+        if (j === nL - 1 || crit[j + 1]) {
+          q[j] = [0, 0];
+          continue;
+        }
+        const mu = ms[j + 1]!, rho: C = j + 1 === nL - 1 || crit[j + 2] ? [0, 0] : cmul(q[j + 1]!, cexp(cmul([0, 2 * d[j + 1]!], mu)));
         // ŵ'/ŵ at the bottom of layer j+1, carried across the interface: × (σ_{j+1}/σ_j)².
         const Rup = cdiv(cmul(I, cmul(mu, csub([1, 0], rho))), cadd([1, 0], rho));
         const s = cdiv(sig[j + 1]!, sig[j]!);
@@ -215,8 +244,9 @@ export function solveWaves(h: Float64Array, nx: number, ny: number, dx: number, 
         const imj = cmul(I, ms[j]!);
         q[j] = cdiv(csub(imj, R), cadd(imj, R));
       }
+      const rhoOf = (j: number): C => (j === nL - 1 || crit[j + 1] ? [0, 0] : cmul(q[j]!, cexp(cmul([0, 2 * d[j]!], ms[j]!))));
       // Up from the ground: ŵ(0) − G·ŵ'(0) = iσ₀ĥ, G = γ/(im) = (U/U_B)·H·R̂ (Smith et al. 2006, eq. 22).
-      const m0 = ms[0]!, rho0: C = nL === 1 ? [0, 0] : cmul(q[0]!, cexp(cmul([0, 2 * d[0]!], m0)));
+      const m0 = ms[0]!, rho0 = rhoOf(0);
       let G: C = [0, 0];
       if (bl) {
         const ub = bl.CT / (bl.CB + bl.CT), s0 = sig[0]![0];
@@ -225,15 +255,21 @@ export function solveWaves(h: Float64Array, nx: number, ny: number, dx: number, 
       const force = cmul([0, sig[0]![0]], [re[idx]!, im[idx]!]);
       A[0] = cdiv(force, csub(cadd([1, 0], rho0), cmul(G, cmul(cmul(I, m0), csub([1, 0], rho0)))));
       for (let j = 0; j < nL - 1; j++) {
-        const top = cmul(cmul(A[j]!, cexp(cmul([0, d[j]!], ms[j]!))), cadd([1, 0], q[j]!)); // ŵ at the top of layer j
-        const wb = cmul(top, cdiv(sig[j + 1]!, sig[j]!)); // displacement continuous
-        const rho: C = j + 1 === nL - 1 ? [0, 0] : cmul(q[j + 1]!, cexp(cmul([0, 2 * d[j + 1]!], ms[j + 1]!)));
-        A[j + 1] = cdiv(wb, cadd([1, 0], rho));
+        const top = cmul(cmul(A[j]!, cexp(cmul([0, d[j]!], ms[j]!))), cadd([1, 0], crit[j + 1] ? [0, 0] : q[j]!)); // ŵ at the top of layer j
+        let wb: C;
+        if (crit[j + 1]) {
+          // Through the critical level: Ri from the stability and the shear of the wind along the wave.
+          const K = Math.sqrt(K2), dz = (d[j]! + (Number.isFinite(d[j + 1]!) ? d[j + 1]! : d[j]!)) / 2;
+          const shear = (sig[j + 1]![0] - sig[j]![0]) / K / dz, N2 = (layers[j]!.N ** 2 + layers[j + 1]!.N ** 2) / 2;
+          const Ri = shear === 0 ? Infinity : N2 / (shear * shear);
+          wb = cmul(top, [Math.exp(-Math.PI * Math.sqrt(Math.max(0, Ri - 0.25))), 0]);
+        } else wb = cmul(top, cdiv(sig[j + 1]!, sig[j]!)); // displacement continuous
+        A[j + 1] = cdiv(wb, cadd([1, 0], rhoOf(j + 1)));
       }
       for (let zi = 0; zi < zs.length; zi++) {
         const { j, zp } = layerOf[zi]!;
         let w = cmul(A[j]!, cexp(cmul([0, zp], ms[j]!)));
-        if (j < nL - 1) w = cadd(w, cmul(cmul(A[j]!, q[j]!), cexp(cmul([0, 2 * d[j]! - zp], ms[j]!))));
+        if (j < nL - 1 && !crit[j + 1]) w = cadd(w, cmul(cmul(A[j]!, q[j]!), cexp(cmul([0, 2 * d[j]! - zp], ms[j]!))));
         out[zi]!.re[idx] = w[0];
         out[zi]!.im[idx] = w[1];
       }

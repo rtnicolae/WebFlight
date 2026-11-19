@@ -83,7 +83,9 @@ vertical displacement and pressure as in Jiang, Doyle & Smith (2006), "Interacti
 trapped waves and boundary layers", J. Atmos. Sci. 63, 617–633; the boundary layer's absorption
 at the ground (their eqs. 3, 6, 16, 22) and its parameter set for rough ground (section 8) from
 Smith, Jiang & Doyle (2006), "A theory of gravity wave absorption by a boundary layer",
-J. Atmos. Sci. 63, 774–781. The papers themselves are not in the repository.
+J. Atmos. Sci. 63, 774–781; absorption at critical levels, e^{−π√(Ri − ¼)}, from Booker &
+Bretherton (1967), "The critical layer for internal gravity waves in a shear flow", J. Fluid
+Mech. 27, 513–539. The papers themselves are not in the repository.
 
 Physics used without porting code: the logarithmic surface-layer wind profile with WMO's
 standard roughness for open terrain, z0 = 0.03 m (WMO-No. 8, *Guide to Instruments and Methods

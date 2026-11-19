@@ -75,15 +75,19 @@ describe("mountain waves: linear theory", () => {
       { altM: 1500, hPa: 850, tempC: 4, fromDeg: 270, kt: 20 },
       { altM: 3000, hPa: 700, tempC: -6, fromDeg: 280, kt: 40 },
     ];
-    const L = waveLayers(levels, 600);
-    expect(L.map((l) => [Math.round(l.z0), Math.round(l.z1)])).toEqual([[0, 550], [550, 1650], [1650, Infinity]]);
-    expect(L[1]!.N).toBeGreaterThan(0.005); // 6.67 K/km cooling < dry adiabat: stable
+    const L = waveLayers(levels, 600, 500);
+    // Base to 800 m, 800–1500 in two, 1500–3000 in three, above 3000 m.
+    expect(L.map((l) => [Math.round(l.z0), Math.round(l.z1)])).toEqual([[0, 200], [200, 550], [550, 900], [900, 1400], [1400, 1900], [1900, 2400], [2400, Infinity]]);
+    expect(L[1]!.N).toBeGreaterThan(0.005); // 5.7 K/km cooling < dry adiabat: stable
     expect(L[1]!.N).toBeLessThan(0.015);
     expect(L[0]!.U).toBeCloseTo((10 * 1852) / 3600, 6); // from the west: towards the east
     expect(Math.abs(L[0]!.V)).toBeLessThan(1e-9);
+    // The wind follows the profile: 10 → 20 kt between 800 and 1,500 m, at the layers' middles.
+    expect(L[1]!.U).toBeCloseTo((12.5 * 1852) / 3600, 6);
+    expect(L[2]!.U).toBeCloseTo((17.5 * 1852) / 3600, 6);
     // A dry-adiabatic layer is neutral.
     const theta = (10 + 273.15) * (1000 / 900) ** 0.286;
-    expect(waveLayers([{ altM: 1000, hPa: 900, tempC: 10, fromDeg: 0, kt: 10 }, { altM: 2000, hPa: 800, tempC: theta * 0.8 ** 0.286 - 273.15, fromDeg: 0, kt: 10 }], 0)[0]!.N).toBeLessThan(1e-6);
+    for (const l of waveLayers([{ altM: 1000, hPa: 900, tempC: 10, fromDeg: 0, kt: 10 }, { altM: 2000, hPa: 800, tempC: theta * 0.8 ** 0.286 - 273.15, fromDeg: 0, kt: 10 }], 0)) expect(l.N).toBeLessThan(1e-6);
   });
 
   it("builds a field round a point and looks it up", () => {
@@ -102,8 +106,9 @@ describe("mountain waves: linear theory", () => {
       dx: 800,
     })!;
     expect(f.levels).toBeGreaterThan(20);
-    // Up the ridge's windward side, down its lee, at 2 km.
-    const at = (eastKm: number) => waveAt(f, 45.5, 25.5 + (eastKm * 1000) / mLon, 2000)!;
+    // Near the ground (the lowest level, just above the mean terrain): up the ridge's windward
+    // side, down its lee (higher up the waves' phase tilts upwind with height).
+    const at = (eastKm: number) => waveAt(f, 45.5, 25.5 + (eastKm * 1000) / mLon, f.z0M)!;
     expect(at(17)).toBeGreaterThan(0.1);
     expect(at(23)).toBeLessThan(-0.1);
     expect(waveAt(f, 45.5 + 0.48, 25.5, 2000)).toBeUndefined(); // outside the inner part
