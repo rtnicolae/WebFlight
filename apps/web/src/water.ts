@@ -27,6 +27,7 @@
 import * as Cesium from "cesium";
 import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Cartographic, Credit, Intersect, Matrix4, PostProcessStage, Transforms, type Viewer } from "cesium";
 import type { Google3D } from "./google3d.ts";
+import { decodeMvt } from "@webflight/scenery";
 import { SCENE_DIST_GLSL, SKY_LOOKUP_GLSL, type Atmosphere } from "./atmosphere.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -347,6 +348,10 @@ interface Tile {
   /** Probe points [lon, lat] and Google's height at each (NaN: no answer yet). */
   probes: [number, number][];
   heights: Float64Array;
+  /** An answer changed in this pass. */
+  changed: boolean;
+  /** When the tile was built [ms]. */
+  born: number;
   probeNext: number;
   probedAt: number;
   /** Lowest level in Google's own (unshifted) heights; undefined until measured. */
@@ -390,6 +395,8 @@ export class Water {
     atmosphere: Atmosphere,
     /** Our terrain's height [m] (Google's tiles are drawn lowered to match it). */
     private readonly groundAt: (latDeg: number, lonDeg: number, zoom?: number) => number | undefined,
+    /** OpenMapTiles vector tiles (OpenFreeMap): river centrelines. */
+    private readonly osmUrl?: string,
   ) {
     this.sky = atmosphere.skyUniforms();
     viewer.scene.primitives.add(this);
@@ -466,20 +473,26 @@ export class Water {
     const key = `${z}/${x}/${y}`;
     if (this.tiles.has(key)) return;
     this.tiles.set(key, null);
+    const fill = (u: string) => u.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
     void (async () => {
-      const r = await fetch(JRC.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y)));
-      if (!r.ok) return; // 404: no water seen here
-      const bmp = await createImageBitmap(await r.blob(), { premultiplyAlpha: "none" });
-      const g = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
-      g.drawImage(bmp, 0, 0);
-      const rgba = g.getImageData(0, 0, 256, 256).data;
-      if (!this.tiles.has(key)) return;
-      const t = this.build(z, x, y, rgba);
+      const [jrc, rivers] = await Promise.all([
+        (async () => {
+          const r = await fetch(fill(JRC));
+          if (!r.ok) return undefined; // 404: no water seen here
+          const bmp = await createImageBitmap(await r.blob(), { premultiplyAlpha: "none" });
+          const g = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
+          g.drawImage(bmp, 0, 0);
+          return g.getImageData(0, 0, 256, 256).data;
+        })().catch(() => undefined),
+        this.osmUrl ? riverMask(fill(this.osmUrl), z, tileLat(y + 0.5, z)).catch(() => undefined) : Promise.resolve(undefined),
+      ]);
+      if (!this.tiles.has(key) || (!jrc && !rivers)) return;
+      const t = this.build(z, x, y, jrc, rivers);
       if (t) this.tiles.set(key, t);
     })().catch(() => {});
   }
 
-  private build(z: number, x: number, y: number, rgba: Uint8ClampedArray): Tile | undefined {
+  private build(z: number, x: number, y: number, rgba: Uint8ClampedArray | undefined, rivers: Uint8Array | undefined): Tile | undefined {
     const context = (this.viewer.scene as unknown as { context: unknown }).context;
     // Occurrence (alpha), grown by ~65 m (z13: 5 pixels; z11: 1): Google's photo often shows
     // water 30–60 m past what JRC has seen (a teal rim round ours); the shoreline is cut by
@@ -487,7 +500,8 @@ export class Water {
     // 30 m steps.
     const a = new Uint8Array(256 * 256);
     let any = 0;
-    for (let i = 0; i < a.length; i++) any |= a[i] = rgba[4 * i + 3]!;
+    if (rgba) for (let i = 0; i < a.length; i++) any |= a[i] = rgba[4 * i + 3]!;
+    if (rivers) for (let i = 0; i < a.length; i++) any |= rivers[i]!;
     if (!any) return undefined;
     const R = z >= 13 ? 5 : 1;
     const grown = new Uint8Array(256 * 256);
@@ -512,8 +526,11 @@ export class Water {
             if (ii >= 0 && jj >= 0 && ii < 256 && jj < 256) (sum += grown[jj * 256 + ii]!), n++;
           }
         const k = 4 * (j * 256 + i);
-        occ[k] = occ[k + 1] = occ[k + 2] = occ[k + 3] = Math.round(sum / n);
+        // Rivers from OSM at their own width (not grown: the channel, not the floodplain).
+        occ[k] = occ[k + 1] = occ[k + 2] = occ[k + 3] = Math.max(Math.round(sum / n), rivers?.[j * 256 + i] ?? 0);
       }
+    // Probes on rivers too (JRC misses most rivers narrower than ~60 m).
+    if (rivers) for (let i = 0; i < a.length; i++) a[i] = Math.max(a[i]!, rivers[i]!);
     const tex = new C.Texture({
       context,
       width: 256,
@@ -549,7 +566,7 @@ export class Water {
     const t: Tile = {
       z, x, y, west, east, south, north, size, frame, model: Matrix4.clone(frame), centre,
       origin: new Cartesian2((((west + east) / 2) * kx % 4096 + 4096) % 4096, (((south + north) / 2) * ky % 4096 + 4096) % 4096),
-      occ: tex, probes, heights: new Float64Array(probes.length).fill(Number.NaN), probeNext: 0, probedAt: 0, base: undefined,
+      occ: tex, probes, heights: new Float64Array(probes.length).fill(Number.NaN), changed: false, born: performance.now(), probeNext: 0, probedAt: 0, base: undefined,
       levels: new Float32Array(LEV * LEV), levelTex: undefined, horizon: new Array(16).fill(0), sphere, cut: new Cartesian4(2, 2, -1, -1), cmd: undefined, maskCmd: undefined,
     };
     if (z !== 13) this.cutFor(t);
@@ -566,11 +583,15 @@ export class Water {
    * probes in view, of tiles still without levels or measured more than 15 s ago.
    */
   private probe(cull: { computeVisibility(b: BoundingSphere): number }): void {
+    // Heights are kept in Google's own (unshifted) frame, which needs the tiles' offset: probed
+    // before it was measured they came out 38 m low (the Olt drawn under Google's ground).
+    if (!this.google3d.offsetKnown) return;
     const t0 = performance.now(), budget = this.loading ? 4 : 0.8;
     for (const t of this.tiles.values()) {
       if (!t) continue;
       if (t.probeNext >= t.probes.length) {
-        if (t.base === undefined || t0 - t.probedAt > 15_000) t.probeNext = 0;
+        // Every 4 s in a tile's first minute (finer tiles arriving), then every 15 s.
+        if (t.base === undefined || t0 - t.probedAt > (t0 - t.born < 60_000 ? 4000 : 15_000)) t.probeNext = 0;
         else continue;
       }
       if (cull.computeVisibility(t.sphere) === Intersect.OUTSIDE) continue;
@@ -581,7 +602,16 @@ export class Water {
         probeSphere.center = Cartesian3.fromDegrees(lon, lat, t.base !== undefined ? t.base - this.google3d.offsetM : o, undefined, probeSphere.center);
         if (cull.computeVisibility(probeSphere) === Intersect.OUTSIDE) continue;
         const h = this.google3d.tileset.getHeight(Cartographic.fromDegrees(lon, lat), this.viewer.scene);
-        if (h !== undefined && Number.isFinite(h) && Math.abs(h - o) < 60) t.heights[k] = h + this.google3d.offsetM;
+        // Water is never far below the terrain data (it records the water's surface); coarse tiles,
+        // before the fine ones load, answered 30–40 m low and set rivers under Google's ground.
+        // Above: reservoirs sit tens of metres over the valley floor in it.
+        if (h !== undefined && Number.isFinite(h) && h > o - 8 && h < o + 60) {
+          const v = h + this.google3d.offsetM, old = t.heights[k]!;
+          // Changed (first answer, or a finer tile answering differently: coarse ones are tens of
+          // metres off): this tile and its neighbours level again at the end of the pass.
+          if (!(Math.abs(v - old) < 0.5)) t.changed = true;
+          t.heights[k] = v;
+        }
       }
       // A first estimate as soon as a few answers are in (a full pass takes a few seconds).
       if (t.base === undefined && t.probeNext < t.probes.length) {
@@ -591,7 +621,15 @@ export class Water {
       }
       if (t.probeNext >= t.probes.length) {
         t.probedAt = t0;
-        this.levelGrid(t);
+        if (t.changed || t.base === undefined) {
+          t.changed = false;
+          this.levelGrid(t);
+          for (let dy = -1; dy <= 1; dy++)
+            for (let dx = -1; dx <= 1; dx++) {
+              const n = dx || dy ? this.tiles.get(`${t.z}/${t.x + dx}/${t.y + dy}`) : undefined;
+              if (n) this.levelGrid(n);
+            }
+        }
       }
       if (performance.now() - t0 >= budget) return;
     }
@@ -770,6 +808,40 @@ export class Water {
     this.mask = undefined;
     this.viewer.creditDisplay.removeStaticCredit(this.credit);
   }
+}
+
+/**
+ * Rivers and canals from an OpenMapTiles tile's waterway lines, drawn into a 256² mask at
+ * their width (OSM gives none in these tiles: rivers 40 m, canals 15 m; streams left out),
+ * soft-edged, 230 where water. JRC Global Surface Water misses most rivers narrower than about
+ * 60 m (the Olt at Feldioara: nothing); OSM's river *areas* cover whole gravel beds.
+ */
+async function riverMask(url: string, z: number, latDeg: number): Promise<Uint8Array | undefined> {
+  const r = await fetch(url);
+  if (!r.ok) return undefined;
+  const layers = decodeMvt(new Uint8Array(await r.arrayBuffer()));
+  const mPerPx = (40_075_016 * Math.cos((latDeg * Math.PI) / 180)) / 2 ** z / 256;
+  const g = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
+  g.lineCap = g.lineJoin = "round";
+  g.strokeStyle = "#fff";
+  let drawn = false;
+  for (const l of layers) {
+    if (l.name !== "waterway") continue;
+    const k = 256 / l.extent;
+    for (const f of l.features) {
+      const w = { river: 40, canal: 15 }[String(f.properties["class"])];
+      if (!w || f.properties["intermittent"] === 1) continue;
+      g.lineWidth = Math.max(1, w / mPerPx);
+      g.beginPath();
+      for (const line of f.geometry) line.forEach(([px, py], i) => (i ? g.lineTo(px! * k, py! * k) : g.moveTo(px! * k, py! * k)));
+      g.stroke();
+      drawn = true;
+    }
+  }
+  if (!drawn) return undefined;
+  const d = g.getImageData(0, 0, 256, 256).data, out = new Uint8Array(256 * 256);
+  for (let i = 0; i < out.length; i++) out[i] = Math.round(d[4 * i + 3]! * 0.9);
+  return out;
 }
 
 const tileLon = (x: number, z: number) => (x / 2 ** z) * 360 - 180;

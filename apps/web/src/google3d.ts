@@ -173,6 +173,13 @@ vec3 wfGrade(vec3 s) {
   hsb.x = fract(h / 360.0 + 1.0);
   hsb.y = clamp(hsb.y * (1.0 + u_grade * (0.2 * veg - 0.6 * tint + 0.15 * mauve)), 0.0, 1.0);
   hsb.z *= 1.0 + u_grade * 0.04 * veg;
+  // Saturated teal is the photos' water (on land only pools): towards our water's deep blue-teal
+  // (water.ts), so where Google's water shows past ours (a rim the satellite map misses) the two
+  // meet without a bright teal band.
+  float water = smoothstep(150.0, 165.0, h) * (1.0 - smoothstep(200.0, 215.0, h)) * smoothstep(0.18, 0.32, hsb.y);
+  hsb.x = mix(hsb.x, 198.0 / 360.0, water * u_grade);
+  hsb.y *= 1.0 - 0.35 * water * u_grade;
+  hsb.z *= 1.0 - 0.45 * water * u_grade;
   return czm_HSBToRGB(hsb);
 }
 void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
@@ -396,6 +403,11 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     if (parked) this.nearIdleUntil = now + 1000;
     this.lastNear = now;
     this.aim(m);
+  }
+
+  /** The height offset has been measured (offsetM means something). */
+  get offsetKnown(): boolean {
+    return this.targetM !== undefined;
   }
 
   /** Whether the tiles in view are in and the height offset is set (a flight can start). */
