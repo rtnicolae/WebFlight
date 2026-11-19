@@ -93,7 +93,9 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
   ]);
   // Wind: the weather's, or ?wind=from@kt for every level.
   const m = /^(\d+(?:\.\d+)?)@(\d+(?:\.\d+)?)$/.exec(params.get("wind") ?? "");
-  const w: Weather = m ? { ...weather, windFromDeg: Number(m[1]), windKt: Number(m[2]), gustKt: Number(m[2]), aloft: weather.aloft.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })) } : weather;
+  const w: Weather = m
+    ? { ...weather, windFromDeg: Number(m[1]), windKt: Number(m[2]), gustKt: Number(m[2]), aloft: weather.aloft.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })), ...(weather.boundary ? { boundary: weather.boundary.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })) } : {}) }
+    : weather;
   let runway: Runway | undefined;
   if (field) {
     const rws = field.runways.map((r) => resolveRunway(field, r, osmLines));
@@ -109,6 +111,7 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
     windFromDeg: w.windFromDeg,
     windKt: w.windKt,
     ...(aloft ? { aloftFromDeg: aloft.fromDeg, aloftKt: aloft.kt } : {}),
+    profile: { elevationM: w.elevationM, windFromDeg: w.windFromDeg, windKt: w.windKt, aloft: w.aloft, ...(w.boundary ? { boundary: w.boundary } : {}) },
     ridgeLift: true,
     thermalSky: thermals ? { seed: Number(params.get("seed") ?? 1), weather: w } : false,
   };

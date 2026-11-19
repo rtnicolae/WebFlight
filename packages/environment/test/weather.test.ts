@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateWeather, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, weatherFor, windAt, zoneOffsetH, type Weather } from "../src/index.ts";
+import { estimateWeather, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
 
 // Shape of an Open-Meteo /v1/forecast response with timezone=auto&timeformat=unixtime.
 const fixture = {
@@ -78,6 +78,28 @@ describe("weather", () => {
     expect(windAt(w, 9000).kt).toBe(19);
   });
 
+  it("layers the wind as FlightGear does: near-ground levels follow the ground, pressure levels stay put", () => {
+    const w = {
+      ...parseOpenMeteo(fixture, 45.7, 25.53, new Date("2026-07-15T10:00:00Z")),
+      boundary: [{ aglM: 80, fromDeg: 310, kt: 9 }, { aglM: 180, fromDeg: 305, kt: 10 }],
+    };
+    // Over the model's ground: 10 m, 80 m, 180 m above it, then 850 and 700 hPa.
+    expect(windLevels(w, 533).map((l) => l.altM)).toEqual([543, 613, 713, 1532, 3152]);
+    // Over a 1,450 m ridge the boundary levels rise with the ground and 850 hPa (1,532 m) is
+    // within FG's 500 ft transition, so it is left out.
+    expect(windLevels(w, 1450).map((l) => l.altM)).toEqual([1460, 1530, 1630, 3152]);
+    expect(windAt(w, 1630, 1450)).toEqual({ fromDeg: 305, kt: 10 });
+    expect(windAt(w, 1630).kt).toBeGreaterThan(10); // over the valley it is 850 hPa air
+  });
+
+  it("slows the 10 m wind towards the ground as the logarithmic surface layer", () => {
+    expect(surfaceLayerFactor(10)).toBe(1);
+    expect(surfaceLayerFactor(300)).toBe(1);
+    expect(surfaceLayerFactor(2)).toBeCloseTo(Math.log(2 / 0.03) / Math.log(10 / 0.03), 9); // 0.72
+    expect(surfaceLayerFactor(1)).toBeCloseTo(0.6, 2);
+    expect(surfaceLayerFactor(0)).toBe(surfaceLayerFactor(0.5));
+  });
+
   it("asks Open-Meteo for knots, local time and the levels it parses", () => {
     const u = openMeteoUrl(45.7, 25.53, "2026-07-14", "2026-07-16");
     expect(u).toContain("start_date=2026-07-14&end_date=2026-07-16");
@@ -85,6 +107,7 @@ describe("weather", () => {
     expect(u).toContain("timezone=auto");
     expect(u).toContain("timeformat=unixtime");
     expect(u).toContain("boundary_layer_height");
+    for (const k of ["wind_speed_80m", "wind_direction_180m", "wind_speed_925hPa", "geopotential_height_600hPa"]) expect(u).toContain(k);
   });
 });
 
@@ -103,9 +126,10 @@ describe("historical weather", () => {
     const json = { ...fixture, hourly: { ...surface, wind_speed_100m: [9, 10, 11], wind_direction_100m: [300, 305, 310] } };
     const w = parseOpenMeteo(json, 45.7, 25.53, new Date("2026-07-15T10:00:00Z"), "archive");
     expect(w.source).toBe("archive");
-    expect(w.aloft[0]).toEqual({ altM: 633, fromDeg: 305, kt: 10 });
-    expect(w.aloft[1]!.altM).toBe(2033);
-    expect(w.aloft[1]!.kt).toBeCloseTo(10 * 15 ** (1 / 7), 5);
+    expect(w.boundary).toEqual([{ aglM: 100, fromDeg: 305, kt: 10 }]);
+    expect(w.aloft).toHaveLength(1);
+    expect(w.aloft[0]!.altM).toBe(2033);
+    expect(w.aloft[0]!.kt).toBeCloseTo(10 * 15 ** (1 / 7), 5);
   });
 
   it("takes a past day from the archive when the forecast has lost its surface fields", async () => {

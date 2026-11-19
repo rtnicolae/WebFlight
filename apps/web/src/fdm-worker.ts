@@ -74,11 +74,12 @@ function stepEnvironment(dt: number): void {
   envOut = applyEnvironment(env, fdm, dt);
   prefetch(fdm.get("position/lat-geod-deg"), fdm.get("position/long-gc-deg"));
   if (host) {
-    const t = host.tree, c = env.config;
+    const t = host.tree;
     t.set("/environment/thermal-lift-fps", envOut.thermalLiftFps);
     t.set("/environment/ridge-lift-fps", envOut.ridgeLiftFps);
-    t.set("/environment/wind-from-heading-deg", c.windFromDeg);
-    t.set("/environment/wind-speed-kt", c.windKt);
+    // At the aircraft, as FG's environment gives them.
+    t.set("/environment/wind-from-heading-deg", envOut.windFromDeg);
+    t.set("/environment/wind-speed-kt", envOut.windKt);
   }
 }
 
@@ -150,8 +151,10 @@ function postEnvironment(): void {
   post({
     type: "environment",
     thermals,
-    windFromDeg: env.config.windFromDeg,
-    windKt: env.config.windKt,
+    windFromDeg: envOut.windFromDeg,
+    windKt: envOut.windKt,
+    surfaceFromDeg: env.config.windFromDeg,
+    surfaceKt: env.config.windKt,
     thermalLiftMs: envOut.thermalLiftFps * M_PER_FT,
     ridgeLiftMs: envOut.ridgeLiftFps * M_PER_FT,
     groundM: envOut.groundElevFt === undefined ? undefined : envOut.groundElevFt * M_PER_FT,
@@ -343,8 +346,10 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         break;
       case "wind":
         if (env) {
+          // One wind at every height from now on.
           env.config.windFromDeg = msg.fromDeg;
           env.config.windKt = msg.kt;
+          delete env.config.profile;
         }
         break;
       case "action":

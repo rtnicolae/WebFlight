@@ -102,6 +102,7 @@ export class GliderEnv {
           windFromDeg: w.windFromDeg,
           windKt: w.windKt,
           ...(aloft ? { aloftFromDeg: aloft.fromDeg, aloftKt: aloft.kt } : {}),
+          profile: { elevationM: w.elevationM, windFromDeg: w.windFromDeg, windKt: w.windKt, aloft: w.aloft, ...(w.boundary ? { boundary: w.boundary } : {}) },
           ridgeLift: !!terrain,
           thermalSky: this.o.thermals !== false && terrain ? { seed: seed >>> 0, weather: w } : false,
         },

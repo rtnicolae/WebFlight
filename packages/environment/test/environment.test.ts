@@ -98,6 +98,22 @@ describe("Environment", () => {
     expect(Math.abs(o.windNorthFps)).toBeLessThan(1e-9);
     expect(o.windDownFps === 0 || Object.is(o.windDownFps, -0)).toBe(true);
   });
+
+  it("flies in the day's wind at its height, slowing towards the ground below 10 m", () => {
+    const profile = { elevationM: 500, windFromDeg: 270, windKt: 8, boundary: [{ aglM: 180, fromDeg: 280, kt: 12 }], aloft: [{ altM: 1500, fromDeg: 300, kt: 20 }] };
+    const env = new Environment({ windFromDeg: 270, windKt: 8, profile, ridgeLift: false, thermals: false });
+    const at = (altM: number) => env.update(0.1, { latDeg: 47, lonDeg: 8, altFt: altM / 0.3048 });
+    // (No terrain: the ground is at 0 m, so the near-ground levels are at 10 and 180 m.)
+    expect(at(10).windKt).toBeCloseTo(8, 9);
+    expect(at(180).windKt).toBeCloseTo(12, 9);
+    expect(at(1500).windFromDeg).toBeCloseTo(300, 9);
+    expect(at(1500).windKt).toBeCloseTo(20, 9);
+    expect(at(1).windKt).toBeCloseTo(8 * 0.6, 1);
+    const o = at(1500);
+    expect(Math.hypot(o.windNorthFps, o.windEastFps)).toBeCloseTo(20 * 1.6878099, 6);
+    expect(o.windEastFps).toBeGreaterThan(0); // from 300°: blowing to the south-east
+    expect(o.windNorthFps).toBeLessThan(0);
+  });
 });
 
 describe("TerrariumTerrain.heightmap", () => {

@@ -68,7 +68,8 @@ export type FromWorker =
   | { type: "stats"; stepsPerSecond: number; simTime: number; lagMs: number }
   | { type: "log"; line: string }
   /** About once a second: thermals and the air at the aircraft. */
-  | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number; groundM: number | undefined }
+  /** windFromDeg/windKt: the wind at the aircraft; surfaceFromDeg/surfaceKt: the 10 m wind. */
+  | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; surfaceFromDeg: number; surfaceKt: number; thermalLiftMs: number; ridgeLiftMs: number; groundM: number | undefined }
   /** Pilot messages (screen.log / popupTip in FG). */
   | { type: "messages"; lines: string[] }
   | { type: "error"; message: string };

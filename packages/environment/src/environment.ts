@@ -3,10 +3,20 @@
  * turned into what JSBSim needs. As in FlightGear, the vertical air motion handed to the FDM
  * is thermal lift + ridge lift (FG: /environment/thermal-lift-fps, ridge-lift-fps), and wind
  * is "from" a heading.
+ *
+ * With the day's wind profile, the horizontal wind is the one at the aircraft's height, as
+ * FlightGear's environment gives its FDM (layered as windLevels), and below 10 m it slows
+ * towards the ground as the surface layer does (surfaceLayerFactor), which FG leaves out: the
+ * wind gradient a glider meets in the last metres of an approach. Ridge lift keeps the surface
+ * wind, as FG's does.
  */
 import { RidgeLift } from "./ridge.ts";
 import type { TerrariumTerrain } from "./terrain.ts";
 import { ThermalField, ThermalSky, type ThermalFieldOptions, type ThermalSkyOptions, type WindProfile } from "./thermals.ts";
+import { surfaceLayerFactor, windAt, type Weather } from "./weather.ts";
+
+/** The parts of the weather that make the wind profile. */
+export type WindProfileData = Pick<Weather, "elevationM" | "windFromDeg" | "windKt" | "aloft" | "boundary">;
 
 const KT_TO_FPS = 1.6878099;
 const FT_TO_M = 0.3048;
@@ -18,6 +28,11 @@ export interface EnvironmentConfig {
   /** Wind aloft (FG aloft entry[2]); defaults to the surface wind. */
   aloftFromDeg?: number;
   aloftKt?: number;
+  /**
+   * The day's wind by height (the weather's surface, boundary and pressure-level winds): the
+   * FDM flies in the wind at its height. Without it, the surface wind blows at every height.
+   */
+  profile?: WindProfileData;
   ridgeLift?: boolean;
   thermals?: Omit<ThermalFieldOptions, "groundAt"> | false;
   /** Thermals everywhere, streamed around the aircraft (cross-country); replaces `thermals`. */
@@ -40,6 +55,9 @@ export interface EnvironmentOutput {
   windDownFps: number;
   thermalLiftFps: number;
   ridgeLiftFps: number;
+  /** The horizontal wind at the aircraft (FG: /environment/wind-from-heading-deg, wind-speed-kt). */
+  windFromDeg: number;
+  windKt: number;
 }
 
 export class Environment {
@@ -77,14 +95,25 @@ export class Environment {
       ? this.ridge.update(dt, { latDeg: s.latDeg, lonDeg: s.lonDeg, groundElevM: groundFt * FT_TO_M, aglM: (s.altFt - groundFt) * FT_TO_M, windFromDeg: c.windFromDeg, windKt: c.windKt })
       : 0;
     const thermal = this.thermals ? this.thermals.update(dt, s, this.wind) : 0;
-    const from = (c.windFromDeg * Math.PI) / 180;
+    const here = this.windHere(s.altFt * FT_TO_M, groundFt * FT_TO_M);
+    const from = (here.fromDeg * Math.PI) / 180;
     return {
       groundElevFt: ground,
-      windNorthFps: -c.windKt * KT_TO_FPS * Math.cos(from),
-      windEastFps: -c.windKt * KT_TO_FPS * Math.sin(from),
+      windNorthFps: -here.kt * KT_TO_FPS * Math.cos(from),
+      windEastFps: -here.kt * KT_TO_FPS * Math.sin(from),
       windDownFps: -(thermal + ridge),
       thermalLiftFps: thermal,
       ridgeLiftFps: ridge,
+      windFromDeg: here.fromDeg,
+      windKt: here.kt,
     };
+  }
+
+  /** The wind at a height [m] over a ground height [m]. */
+  windHere(altM: number, groundM: number): { fromDeg: number; kt: number } {
+    const c = this.config, p = c.profile;
+    if (!p) return { fromDeg: c.windFromDeg, kt: c.windKt };
+    const w = windAt(p, altM, groundM);
+    return { fromDeg: w.fromDeg, kt: w.kt * surfaceLayerFactor(altM - groundM) };
   }
 }

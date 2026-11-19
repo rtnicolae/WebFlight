@@ -6,7 +6,7 @@ export type { RidgeInput } from "./ridge.ts";
 export { Thermal, ThermalField, ThermalSky, strengthFactor, triggerScore } from "./thermals.ts";
 export type { ThermalFieldOptions, ThermalSkyOptions, ThermalSpec, UserState, WindProfile } from "./thermals.ts";
 export { Environment } from "./environment.ts";
-export type { AircraftState, EnvironmentConfig, EnvironmentOutput } from "./environment.ts";
+export type { AircraftState, EnvironmentConfig, EnvironmentOutput, WindProfileData } from "./environment.ts";
 export { advance, distanceM, lowPass, mulberry32 } from "./util.ts";
 export { applyEnvironment } from "./fdm.ts";
 export type { FdmLike as EnvFdmLike } from "./fdm.ts";

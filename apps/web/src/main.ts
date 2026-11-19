@@ -276,8 +276,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
         case "environment":
           thermalLayer.update(m.thermals);
           air = { windFromDeg: m.windFromDeg, windKt: m.windKt, thermalLiftMs: m.thermalLiftMs, ridgeLiftMs: m.ridgeLiftMs };
-          grass?.setWind(m.windFromDeg, m.windKt);
-          water?.setWind(m.windFromDeg, m.windKt);
+          grass?.setWind(m.surfaceFromDeg, m.surfaceKt);
+          water?.setWind(m.surfaceFromDeg, m.surfaceKt);
           break;
         case "messages":
           for (const l of m.lines) hud.message(l);
@@ -415,7 +415,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, windsocks, get layout() { return layout; }, get reader() { return reader; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, windsocks, get layout() { return layout; }, get reader() { return reader; }, get air() { return air; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

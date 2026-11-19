@@ -2,9 +2,10 @@
  * The day's weather at a place and time, and what it means for soaring.
  *
  * Live: Open-Meteo's forecast API (free, no key; hourly model data, past days included):
- * 2 m temperature and dew point, 10 m wind and gusts, wind at 850 and 700 hPa, low cloud
- * cover, global shortwave radiation and the boundary-layer height. Without a connection the
- * same quantities are estimated from the sun's height (clear sky, light westerly).
+ * 2 m temperature and dew point, wind at 10, 80, 120 and 180 m and gusts, wind at the pressure
+ * levels from 925 to 600 hPa, low and high cloud cover, global shortwave radiation and the
+ * boundary-layer height. Without a connection the same quantities are estimated from the sun's
+ * height (clear sky, light westerly).
  *
  * Soaring from those (standard convective boundary-layer rules of thumb):
  *  - cumulus base = lifting condensation level ≈ 125 m × (T − Td) above ground
@@ -20,6 +21,14 @@ import { sunPosition } from "./sun.ts";
 export interface WindLevel {
   /** Height above mean sea level [m]. */
   altM: number;
+  fromDeg: number;
+  kt: number;
+}
+
+/** A wind level at a height above the ground (FlightGear's "boundary" layers). */
+export interface BoundaryWind {
+  /** Height above the ground [m]. */
+  aglM: number;
   fromDeg: number;
   kt: number;
 }
@@ -43,8 +52,10 @@ export interface Weather {
   windFromDeg: number;
   windKt: number;
   gustKt: number;
-  /** Winds aloft, by height (850 hPa, 700 hPa, …). */
+  /** Winds aloft at pressure levels (925 to 600 hPa), by height above sea level. */
   aloft: WindLevel[];
+  /** Winds near the ground above the 10 m one (80, 120, 180 m; 100 m in the reanalysis). */
+  boundary?: BoundaryWind[];
   /** Low cloud cover [0–1]. */
   lowCloud: number;
   /** High cloud cover [0–1] (cirrus; only drawn, the simulation doesn't use it). */
@@ -92,9 +103,25 @@ export function soaringFrom(w: Weather): Soaring {
   };
 }
 
-/** Wind at a height [m MSL]: linear between the surface (10 m) and the aloft levels. */
-export function windAt(w: Weather, altM: number): { fromDeg: number; kt: number } {
-  const levels: WindLevel[] = [{ altM: w.elevationM + 10, fromDeg: w.windFromDeg, kt: w.windKt }, ...w.aloft].sort((a, b) => a.altM - b.altM);
+/**
+ * The levels of the wind profile over a ground height [m], as FlightGear layers them
+ * (environment_ctrl.cxx): the surface wind (10 m) and the boundary levels follow the ground under
+ * the aircraft, the pressure levels stay at their heights above sea level. Pressure levels less
+ * than FG's 500 ft boundary transition above the top boundary level are left out, so the wind
+ * blends from the one to the other over at least that height.
+ */
+export function windLevels(w: Pick<Weather, "windFromDeg" | "windKt" | "aloft" | "boundary">, groundM: number): WindLevel[] {
+  const near: WindLevel[] = [{ altM: groundM + 10, fromDeg: w.windFromDeg, kt: w.windKt }, ...(w.boundary ?? []).filter((l) => l.aglM > 10).map((l) => ({ altM: groundM + l.aglM, fromDeg: l.fromDeg, kt: l.kt }))].sort((a, b) => a.altM - b.altM);
+  const top = near[near.length - 1]!.altM + 500 * 0.3048;
+  return [...near, ...w.aloft.filter((l) => l.altM >= top).sort((a, b) => a.altM - b.altM)];
+}
+
+/**
+ * Wind at a height [m MSL] over a ground height [m] (default: the model grid's): the vector
+ * linear in height between the levels of windLevels, the end levels' wind beyond them.
+ */
+export function windAt(w: Pick<Weather, "elevationM" | "windFromDeg" | "windKt" | "aloft" | "boundary">, altM: number, groundM = w.elevationM): { fromDeg: number; kt: number } {
+  const levels = windLevels(w, groundM);
   if (altM <= levels[0]!.altM) return { fromDeg: levels[0]!.fromDeg, kt: levels[0]!.kt };
   for (let i = 1; i < levels.length; i++) {
     const a = levels[i - 1]!, b = levels[i]!;
@@ -111,24 +138,39 @@ export function windAt(w: Weather, altM: number): { fromDeg: number; kt: number 
   return { fromDeg: top.fromDeg, kt: top.kt };
 }
 
+/**
+ * Roughness length of open, level ground with low grass [m]: WMO's standard exposure for
+ * wind measured at 10 m (WMO-No. 8, Davenport class "open", z0 = 0.03 m).
+ */
+export const OPEN_TERRAIN_Z0_M = 0.03;
+
+/**
+ * Wind below 10 m relative to the 10 m wind: the logarithmic surface-layer profile
+ * u(z) = u10 · ln(z/z0) / ln(10/z0) (neutral; taken no lower than 0.5 m). 1 at 10 m and above.
+ */
+export function surfaceLayerFactor(aglM: number, z0 = OPEN_TERRAIN_Z0_M): number {
+  if (aglM >= 10) return 1;
+  return Math.log(Math.max(0.5, aglM) / z0) / Math.log(10 / z0);
+}
+
 export const OPEN_METEO = "https://api.open-meteo.com/v1/forecast";
 /** Historical weather (reanalysis): surface and 100 m only, no pressure levels. */
 export const OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive";
 const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
 /** The forecast API serves up to 92 past days; older days come from the archive. */
 export const FORECAST_PAST_DAYS = 90;
+/** Pressure levels asked for winds aloft (≈ 0.8, 1, 1.5, 2, 3 and 4.2 km). */
+const LEVELS_HPA = [925, 900, 850, 800, 700, 600];
+/** Model wind heights near the ground [m] (the forecast's; the reanalysis has 100 m). */
+const BOUNDARY_M = [80, 120, 180];
 const HOURLY = [
   "temperature_2m",
   "dew_point_2m",
   "wind_speed_10m",
   "wind_direction_10m",
   "wind_gusts_10m",
-  "wind_speed_850hPa",
-  "wind_direction_850hPa",
-  "geopotential_height_850hPa",
-  "wind_speed_700hPa",
-  "wind_direction_700hPa",
-  "geopotential_height_700hPa",
+  ...BOUNDARY_M.flatMap((m) => [`wind_speed_${m}m`, `wind_direction_${m}m`]),
+  ...LEVELS_HPA.flatMap((p) => [`wind_speed_${p}hPa`, `wind_direction_${p}hPa`, `geopotential_height_${p}hPa`]),
   "cloud_cover_low",
   "cloud_cover_high",
   "shortwave_radiation",
@@ -171,18 +213,24 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
     const x = a?.[best];
     return typeof x === "number" && Number.isFinite(x) ? x : undefined;
   };
+  const g = json.elevation ?? 0;
   const aloft: WindLevel[] = [];
-  for (const p of ["850hPa", "700hPa"]) {
-    const kt = v(`wind_speed_${p}`), dir = v(`wind_direction_${p}`), z = v(`geopotential_height_${p}`);
-    if (kt !== undefined && dir !== undefined) aloft.push({ altM: z ?? (p === "850hPa" ? 1500 : 3000), fromDeg: dir, kt });
+  for (const p of LEVELS_HPA) {
+    const kt = v(`wind_speed_${p}hPa`), dir = v(`wind_direction_${p}hPa`), z = v(`geopotential_height_${p}hPa`) ?? (p === 850 ? 1500 : p === 700 ? 3000 : undefined);
+    // (A level below the model's ground is extrapolated: not air anyone flies in.)
+    if (kt !== undefined && dir !== undefined && z !== undefined && z > g + 10) aloft.push({ altM: z, fromDeg: dir, kt });
   }
-  // Reanalysis without pressure levels: 100 m wind, and a power-law profile (exponent 1/7,
+  aloft.sort((a, b) => a.altM - b.altM);
+  const boundary: BoundaryWind[] = [];
+  for (const m of [...BOUNDARY_M, 100]) {
+    const kt = v(`wind_speed_${m}m`), dir = v(`wind_direction_${m}m`);
+    if (kt !== undefined && dir !== undefined) boundary.push({ aglM: m, fromDeg: dir, kt });
+  }
+  boundary.sort((a, b) => a.aglM - b.aglM);
+  // Reanalysis without pressure levels: the 100 m wind, and a power-law profile (exponent 1/7,
   // the neutral-boundary-layer standard) to 1500 m above ground.
   const kt100 = v("wind_speed_100m"), dir100 = v("wind_direction_100m");
-  if (!aloft.length && kt100 !== undefined && dir100 !== undefined) {
-    const g = json.elevation ?? 0;
-    aloft.push({ altM: g + 100, fromDeg: dir100, kt: kt100 }, { altM: g + 1500, fromDeg: dir100, kt: kt100 * Math.pow(15, 1 / 7) });
-  }
+  if (!aloft.length && kt100 !== undefined && dir100 !== undefined) aloft.push({ altM: g + 1500, fromDeg: dir100, kt: kt100 * Math.pow(15, 1 / 7) });
   const t = v("temperature_2m") ?? est.tempC;
   const sw = v("shortwave_radiation") ?? est.shortwaveWm2;
   return {
@@ -196,6 +244,7 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
     windKt: v("wind_speed_10m") ?? est.windKt,
     gustKt: v("wind_gusts_10m") ?? v("wind_speed_10m") ?? est.gustKt,
     aloft: aloft.length ? aloft : est.aloft,
+    ...(boundary.length ? { boundary } : {}),
     lowCloud: (v("cloud_cover_low") ?? est.lowCloud * 100) / 100,
     ...(v("cloud_cover_high") !== undefined ? { highCloud: v("cloud_cover_high")! / 100 } : {}),
     shortwaveWm2: sw,

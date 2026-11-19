@@ -66,6 +66,11 @@ is chosen must be compatible with these:
 | `packages/fg-host/src/rules.ts`, `instruments.ts`, `expr.ts` | FlightGear `src/Autopilot`, `src/Instrumentation`, SimGear `props/condition.cxx`, `structure/SGExpression.cxx`, `inputvalue.cxx` |
 | `packages/fg-host/src/nasal/ask21.ts` | ASK21 `Nasal/*.nas` (FGAddon) |
 | `packages/environment/src/ridge.ts`, `thermals.ts` | FlightGear `src/Environment/ridge_lift.cxx`, `src/AIModel/AIThermal.cxx`, `AIManager.cxx` |
+| `packages/environment/src/weather.ts` (`windLevels`: wind levels above the ground near the surface, above sea level aloft, the 500 ft boundary transition) | FlightGear `src/Environment/environment_ctrl.cxx`, FGData `Environment/environment.xml` |
+
+Physics used without porting code: the logarithmic surface-layer wind profile with WMO's
+standard roughness for open terrain, z0 = 0.03 m (WMO-No. 8, *Guide to Instruments and Methods
+of Observation*), for the wind below 10 m.
 | `packages/launch/src/winch.ts`, `aerotow.ts` | FGData `Nasal/towing/hitch.nas` (D-NXKT, Bea Wolf) |
 | `packages/launch/src/tug.ts` | ASK21 `Nasal/dragrobot.nas` (Klaus Kerner, Bea Wolf) |
 
