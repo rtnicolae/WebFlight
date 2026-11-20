@@ -69,6 +69,29 @@ describe("ASK21 against its flight manual and measured polar", () => {
     }, 60_000);
   }
 
+  it("trims hands-off at 150-160 km/h with the trim full forward, one 80 kg pilot (Schleicher TM11)", async () => {
+    const fdm = await glider(80, 0);
+    try {
+      // The fastest speed the trim alone holds (no stick), in 0.5 km/h steps.
+      let top = 0, guess: { alphaDeg: number; gammaDeg: number; control: number } | undefined;
+      for (let v = 120; v <= 200; v += 0.5) {
+        const t = trimSteadyGlide(fdm, { speed: { veKts: v / KMH_PER_KT }, base: START, stickBeyondTrim: false, ...(guess ? { guess } : {}) });
+        if (!t.converged) break;
+        guess = { alphaDeg: t.alphaDeg, gammaDeg: t.gammaDeg, control: t.control };
+        top = v;
+      }
+      expect(top).toBeGreaterThanOrEqual(150);
+      expect(top).toBeLessThanOrEqual(160);
+      // Beyond it the trim stays at its stop and the stick holds the rest.
+      const fast = trimSteadyGlide(fdm, { speed: { veKts: 180 / KMH_PER_KT }, base: START });
+      expect(fast.converged).toBe(true);
+      expect(fast.control).toBe(1);
+      expect(fast.stick).toBeGreaterThan(0);
+    } finally {
+      fdm.destroy();
+    }
+  }, 60_000);
+
   // The flight manual (p. 34): 65 km/h IAS at 470 kg solo, 74 at 600 kg two-up; 68 and 77 with the
   // airbrakes out. Here the lowest steady (1 g) speed, trimmed down in 0.25 km/h steps. Two-up it
   // is 1.25 km/h above the manual's figure (the elevator at 95% of its published up travel).

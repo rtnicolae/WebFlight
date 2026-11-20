@@ -29,6 +29,7 @@ read (`packages/converter/src/aero-fixes.ts`), for the browser and Node alike:
 | Lift | a wing section's table (slope 6.9/rad) | × 0.867 | lifting-line theory, aspect ratio 16.1 |
 | Elevator's pitching moment | −0.5 /rad | −0.8 | the model's own elevator lift × tail arm |
 | Elevator travel | ±20° | 22.6° up, 16.2° down | type data sheet (90 and 65 mm at 230 mm from the hinge); ASK 21 B manual |
+| Pitch trim's forward reach | the elevator's whole travel (hands-off at any speed) | 0.25 of the down travel: full forward trims at 155 km/h with an 80 kg pilot | Schleicher's continued-airworthiness instructions: 150–160 km/h with one pilot |
 | Static stability | −0.7 /rad: neutral point 423 mm, ahead of the certified aft CG limit (469) | −1.06: 486 mm | tail volume (the model's tail geometry; Raymer) |
 | Airbrakes' lift loss | −0.05 | −0.12 | fitted: solo stall +3 km/h with them out (manual) |
 | Drag per unit of elevator travel | 0.02 (more than the airframe's two-up) | 0 | no drag numbers fit the measured polar with it |
@@ -54,10 +55,11 @@ Still open:
 - **Two-up stall** 1.25 km/h above the manual's. The whole glider's pitching moment at zero lift
   isn't published; the model's is +0.059 (nose-up, from its reference at zero incidence), needing
   4.5° of down elevator at zero lift.
-- **Trim:** the model's trim moves the elevator over its whole travel, so one pilot can trim
-  hands-off at any speed. The real spring trim, full forward, trims at 150–160 km/h with one pilot
-  (Schleicher's continued-airworthiness instructions); in the model that is +0.06–0.07 rad of
-  elevator, about a quarter of its down travel. Not modelled.
+- **Trim and pilot weight:** the trim is an elevator offset (the real one is a spring on the
+  stick). Full forward it holds 155 km/h with an 80 kg pilot (the web's loading), but the speed
+  swings with the CG: under 100 km/h with 70 kg, 221 km/h with 90 kg, because the model's neutral
+  point (estimated, above) is close behind a light pilot's CG. The published check doesn't give
+  the pilot's weight. Faster than the trim reaches, air starts (and the test tools) hold the stick.
 - Indicated speeds near the stall carry the real airspeed system's error, which the manual doesn't
   give.
 

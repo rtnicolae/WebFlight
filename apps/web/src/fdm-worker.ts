@@ -194,7 +194,12 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
     // runner as soon as the main wheel is off the ground.
     f.step(Math.round(rateHz));
     t = { control: 0, alphaDeg: 0, converged: true };
-  } else t = trimSteadyGlide(f, { speed: { veKts: s.easKmh / KMH_PER_KT }, base });
+  } else {
+    t = trimSteadyGlide(f, { speed: { veKts: s.easKmh / KMH_PER_KT }, base });
+    // Faster than the trim reaches (the ASK 21's, full forward, ~155 km/h): it starts trimmed with
+    // the stick held forward; once the pilot's stick takes over it slows towards the trim's speed.
+    if ((t as { stick?: number }).stick) post({ type: "log", line: `start at ${s.easKmh} km/h: beyond the trim's reach, stick ${((t as { stick?: number }).stick ?? 0).toFixed(2)} needed` });
+  }
   controls = { aileron: 0, elevator: 0, rudder: 0, elevatorTrim: t.control, airbrake: 0 };
   applied = { ...controls };
   if (host) {

@@ -65,6 +65,13 @@ export const ASK21_FIT = {
    */
   elevatorUp: -0.394,
   elevatorDown: 0.284,
+  /**
+   * How far forward the pitch trim reaches, as a fraction of the elevator's down travel. The real
+   * spring trim full forward trims the glider at 150-160 km/h with one pilot (Schleicher's
+   * continued-airworthiness instructions, TM11): 155 km/h with an 80 kg pilot. FGAddon's trim
+   * reached the stop (hands-off at any speed). Aft it keeps the full travel (no figure published).
+   */
+  trimForward: 0.25,
   /** Drag, fitted to the measured polar at 468 kg with the above in place (polar-reference test). */
   profileDrag: 0.0099,
   inducedK: 0.0214,
@@ -91,6 +98,11 @@ export function ask21Fixes(f: Fit = ASK21_FIT): AeroFix[] {
         { from: /(<location name="CG" unit="M">\s*<x>)\s*-0\.9\s*(<\/x>)/, to: `$1 ${x(-f.emptyCgAftM)} $2` },
         { from: /(<pointmass name="Pilot">[\s\S]*?<x>)\s*-2\.8\s*(<\/x>)/, to: `$1 ${x(f.frontSeatAheadM)} $2` },
         { from: /(<pointmass name="Copilot">[\s\S]*?<x>)\s*-1\.8\s*(<\/x>)/, to: `$1 ${x(f.rearSeatAheadM)} $2` },
+        // The trim's reach forward (aerosurface_scale maps each side of 0 to its own end).
+        {
+          from: /<summer name="Pitch Trim Sum">(\s*)<input>fcs\/elevator-cmd-norm<\/input>(\s*)<input>fcs\/pitch-trim-cmd-norm<\/input>/,
+          to: `<aerosurface_scale name="Pitch Trim Travel">$1<input>fcs/pitch-trim-cmd-norm</input>$1<range><min> -1 </min><max> ${f.trimForward} </max></range>$1<output>fcs/pitch-trim-travel</output>$1</aerosurface_scale>$1<summer name="Pitch Trim Sum">$1<input>fcs/elevator-cmd-norm</input>$2<input>fcs/pitch-trim-travel</input>`,
+        },
         // The elevator's stops (the control maps -1..1 onto them, each side to its own stop).
         { from: /(<aerosurface_scale name="Elevator Control">[\s\S]*?<range>\s*<min>)\s*-0\.35\s*(<\/min>\s*<max>)\s*0\.35\s*(<\/max>)/, to: `$1 ${f.elevatorUp} $2 ${f.elevatorDown} $3` },
         { from: /(<aerosurface_scale name="elevator normalization">[\s\S]*?<domain>\s*<min>)\s*-0\.35\s*(<\/min>\s*<max>)\s*0\.35\s*(<\/max>)/, to: `$1 ${f.elevatorUp} $2 ${f.elevatorDown} $3` },
