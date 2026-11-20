@@ -1,7 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
-import { applyLighting, reflectSky, setLook } from "./lighting.ts";
+import { applyLighting, reflectSky, setLook, setSunLight } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
 import { advance, skyCellOf, TerrariumTerrain, ThermalSky } from "@webflight/environment";
@@ -307,6 +307,16 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // The weather moving on (the worker's clock): far skies, the clouds' cumulus, waves.
   const weatherHooks: ((w: Weather) => void)[] = [(w) => thermalLayer.setCumulus(soaringFrom(w).cumulus)];
   onWeather = (w) => weatherHooks.forEach((f) => f(w));
+  // The sun with the flight's clock: Cesium's clock (its sun light, so the light on everything
+  // and the shadows), the light's colour (and below 5° its direction), our sky and haze, and
+  // everything holding the start's `sun` (the cloud shadows on the ground) through it.
+  weatherHooks.push((w) => {
+    const t = new Date(w.timeUtc);
+    viewer.clock.currentTime = JulianDate.fromDate(t);
+    Object.assign(sun, sunPosition(t, F.latDeg, F.lonDeg));
+    setSunLight(viewer, sun, F.latDeg, F.lonDeg);
+    atmosphere?.setSun(sun);
+  });
   // (Built also on a blue start: the day may turn to cumulus.)
   if (F.environment.thermalSky) {
     const farSky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 7, groundAt: (la, lo) => renderTerrain.heightAt(la, lo, 11) });

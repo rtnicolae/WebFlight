@@ -474,6 +474,7 @@ export class Atmosphere {
     tanHalf: new Cesium.Cartesian2(1, 1),
   };
   private readonly saved: { sky: boolean; sun: boolean; fog: boolean };
+  private baseScale: { sky: number; ap: number } = { sky: SKY_SCALE, ap: AP_SCALE };
   /** Sky and haze scale into scene units (with the twilight adaptation). */
   readonly scale: Cesium.Cartesian2;
   private ambientCache: { top: number[]; horizon: number[] } | undefined;
@@ -497,14 +498,10 @@ export class Atmosphere {
     const visKm = params.has("vis") ? Number(params.get("vis")) : hazeVisibilityKm(opts.humidity, opts.visibilityKm);
     const mieExt = Math.max(0.002, 3.912 / visKm - 0.0116);
     const mie = new Cesium.Cartesian4(mieExt * 0.9, 1 / 0.9, opts.hazeTopM / 1000, opts.groundM / 1000);
-    // The eye's adaptation as the sun goes down (no auto-exposure here): the twilight sky's
-    // radiance falls by orders of magnitude, and at −2° ours was a dim brown where the eye sees
-    // a glowing orange band. ×1 above 6°, ×6 by −4°; night stays dark (there is no light left).
-    const tw = Math.min(1, Math.max(0, (6 - opts.sun.elevationDeg) / 10)), adapt = 1 + 5 * tw * tw * (3 - 2 * tw);
-    const scale = (this.scale = new Cesium.Cartesian2((params.has("skyk") ? Number(params.get("skyk")) : SKY_SCALE) * adapt, (params.has("apk") ? Number(params.get("apk")) : AP_SCALE) * adapt));
-    const sun = opts.sun, az = (sun.azimuthDeg * Math.PI) / 180, el = (sun.elevationDeg * Math.PI) / 180;
-    this.u.sunL = new Cartesian3(Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el));
-    this.u.sunMu = Math.sin(el);
+    // Sky and haze into scene units; the sun sets the eye's adaptation on top (setSun).
+    this.baseScale = { sky: params.has("skyk") ? Number(params.get("skyk")) : SKY_SCALE, ap: params.has("apk") ? Number(params.get("apk")) : AP_SCALE };
+    const scale = (this.scale = new Cesium.Cartesian2());
+    this.setSun(opts.sun);
     // Cirrus from the weather's high cloud (?cirrus=0..1 to try a cover), at 9 km, fibres
     // along the wind aloft and drifting with it.
     const cover = params.has("cirrus") ? Number(params.get("cirrus")) : opts.highCloud ?? 0;
@@ -605,6 +602,23 @@ export class Atmosphere {
   skyUniforms(): Record<string, () => unknown> {
     const u = this.u;
     return { u_wsky: () => this.tex.sky, u_wcamR: () => u.camR, u_wsunL: () => u.sunL, u_weast: () => u.east, u_wnorth: () => u.north, u_wup: () => u.up, u_wskyk: () => this.scale.x };
+  }
+
+  /**
+   * The sun where it is now (main.ts, as the flight's clock moves it): the sky and the haze are
+   * computed with it from the next frame, and the eye's adaptation follows its height. The
+   * cirrus, the sun's disc and the sky's light on the clouds (read back every 10 s) follow too.
+   */
+  setSun(sun: { azimuthDeg: number; elevationDeg: number }): void {
+    // The eye's adaptation as the sun goes down (no auto-exposure here): the twilight sky's
+    // radiance falls by orders of magnitude, and at −2° ours was a dim brown where the eye sees
+    // a glowing orange band. ×1 above 6°, ×6 by −4°; night stays dark (there is no light left).
+    const tw = Math.min(1, Math.max(0, (6 - sun.elevationDeg) / 10)), adapt = 1 + 5 * tw * tw * (3 - 2 * tw);
+    this.scale.x = this.baseScale.sky * adapt;
+    this.scale.y = this.baseScale.ap * adapt;
+    const az = (sun.azimuthDeg * Math.PI) / 180, el = (sun.elevationDeg * Math.PI) / 180;
+    this.u.sunL = new Cartesian3(Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el));
+    this.u.sunMu = Math.sin(el);
   }
 
   /** The aerial-perspective volume (for AERIAL_GLSL elsewhere). */

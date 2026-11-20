@@ -533,7 +533,8 @@ export async function weatherFor(
       const fix = (w: Weather): Weather => ({ ...w, utcOffsetH: offsetH, ...(note ? { note } : {}) });
       // The three days asked for, hour by hour: the weather as the flight goes on (weatherAt).
       const series = parseOpenMeteoHours(json, latDeg, lonDeg, source).map(fix);
-      return { weather: fix(parseOpenMeteo(json, latDeg, lonDeg, time, source)), time, series };
+      // The weather at the start itself (between its hours), as the flight goes on from it.
+      return { weather: weatherAt(series, time), time, series };
     } catch (e) {
       note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
     }

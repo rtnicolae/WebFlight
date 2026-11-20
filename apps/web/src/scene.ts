@@ -334,6 +334,8 @@ function cloudsOver(t: ThermalView): CloudSpec[] {
 
 /** Within this distance of the camera clouds are ray-marched volumes; beyond, sprites. */
 const VOLUME_M = VOLUME_RANGE_M;
+/** How long the day's cumulus take to dissolve or grow in when it turns blue or cloudy [s]. */
+const CUMULUS_FADE_S = 600;
 /** Where sprite puffs have faded out (clouds.ts: translucencyByDistance). */
 const SPRITE_FADE_M = 70_000;
 
@@ -394,14 +396,34 @@ export class ThermalLayer {
 
   /** How many thermals mark clouds now (near: the flight model's; far: visual only). For checks. */
   get cloudCount(): { near: number; far: number } {
-    return { near: this.cumulus ? this.near.length : 0, far: this.cumulus ? this.far.length : 0 };
+    const on = this.cumulus || this.cumulusK > 0;
+    return { near: on ? this.near.length : 0, far: on ? this.far.length : 0 };
   }
 
   /** The day turned (weather over time): its thermals marked by cumulus now, or blue. */
   setCumulus(on: boolean): void {
     if (on === this.cumulus) return;
     this.cumulus = on;
+    // Turning blue: the clouds there are now dissolve; thermals starting after it get none.
+    this.fading = on ? undefined : new Set([...this.near, ...this.far].map((t) => t.id));
     this.refresh();
+  }
+  private fading: Set<string> | undefined;
+
+  /**
+   * How much of the cumulus is drawn, 0–1: it follows `cumulus` over CUMULUS_FADE_S, so when
+   * the day turns blue (the thermals no longer reach the condensation level, in the evening)
+   * the clouds dissolve, and in the morning the first ones grow in, rather than all switching
+   * at once. (Wall-clock time: with ?wxrate the fade is that much slower than the day.)
+   */
+  private cumulusK = Number.NaN;
+  private fadeT = 0;
+  private cumulusShown(): number {
+    const now = performance.now();
+    if (Number.isNaN(this.cumulusK)) this.cumulusK = this.cumulus ? 1 : 0;
+    else this.cumulusK = Math.min(1, Math.max(0, this.cumulusK + ((this.cumulus ? 1 : -1) * (now - this.fadeT)) / 1000 / CUMULUS_FADE_S));
+    this.fadeT = now;
+    return this.cumulusK;
   }
 
   /** Thermals beyond the flight model's reach: clouds only. */
@@ -412,8 +434,10 @@ export class ThermalLayer {
 
   private refresh(): void {
     const ids = new Set(this.near.map((t) => t.id));
-    const all = this.cumulus ? [...this.near, ...this.far.filter((t) => !ids.has(t.id))] : [];
-    const specs: CloudSpec[] = all.flatMap(cloudsOver);
+    const k = this.cumulusShown();
+    const fading = this.cumulus ? undefined : this.fading;
+    const all = k > 0 ? [...this.near, ...this.far.filter((t) => !ids.has(t.id))].filter((t) => !fading || fading.has(t.id)) : [];
+    const specs: CloudSpec[] = all.flatMap(cloudsOver).map((c) => (k < 1 ? { ...c, opacity: c.opacity * k } : c));
     const cam = this.viewer.camera.positionWC, p = new Cartesian3();
     const near: CloudSpec[] = [], far: CloudSpec[] = [];
     for (const c of specs) {

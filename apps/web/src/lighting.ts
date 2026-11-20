@@ -234,21 +234,14 @@ function patchGround(scene: Viewer["scene"], sky: number[], haze: { base: number
   });
 }
 
-/** The globe's ground colour before applyLighting dimmed it (applyLighting runs once per flight). */
-const baseColours = new WeakMap<object, Color>();
-
-export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevationDeg: number }, latDeg: number, lonDeg: number): void {
+/**
+ * The scene's light for the sun where it is (main.ts calls it again as the flight's clock moves
+ * the sun): Cesium's sun light by day, white from ~25° up and warmer below; under 5° a light
+ * from the sun's bearing but no lower than just above the horizon (the glow over the sunset),
+ * turning to the sky's colour. Clouds, shadows and models take their light from it.
+ */
+export function setSunLight(viewer: Viewer, sun: { azimuthDeg: number; elevationDeg: number }, latDeg: number, lonDeg: number): void {
   const scene = viewer.scene, el = sun.elevationDeg;
-  // Each flight lights the same viewer again (main.ts): start from the sky createViewer set.
-  if (scene.skyAtmosphere) {
-    scene.skyAtmosphere.show = true;
-    scene.skyAtmosphere.brightnessShift = 0.04;
-  }
-  if (scene.skyBox) scene.skyBox.show = true;
-  // Cesium's sky and haze take their light from the scene's light (not the sun). Below 5° the
-  // light comes from the sun's bearing but no lower than just above the horizon (from the
-  // glow over the sunset, after sunset), its colour turning to the sky's.
-  scene.globe.dynamicAtmosphereLightingFromSun = false;
   if (el >= 5) {
     // The sun: white from ~25° up, warmer below.
     const high = smooth(0, 25, el), strength = smooth(-3, 10, el);
@@ -269,6 +262,26 @@ export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevati
       k = 0.22 + 0.33 * t;
     }
     scene.light = new DirectionalLight({ direction: Cartesian3.negate(worldDir(latDeg, lonDeg, sun.azimuthDeg, liftedEl), new Cartesian3()), color: new Color(c[0]! * k, c[1]! * k, c[2]! * k, 1), intensity: 1 });
+  }
+}
+
+/** The globe's ground colour before applyLighting dimmed it (applyLighting runs once per flight). */
+const baseColours = new WeakMap<object, Color>();
+
+export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevationDeg: number }, latDeg: number, lonDeg: number): void {
+  const scene = viewer.scene, el = sun.elevationDeg;
+  // Each flight lights the same viewer again (main.ts): start from the sky createViewer set.
+  if (scene.skyAtmosphere) {
+    scene.skyAtmosphere.show = true;
+    scene.skyAtmosphere.brightnessShift = 0.04;
+  }
+  if (scene.skyBox) scene.skyBox.show = true;
+  // Cesium's sky and haze take their light from the scene's light (not the sun). Below 5° the
+  // light comes from the sun's bearing but no lower than just above the horizon (from the
+  // glow over the sunset, after sunset), its colour turning to the sky's.
+  scene.globe.dynamicAtmosphereLightingFromSun = false;
+  setSunLight(viewer, sun, latDeg, lonDeg);
+  if (el < 5) {
     // From +2° to −10° our own twilight sky (twilight-sky.ts); after that Cesium's, darkened.
     if (!addTwilightSky(viewer, sun)) {
       if (scene.skyAtmosphere) scene.skyAtmosphere.brightnessShift = 0.04 - 0.75 * (1 - smooth(-14, 0, el));
