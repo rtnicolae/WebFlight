@@ -112,12 +112,17 @@ export function cloudNoise(): CloudNoise {
 }
 
 let pending: Promise<CloudNoise> | undefined;
-/** The noise, made in a worker (once per page). */
+/**
+ * The noise, made in a worker (once per page). The worker is page-wide: a flight's lifetime
+ * (lifetime.ts) leaves it running when the flight or the title screen closes (it terminated it,
+ * and the promise never settled: no clouds for the rest of the page). A failed run is forgotten,
+ * so the next caller tries again.
+ */
 export function cloudNoiseAsync(): Promise<CloudNoise> {
   if (cached) return Promise.resolve(cached);
   if (!pending)
     pending = new Promise<CloudNoise>((resolve, reject) => {
-      const w = new Worker(new URL("./cloud-noise-worker.ts", import.meta.url), { type: "module" });
+      const w = new Worker(new URL("./cloud-noise-worker.ts", import.meta.url), { type: "module", name: "page-wide:cloud-noise" });
       w.onmessage = (e: MessageEvent<CloudNoise>) => {
         cached = e.data;
         w.terminate();
@@ -125,6 +130,7 @@ export function cloudNoiseAsync(): Promise<CloudNoise> {
       };
       w.onerror = (e) => {
         w.terminate();
+        pending = undefined;
         reject(new Error(e.message));
       };
     });

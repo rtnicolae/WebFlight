@@ -66,9 +66,10 @@ export class Lifetime {
       constructor(url: string | URL, opts?: WorkerOptions) {
         super(url, opts);
         // Ours only: Cesium starts its shared task workers lazily (from its own folder, or a
-        // blob), and they must outlive any flight.
+        // blob), and they must outlive any flight; so must ours named "page-wide:" (work done once
+        // per page and shared by every flight, e.g. the cloud noise).
         const u = String(url);
-        if (!u.includes("/cesium/") && !u.startsWith("blob:")) workers.push(this);
+        if (!u.includes("/cesium/") && !u.startsWith("blob:") && !opts?.name?.startsWith("page-wide:")) workers.push(this);
       }
     };
     this.undo.push(() => (window.Worker = W));
