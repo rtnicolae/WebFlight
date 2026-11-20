@@ -19,7 +19,7 @@ describe("ASK21 headless glide (Milestone 1)", () => {
     );
 
     expect(wallMs).toBeLessThan(5000);
-    expect(r.massKg).toBeCloseTo(440, 0);
+    expect(r.massKg).toBeCloseTo(459.9, 0); // a weighed ASK 21 (379.9 kg) and an 80 kg pilot
     expect(r.glide.trim.converged).toBe(true);
     expect(r.summary.durationS).toBeCloseTo(120, 1);
 

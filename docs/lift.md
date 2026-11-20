@@ -17,17 +17,40 @@ gives its JSBSim.
 
 ## The glider
 
-The climb a pilot sees is the air's movement less the glider's sink, so the glider's polar comes
-first. The ASK 21 (FGAddon's JSBSim model, made with Aeromatic) had a drag term for elevator
-travel that the measured polar has no room for, and drag numbers tuned round it: solo it glided
-42 to 1 (Schleicher: 34), two-up it sank 0.21 m/s too much near minimum sink. With that term
-gone and two numbers fitted to the measured polar at 468 kg (XCSoar's, matching the flight
-manual's chart), it agrees at 563 kg too, which was not fitted (`aero-fixes.ts`;
-`apps/headless/test/polar-reference.test.ts`). Solo with an 80 kg pilot: best glide 33 at 91
-km/h, minimum sink 0.66 m/s at 67 km/h (Schleicher: 34 at 90, 0.64–0.65 at 67). In the browser:
-0.81 m/s sink at 90 km/h at 1,450 m in still air, as Node predicts. Still open: two-up the trim
-runs out of elevator at 75 km/h (the stall then would be ~71); the model's balance (where the
-lift acts, no zero-lift pitching moment) is Aeromatic's estimate.
+The climb a pilot sees is the air's movement less the glider's sink, so the glider comes first.
+FGAddon's ASK 21 (JSBSim, made with Aeromatic, then hand-tuned) is corrected where its files are
+read (`packages/converter/src/aero-fixes.ts`), for the browser and Node alike:
+
+| Part | Was | Now | From |
+|---|---|---|---|
+| Datum (wing-root leading edge) | an XML comment implied x = −1.215 m | x = −1.64 m | the model's own 3D geometry |
+| Empty mass and CG | 360.15 kg, 740 mm aft of the datum | 379.9 kg, 771 mm | an ASK 21's weighing record (JA2747) |
+| Seats (ahead of the datum) | front 1,160, rear 160 mm | 1,217.5 and 80 mm | Schleicher's weight and balance sheet |
+| Lift | a wing section's table (slope 6.9/rad) | × 0.867 | lifting-line theory, aspect ratio 16.1 |
+| Elevator's pitching moment | −0.5 /rad | −0.8 | the model's own elevator lift × tail arm |
+| Static stability | −0.7 /rad: neutral point 423 mm, ahead of the certified aft CG limit (469) | −1.06: 486 mm | tail volume (the model's tail geometry; Raymer) |
+| Airbrakes' lift loss | −0.05 | −0.12 | fitted: solo stall +3 km/h with them out (manual) |
+| Drag per unit of elevator travel | 0.02 (more than the airframe's two-up) | 0 | no drag numbers fit the measured polar with it |
+| Profile drag, induced factor | 0.007, 0.018 | 0.0099, 0.0214 | fitted to the measured polar at 468 kg |
+
+Checks (`apps/headless/test/polar-reference.test.ts`):
+
+- **CG:** loaded as for the flight manual's stall speeds (470 kg solo; 600 kg two-up, 110/110), the
+  CG is 390 and 250 mm aft of the datum, inside the certified 234–469 mm (FGAddon's numbers put the
+  600 kg loading at 180 mm, ahead of the limit).
+- **Polar:** within 0.024 m/s of the measured polar at 468 kg, used for the fit, and at 563 kg,
+  not used (XCSoar's polar, matching the manual's chart). Solo with an 80 kg pilot (460 kg): best
+  glide 32.8 at 92 km/h, minimum sink 0.67 m/s at 70 km/h (Schleicher: 34 at 90). Before: best
+  glide 42.
+- **Stall speeds:** the lowest steady speed is 65.5 km/h solo at 470 kg (manual 65; not fitted:
+  it follows from the lifting-line lift), 76.25 two-up at 600 kg (manual 74: the elevator reaches
+  its stop first) and, with the airbrakes out, 68.5 and 79 (manual 68 and 77). Slowing at 1 kt/s
+  as in a flight test: 63.2 solo (just past the break), 73.7 two-up.
+- **Browser:** 0.82 m/s sink at 90 km/h at 1,450 m in still air, as Node predicts.
+
+Still open: two-up the elevator runs out 2 km/h above the manual's stall speed (the real
+elevator's travel and the glider's zero-lift pitching moment aren't in the data here); indicated
+speeds near the stall carry the real airspeed system's error, which the manual doesn't give.
 
 ## Known limits
 
