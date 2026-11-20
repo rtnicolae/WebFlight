@@ -34,7 +34,8 @@ Open-Meteo's shortwave is the preceding hour's mean, so it sits half an hour ear
 - **The sun** moves with the clock: the light on everything (Cesium's sun light, its colour, and
   below 5° the dusk light), the shadows, the sky and the haze with the eye's adaptation, the cirrus
   and the cloud shadows on the ground; the dusk and night tints of the sun's height on Google's
-  tiles (their light and haze), the globe and its imagery.
+  tiles (their light and haze), the globe and its imagery, and the glider (its environment map
+  made again when the clock has moved 15 minutes, one short stall then).
 - **The haze** takes the hour's visibility (or humidity) and the boundary layer's depth (its top);
   **the cirrus** the hour's high cloud, drifting with the wind aloft.
 
@@ -106,8 +107,7 @@ Still open:
 - **No turbulence:** JSBSim's MIL-spec model is not switched on.
 - **Weather over time, in part:** tints baked into shaders when they are built keep the start's
   sun (the globe's ground shader's sky light and dusk haze, OSM buildings and trees in globe mode,
-  the twilight sky added for starts below 5°); so do the glider's reflections (its environment map
-  is made once: after sunset it looks too bright) and the sun a thermal's place was scored with
+  the twilight sky added for starts below 5°) and the sun a thermal's place was scored with
   (each sky cell keeps the sun of the hour it came alive). Flights in Node (headless, the gym)
   keep the start hour's weather throughout.
 - **Cumulus thermals' profile** above mid-height is ours (see the table).

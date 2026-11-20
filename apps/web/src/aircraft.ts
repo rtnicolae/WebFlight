@@ -61,6 +61,11 @@ export class AircraftView {
     return this.model;
   }
 
+  /** The time of day's environment light again (after setLook, as the sun moves). */
+  relight(): void {
+    if (this.model) lightModel(this.model);
+  }
+
   async load(scene: Scene): Promise<void> {
     this.model = await Model.fromGltfAsync({
       url: new URL(this.manifest.model.file, this.bundleUrl).href,

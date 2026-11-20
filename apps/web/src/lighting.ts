@@ -106,9 +106,11 @@ vec3 hazeFS(vec3 color, vec3 positionEC) {
 /**
  * Cesium re-renders the sky round a model (its reflections and ambient light) whenever the
  * model has moved 1 km: a GPU readback and a shader rebuild, a 100–300 ms stall every ~20 s
- * of flight. The sky barely changes over a flight and the clock does not run: made once.
+ * of flight. Not for distance (the sky barely changes over a flight's ground); again when the
+ * flight's clock has moved 15 minutes (the sun ~4°: at dusk the sky changes a lot), one stall
+ * then. (It was made once: after sunset the glider still had the afternoon's light.)
  */
-export const ENVIRONMENT_MAP_ONCE = { maximumPositionEpsilon: Number.POSITIVE_INFINITY, maximumSecondsDifference: Number.POSITIVE_INFINITY };
+export const ENVIRONMENT_MAP_ONCE = { maximumPositionEpsilon: Number.POSITIVE_INFINITY, maximumSecondsDifference: 15 * 60 };
 
 /** A model's environment (image-based) light follows the time of day. */
 export function lightModel(m: Model): void {

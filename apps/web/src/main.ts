@@ -325,6 +325,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     setLook(sun.elevationDeg);
     tintGround(viewer);
     google3d?.relight();
+    aircraft.relight();
   });
   // (Built also on a blue start: the day may turn to cumulus.)
   if (F.environment.thermalSky) {
