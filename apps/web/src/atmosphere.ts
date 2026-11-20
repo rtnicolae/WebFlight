@@ -483,7 +483,6 @@ export class Atmosphere {
   private readonly camEN = new Cartesian3();
   private origin: { lat: number; lon: number } | undefined;
   private cirrusSpeed = 0;
-  private readonly t0 = performance.now();
   private destroyed = false;
 
   constructor(
@@ -493,24 +492,12 @@ export class Atmosphere {
     const scene = viewer.scene;
     const context = (scene as unknown as { context: unknown }).context;
     const params = new URLSearchParams(location.search);
-    // The aerosol's extinction at the ground from the visibility (Koschmieder, 3.912 / V), less
-    // the air's own (~0.0116 / km); 90% of it scattering. ?vis= tries a visibility.
-    const visKm = params.has("vis") ? Number(params.get("vis")) : hazeVisibilityKm(opts.humidity, opts.visibilityKm);
-    const mieExt = Math.max(0.002, 3.912 / visKm - 0.0116);
-    const mie = new Cesium.Cartesian4(mieExt * 0.9, 1 / 0.9, opts.hazeTopM / 1000, opts.groundM / 1000);
+    const mie = this.mie;
     // Sky and haze into scene units; the sun sets the eye's adaptation on top (setSun).
     this.baseScale = { sky: params.has("skyk") ? Number(params.get("skyk")) : SKY_SCALE, ap: params.has("apk") ? Number(params.get("apk")) : AP_SCALE };
     const scale = (this.scale = new Cesium.Cartesian2());
     this.setSun(opts.sun);
-    // Cirrus from the weather's high cloud (?cirrus=0..1 to try a cover), at 9 km, fibres
-    // along the wind aloft and drifting with it.
-    const cover = params.has("cirrus") ? Number(params.get("cirrus")) : opts.highCloud ?? 0;
-    const to = (((opts.aloft?.fromDeg ?? 270) + 180) * Math.PI) / 180;
-    this.cirrus.x = cover;
-    this.cirrus.y = 9;
-    this.cirrus.z = Math.atan2(Math.cos(to), Math.sin(to));
-    // Upper winds are stronger than the highest level we have (700 hPa): ×1.8, at least 10 m/s.
-    this.cirrusSpeed = (Math.max(10, 1.8 * (opts.aloft?.kt ?? 20) * 0.514)) / 1000;
+    this.setAir(opts);
     this.camEN.z = params.has("cik") ? Number(params.get("cik")) : 1;
 
     const make = (w: number, h: number) =>
@@ -574,7 +561,10 @@ export class Atmosphere {
     this.origin ??= { lat, lon };
     this.camEN.x = ((lon - this.origin.lon) * 111.32 * Math.cos((this.origin.lat * Math.PI) / 180));
     this.camEN.y = (lat - this.origin.lat) * 111.132;
-    this.cirrus.w = ((performance.now() - this.t0) / 1000) * this.cirrusSpeed;
+    const now = performance.now();
+    this.cirrusDrift += ((now - this.cirrusT) / 1000) * this.cirrusSpeed;
+    this.cirrusT = now;
+    this.cirrus.w = this.cirrusDrift;
     u.camR = BOT + Math.max(0.005, h);
     const enu = Transforms.eastNorthUpToFixedFrame(cam.positionWC, undefined, new Matrix4());
     u.east = Cartesian3.fromElements(enu[0]!, enu[1]!, enu[2]!, u.east);
@@ -620,6 +610,37 @@ export class Atmosphere {
     this.u.sunL = new Cartesian3(Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el));
     this.u.sunMu = Math.sin(el);
   }
+
+  /**
+   * The air now (main.ts, as the flight's clock moves the weather on): the haze's strength and
+   * depth, the cirrus's cover and drift. The tables that depend on the haze (the sun's light
+   * through the air, multiple scattering) are made again with the next frame.
+   */
+  setAir(o: Pick<AtmosphereOptions, "humidity" | "visibilityKm" | "hazeTopM" | "groundM" | "highCloud" | "aloft">): void {
+    const params = new URLSearchParams(location.search);
+    // The aerosol's extinction at the ground from the visibility (Koschmieder, 3.912 / V), less
+    // the air's own (~0.0116 / km); 90% of it scattering. ?vis= tries a visibility.
+    const visKm = params.has("vis") ? Number(params.get("vis")) : hazeVisibilityKm(o.humidity, o.visibilityKm);
+    const mieExt = Math.max(0.002, 3.912 / visKm - 0.0116);
+    this.mie.x = mieExt * 0.9;
+    this.mie.y = 1 / 0.9;
+    this.mie.z = o.hazeTopM / 1000;
+    this.mie.w = o.groundM / 1000;
+    // Cirrus from the weather's high cloud (?cirrus=0..1 to try a cover), at 9 km, fibres
+    // along the wind aloft and drifting with it.
+    const to = (((o.aloft?.fromDeg ?? 270) + 180) * Math.PI) / 180;
+    this.cirrus.x = params.has("cirrus") ? Number(params.get("cirrus")) : o.highCloud ?? 0;
+    this.cirrus.y = 9;
+    this.cirrus.z = Math.atan2(Math.cos(to), Math.sin(to));
+    // Upper winds are stronger than the highest level we have (700 hPa): ×1.8, at least 10 m/s.
+    this.cirrusSpeed = Math.max(10, 1.8 * (o.aloft?.kt ?? 20) * 0.514) / 1000;
+    this.onceDone = false;
+  }
+  /** The aerosol (COMMON's u_mie): scattering per km, extinction ÷ scattering, layer top, ground [km]. */
+  private readonly mie = new Cesium.Cartesian4();
+  /** The cirrus's drift so far [km along its wind] (it adds up: its speed changes with the day). */
+  private cirrusDrift = 0;
+  private cirrusT = performance.now();
 
   /** The aerial-perspective volume (for AERIAL_GLSL elsewhere). */
   get apTexture(): unknown {

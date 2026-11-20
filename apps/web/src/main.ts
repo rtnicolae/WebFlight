@@ -1,7 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
-import { applyLighting, reflectSky, setLook, setSunLight } from "./lighting.ts";
+import { applyLighting, reflectSky, setLook, setSunLight, tintGround } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
 import { advance, skyCellOf, TerrariumTerrain, ThermalSky } from "@webflight/environment";
@@ -174,10 +174,13 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const soaring = soaringFrom(F.weather), cumulus = soaring.cumulus;
   // Before the clouds: its pass must run before theirs.
   let atmosphere: Atmosphere | undefined;
-  if (ownAtmosphere) {
-    const w = F.weather;
+  /** The atmosphere's air from a weather: haze (visibility, humidity, the layer's depth), cirrus. */
+  const airOf = (w: Weather) => {
     const top = [...w.aloft].sort((x, y) => y.altM - x.altM)[0];
-    atmosphere = new Atmosphere(viewer, { sun, groundM: w.elevationM, hazeTopM: w.elevationM + Math.max(300, w.boundaryLayerM), humidity: relativeHumidity(w.tempC, w.dewPointC), ...(w.visibilityM !== undefined ? { visibilityKm: w.visibilityM / 1000 } : {}), ...(w.highCloud !== undefined ? { highCloud: w.highCloud } : {}), ...(top ? { aloft: { fromDeg: top.fromDeg, kt: top.kt } } : {}) });
+    return { groundM: w.elevationM, hazeTopM: w.elevationM + Math.max(300, w.boundaryLayerM), humidity: relativeHumidity(w.tempC, w.dewPointC), ...(w.visibilityM !== undefined ? { visibilityKm: w.visibilityM / 1000 } : {}), ...(w.highCloud !== undefined ? { highCloud: w.highCloud } : {}), ...(top ? { aloft: { fromDeg: top.fromDeg, kt: top.kt } } : {}) };
+  };
+  if (ownAtmosphere) {
+    atmosphere = new Atmosphere(viewer, { sun, ...airOf(F.weather) });
     life.onClose(() => atmosphere?.destroy());
   }
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined, atmosphere);
@@ -316,6 +319,12 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     Object.assign(sun, sunPosition(t, F.latDeg, F.lonDeg));
     setSunLight(viewer, sun, F.latDeg, F.lonDeg);
     atmosphere?.setSun(sun);
+    // The haze and the cirrus of the hour; the tints of the sun's height (dusk, night) on the
+    // ground: Google's tiles (their light and haze), the globe and its imagery.
+    atmosphere?.setAir(airOf(w));
+    setLook(sun.elevationDeg);
+    tintGround(viewer);
+    google3d?.relight();
   });
   // (Built also on a blue start: the day may turn to cumulus.)
   if (F.environment.thermalSky) {

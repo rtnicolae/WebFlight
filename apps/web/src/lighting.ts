@@ -292,14 +292,24 @@ export function applyLighting(viewer: Viewer, sun: { azimuthDeg: number; elevati
   patchGround(scene, LOOK.groundSky, LOOK.haze);
   const g = scene.globe;
   LOOK.globeAir = { intensity: g.atmosphereLightIntensity, hsb: [g.atmosphereHueShift, g.atmosphereSaturationShift, g.atmosphereBrightnessShift], minBrightness: scene.fog.minimumBrightness, hdr: scene.highDynamicRange };
-  // Ground imagery (every layer, also those added later): its light comes from the ground
-  // shader (sun plus sky above); only the colour fades at night.
-  const dim = (l: ImageryLayer) => {
-    if ((l.imageryProvider as unknown as { selfLit?: boolean }).selfLit) return; // detail tiles darken themselves
-    l.saturation = 0.45 + 0.55 * LOOK.day;
-  };
-  for (let i = 0; i < viewer.imageryLayers.length; i++) dim(viewer.imageryLayers.get(i));
-  viewer.imageryLayers.layerAdded.addEventListener(dim);
+  viewer.imageryLayers.layerAdded.addEventListener(dimImagery);
+  tintGround(viewer);
+}
+
+/** Ground imagery's colour fades at night (its light comes from the ground shader: sun plus sky above). */
+function dimImagery(l: ImageryLayer): void {
+  if ((l.imageryProvider as unknown as { selfLit?: boolean }).selfLit) return; // detail tiles darken themselves
+  l.saturation = 0.45 + 0.55 * LOOK.day;
+}
+
+/**
+ * The ground's tints from LOOK (again after setLook as the sun moves): the imagery's colour and
+ * the globe's base colour. (The ground shader's sky light and dusk haze, patched in once by
+ * applyLighting, and shaders built with lookGlsl keep the values they were built with.)
+ */
+export function tintGround(viewer: Viewer): void {
+  const scene = viewer.scene;
+  for (let i = 0; i < viewer.imageryLayers.length; i++) dimImagery(viewer.imageryLayers.get(i));
   let b = baseColours.get(scene.globe);
   if (!b) baseColours.set(scene.globe, (b = Color.clone(scene.globe.baseColor)));
   scene.globe.baseColor = new Color(b.red * LOOK.ground, b.green * LOOK.ground, b.blue * LOOK.ground, 1);

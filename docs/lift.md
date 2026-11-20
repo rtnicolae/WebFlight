@@ -33,14 +33,18 @@ Open-Meteo's shortwave is the preceding hour's mean, so it sits half an hour ear
   over 10 minutes and new thermals get none; when it turns cloudy they grow in.
 - **The sun** moves with the clock: the light on everything (Cesium's sun light, its colour, and
   below 5° the dusk light), the shadows, the sky and the haze with the eye's adaptation, the cirrus
-  and the cloud shadows on the ground.
+  and the cloud shadows on the ground; the dusk and night tints of the sun's height on Google's
+  tiles (their light and haze), the globe and its imagery.
+- **The haze** takes the hour's visibility (or humidity) and the boundary layer's depth (its top);
+  **the cirrus** the hour's high cloud, drifting with the wind aloft.
 
 Checked on 10 Jul 2024 at Ghimbav with the weather's clock at 60× (`?wxrate=60`, for testing):
 from 08:30 no thermals, at 09:30 the first (no cloud: the base above the layer), at 10:30
 cumulus near and far, the tops rising from 1,440 to 2,000 m by 16:30 and the wind turning from
 240° to 70° as the reanalysis has it. From 15:30, facing west: the sun lowers ahead, the clouds
 turn backlit, and at 20:30 its disc sits on the horizon in an orange glow, with pink cirrus; at
-19:00 the cumulus end and the clouds dissolve (half gone after 5 real minutes).
+19:00 the cumulus end and the clouds dissolve (half gone after 5 real minutes). From 19:30: at
+20:30 the disc on the horizon, at 21:30 an orange band under a purple sky over a dark ground.
 
 ## The glider
 
@@ -100,11 +104,12 @@ Still open:
   winds, with each halving of the 62.5 m layers.
 - **No waves without temperatures aloft:** reanalysis days (older than ~3 months) and the gym.
 - **No turbulence:** JSBSim's MIL-spec model is not switched on.
-- **Weather over time, in part:** the haze's strength and the cirrus cover stay the start hour's;
-  so do the colour settings made from the sun's height for dusk and night (the tints baked into the
-  ground, building and tree shaders, and the twilight sky added for starts below 5°), and the sun a
-  thermal's place was scored with (each sky cell keeps the sun of the hour it came alive). Flights
-  in Node (headless, the gym) keep the start hour's weather throughout.
+- **Weather over time, in part:** tints baked into shaders when they are built keep the start's
+  sun (the globe's ground shader's sky light and dusk haze, OSM buildings and trees in globe mode,
+  the twilight sky added for starts below 5°); so do the glider's reflections (its environment map
+  is made once: after sunset it looks too bright) and the sun a thermal's place was scored with
+  (each sky cell keeps the sun of the hour it came alive). Flights in Node (headless, the gym)
+  keep the start hour's weather throughout.
 - **Cumulus thermals' profile** above mid-height is ours (see the table).
 - **Overcast days are drawn clear:** when the model's low cloud cover is high (stratus, as on
   many November days) there are no cumulus, but no cloud deck is drawn either.
