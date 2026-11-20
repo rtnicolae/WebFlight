@@ -364,7 +364,7 @@ export function simplifyRing(ring: [number, number][], tolM: number): [number, n
  * separate meshes (`parts`), by the part this gives for a building's (or lamp's) position, so
  * the renderer can draw them only where they are close enough to be seen.
  */
-export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = [], o: { far?: boolean; simplifyM?: number; minAreaM2?: number; roofColour?: (poly: OsmPolygon) => readonly number[] | undefined; detailPart?: { count: number; of: (lonDeg: number, latDeg: number) => number } } = {}): Mesh {
+export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = [], o: { far?: boolean; simplifyM?: number; minAreaM2?: number; roofColour?: (poly: OsmPolygon) => readonly number[] | undefined; detailPart?: { count: number; of: (lonDeg: number, latDeg: number) => number }; under?: { insetM: number; heightK: number; capM: number } } = {}): Mesh {
   const m = new MeshBuilder();
   const parts = o.detailPart ? Array.from({ length: o.detailPart.count }, () => new MeshBuilder()) : undefined;
   // Where the small parts of what is at lon, lat go (carrying the building's seed and height).
@@ -382,25 +382,39 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     if (poly.properties["hide_3d"]) continue;
     let rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
     if (o.simplifyM) rings = rings.map((r) => simplifyRing(r, o.simplifyM!)).filter((r, k) => k === 0 || r.length >= 4);
+    if (rings[0]!.length < 4) continue;
+    // Under another source's buildings (Google's 3D tiles): a little inside the outline and lower,
+    // so where that source has the building it hides ours, and where it has none ours stands.
+    if (o.under) {
+      const a = Math.abs(ringArea(rings[0]!)), k = Math.min(0.97, Math.max(0.6, 1 - (2 * o.under.insetM) / Math.sqrt(Math.max(a, 1))));
+      let cx = 0, cy = 0;
+      for (const [x, y] of rings[0]!) { cx += x; cy += y; }
+      cx /= rings[0]!.length;
+      cy /= rings[0]!.length;
+      rings = rings.map((r) => r.map(([x, y]) => [cx + (x - cx) * k, cy + (y - cy) * k] as [number, number]));
+    }
     const outer = rings[0]!;
-    if (outer.length < 4) continue;
     const areaM2 = Math.abs(ringArea(outer));
     if (areaM2 < (o.minAreaM2 ?? (far ? 25 : 6))) continue;
     let base = Infinity;
     for (const [lon, lat] of poly.rings[0]!) base = Math.min(base, ground(lon, lat));
-    base += Number(poly.properties["render_min_height"] ?? 0);
-    const tall = Number(poly.properties["render_height"] ?? 5);
+    // Under Google's tiles, lower and capped: an outline tagged with its tower's height (a
+    // church) would otherwise stand as a block of that height round the whole footprint.
+    const minH = Number(poly.properties["render_min_height"] ?? 0) * (o.under?.heightK ?? 1);
+    const tall = o.under ? Math.min(o.under.capM, Number(poly.properties["render_height"] ?? 5) * o.under.heightK) : Number(poly.properties["render_height"] ?? 5);
+    if (o.under && tall - minH < 1) continue;
+    base += minH;
     const r = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]));
     // The roof's own sequence: the same roof whether or not balconies drew numbers before it.
     const rRoof = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]) ^ 0x9e3779b9);
     // Quantized so the renderer recovers it exactly (it hashes it per window).
     m.seed = Math.floor(r() * 500) / 512;
-    const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r, tall - Number(poly.properties["render_min_height"] ?? 0) > BLOCK_WALL_M);
+    const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r, tall - minH > BLOCK_WALL_M);
     const wall = finish.col;
     // Walls reach well below the ground: far away the renderer draws coarser terrain, which on
     // slopes lies metres off the true heights, and buildings must not float over it.
     const h0 = base - SKIRT_M;
-    const h1 = base + Math.max(2.5, tall) - Number(poly.properties["render_min_height"] ?? 0);
+    const h1 = base + Math.max(2.5, tall) - minH;
     m.wallH = h1 - base;
     const block = m.wallH > BLOCK_WALL_M;
     const dm = detail(poly.rings[0]![0]![0], poly.rings[0]![0]![1]);

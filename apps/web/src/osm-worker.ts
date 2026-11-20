@@ -14,9 +14,19 @@ export type OsmRequest =
    * far): only blocks and large buildings, what still shows ~10 km away; photoUrl: aerial photo
    * tiles (URL template, tile-url.ts) the roofs take their colours from.
    */
-  | { id: number; kind: "buildings"; url: string; x: number; y: number; far?: boolean; skyline?: boolean; photoUrl?: string; shift?: [number, number] }
+  | { id: number; kind: "buildings"; url: string; x: number; y: number; far?: boolean; skyline?: boolean; photoUrl?: string; shift?: [number, number]; under?: boolean }
   /** Trees of one zoom-16 cell (inside zoom-14 tile x >> 2, y >> 2). */
   | { id: number; kind: "trees"; url: string; x: number; y: number; spacingM: number; shift?: [number, number] };
+
+/**
+ * Under Google's 3D tiles: each building 1.5 m inside its outline, at 65 % of its height and no
+ * higher than 14 m, so where Google's tiles have the building (a mesh round the real one) they
+ * hide ours, and where they have none (flat photo ground: small towns, villages) ours stands.
+ * Nothing is read from Google's tiles: the depth test decides. The margins cover our ground
+ * (Terrarium, ~30 m SRTM: metres high under trees and in towns) against Google's; seen from
+ * ~1 km, where Google draws a city coarser and lower, some of ours still show over theirs.
+ */
+const UNDER = { insetM: 1.5, heightK: 0.65, capM: 14 };
 
 export interface OsmResult {
   id: number;
@@ -151,7 +161,7 @@ async function build(req: OsmRequest): Promise<void> {
     // Near the glider the small parts (balconies, rooftop units, parapets, lamp posts) come
     // in quarters of the tile (west/east × north/south), drawn only when close (osm-layer.ts).
     const detailPart = req.far ? undefined : { count: 4, of: (lon: number, lat: number) => (lon >= clon ? 1 : 0) + (lat < clat ? 2 : 0) };
-    const mesh = buildingMesh(buildings, frame, ground, osm.lamps, { far: req.far ?? false, ...(req.far ? { simplifyM: req.skyline ? 2 : 1 } : {}), ...(roofColour ? { roofColour } : {}), ...(detailPart ? { detailPart } : {}) });
+    const mesh = buildingMesh(buildings, frame, ground, osm.lamps, { far: req.far ?? false, ...(req.far ? { simplifyM: req.skyline ? 2 : 1 } : {}), ...(roofColour ? { roofColour } : {}), ...(detailPart ? { detailPart } : {}), ...(req.under ? { under: UNDER } : {}) });
     const lamps = new Float64Array(osm.lamps.length * 3);
     // The glow sits at the lamp head: 1.55 m from the pole towards the street.
     osm.lamps.forEach((l, i) => {

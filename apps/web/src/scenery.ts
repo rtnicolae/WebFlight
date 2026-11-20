@@ -58,6 +58,11 @@ export interface SceneryOptions {
   /** Zoom-14 tiles (~1.7 km) around the aircraft with distant OSM buildings, and with their skyline. */
   osmFarRings?: number;
   osmSkylineRings?: number;
+  /**
+   * Under Google's 3D tiles: OSM buildings only (not swisstopo's, which would double Google's),
+   * inset and lowered so Google's own buildings hide them where it has them (osm-worker.ts).
+   */
+  underGoogle?: boolean;
 }
 
 /**
@@ -128,7 +133,7 @@ export class Scenery {
     const s = this;
     const shadows = o.shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED;
     // swisstopo's 3D Tiles cover Switzerland; they stream by view wherever we fly there.
-    if (o.buildings) {
+    if (o.buildings && !o.underGoogle) {
       void Cesium3DTileset.fromUrl(TLM3D, { maximumScreenSpaceError: 12, shadows, dynamicScreenSpaceError: true, skipLevelOfDetail: true })
         .then((ts) => {
           // Drape the aerial photo over the buildings: roofs take their real colours and
@@ -159,7 +164,8 @@ export class Scenery {
         treeRings: o.osmTreeRings ?? 2,
         farRings: o.osmFarRings ?? 0,
         skylineRings: o.osmSkylineRings ?? 0,
-        covered: inSwitzerland,
+        covered: o.underGoogle ? () => false : inSwitzerland,
+        ...(o.underGoogle ? { underGoogle: true } : {}),
       }).then((l) => {
         this.osm = l;
         l?.update(site.latDeg, site.lonDeg);
