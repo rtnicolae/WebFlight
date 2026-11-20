@@ -415,6 +415,57 @@ export function weatherAt(series: readonly Weather[], when: Date): Weather {
   };
 }
 
+/**
+ * Weather over time for a flight: its clock is the start's time plus the simulated time since
+ * (it stands still when the simulation does). step() says, every `everyS` simulated seconds, what
+ * the weather is now (weatherAt between the series' hours), for Environment.setWeather. One
+ * class for the browser's flight worker and Node's flights (headless, the gym), so both follow
+ * the day alike. `rate` > 1 runs the weather's clock faster (testing: ?wxrate in the browser).
+ */
+export class WeatherClock {
+  private elapsedS = 0;
+  private appliedS = Number.NEGATIVE_INFINITY;
+  private readonly startMs: number;
+  constructor(
+    readonly series: readonly Weather[],
+    start: Date | string,
+    readonly rate = 1,
+    readonly everyS = 60,
+  ) {
+    this.startMs = typeof start === "string" ? Date.parse(start) : start.getTime();
+  }
+  /** The weather clock's time now. */
+  get now(): Date {
+    return new Date(this.startMs + this.elapsedS * this.rate * 1000);
+  }
+  /** Advance by `dt` simulated seconds; the weather to apply, when it is time (the first call: at once). */
+  step(dt: number): Weather | undefined {
+    this.elapsedS += dt;
+    if (!this.series.length || this.elapsedS - this.appliedS < Math.max(1, this.everyS / this.rate)) return undefined;
+    this.appliedS = this.elapsedS;
+    return weatherAt(this.series, this.now);
+  }
+  /** Back to the start (a reset of the flight). */
+  restart(): void {
+    this.elapsedS = 0;
+    this.appliedS = Number.NEGATIVE_INFINITY;
+  }
+}
+
+/**
+ * Hours of the offline estimate round a moment (from `before` hours before to `after` after), each
+ * passed through `adjust` (a site's own wind, say): a series for WeatherClock where no data is.
+ */
+export function estimateSeries(latDeg: number, lonDeg: number, when: Date, elevationM: number, adjust: (w: Weather) => Weather = (w) => w, before = 2, after = 6): Weather[] {
+  const h0 = Math.floor(when.getTime() / 3600_000) * 3600_000;
+  const out: Weather[] = [];
+  for (let h = -before; h <= after; h++) {
+    const t = new Date(h0 + h * 3600_000);
+    out.push(adjust({ ...estimateWeather(latDeg, lonDeg, t, elevationM), timeUtc: t.toISOString() }));
+  }
+  return out;
+}
+
 /** A daytime convective boundary layer grows with the heating; a few hundred metres at night. */
 export function estimateBoundaryLayer(shortwaveWm2: number): number {
   return Math.min(2600, 300 + 2.4 * Math.max(0, shortwaveWm2));

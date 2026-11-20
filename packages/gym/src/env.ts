@@ -12,7 +12,7 @@
  * preloaded around the site and frozen, so the same seed and the same actions give
  * bit-identical observations and rewards.
  */
-import { applyEnvironment, Environment, mulberry32, type TerrariumTerrain } from "@webflight/environment";
+import { applyEnvironment, Environment, mulberry32, WeatherClock, type TerrariumTerrain } from "@webflight/environment";
 import { RunwayFrame } from "./common.ts";
 import type { GymSite, SitePicker } from "./sites.ts";
 import { controlsToJsbsim, Fdm, FdmError, LBS_PER_KG, P, type AircraftFiles, type AirbrakeRoute, type FdmOptions } from "@webflight/fdm-core";
@@ -112,6 +112,7 @@ export class GliderEnv {
       groundAt: (lat, lon) => (terrain ? (terrain.heightAt(lat, lon) ?? fallback) : 0),
       controls: { aileron: 0, elevator: 0, rudder: 0, elevatorTrim: 0, airbrake: 0 },
       launch: undefined,
+      ...(site.hours?.length ? { weather: new WeatherClock(site.hours, w.timeUtc) } : {}),
       applyControls: () => this.applyControls(),
       rand: mulberry32(seed >>> 0),
       t: 0,
@@ -146,6 +147,9 @@ export class GliderEnv {
       while (done < repeat) {
         const n = Math.min(batch, repeat - done);
         const dt = n * ep.fdm.dt;
+        // Weather over time: the site's hours with the episode's clock (deterministic: sim time).
+        const wx = ep.weather?.step(dt);
+        if (wx) ep.environment.setWeather(wx);
         applyEnvironment(ep.environment, ep.fdm, dt);
         this.o.task.physics?.(ep, dt);
         this.applyControls();

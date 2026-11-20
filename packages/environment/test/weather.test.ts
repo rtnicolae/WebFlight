@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateWeather, mixedLayerLcl, openMeteoUrl, parseOpenMeteoHours, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherAt, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
+import { estimateSeries, estimateWeather, mixedLayerLcl, WeatherClock, openMeteoUrl, parseOpenMeteoHours, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherAt, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
 
 // Shape of an Open-Meteo /v1/forecast response with timezone=auto&timeformat=unixtime.
 const fixture = {
@@ -52,6 +52,37 @@ describe("weather", () => {
     expect(weatherAt(hours, new Date("2026-07-15T10:00:00Z")).tempC).toBe(27.4);
     expect(weatherAt(hours, new Date("2026-07-15T03:00:00Z")).tempC).toBe(26.1);
     expect(weatherAt(hours, new Date("2026-07-15T20:00:00Z")).tempC).toBe(28.0);
+  });
+
+  it("keeps a flight's weather clock: at once, then every simulated minute; faster with a rate; restarts", () => {
+    const hours = parseOpenMeteoHours(fixture, 45.7, 25.53);
+    const clock = new WeatherClock(hours, "2026-07-15T09:30:00.000Z");
+    expect(clock.step(0.1)?.timeUtc).toBe("2026-07-15T09:30:00.100Z");
+    let got: string[] = [];
+    for (let i = 0; i < 1210; i++) {
+      const w = clock.step(0.1); // 121 s more (0.1 s steps don't add up to exact minutes)
+      if (w) got.push(w.timeUtc);
+    }
+    expect(got.map((t) => t.slice(0, 16))).toEqual(["2026-07-15T09:31", "2026-07-15T09:32"]);
+    clock.restart();
+    expect(clock.now.toISOString()).toBe("2026-07-15T09:30:00.000Z");
+    const fast = new WeatherClock(hours, "2026-07-15T09:30:00.000Z", 60);
+    got = [];
+    for (let i = 0; i < 31; i++) {
+      const w = fast.step(1); // 31 s at 60x: 31 min of weather, applied every second
+      if (w) got.push(w.timeUtc);
+    }
+    expect(got.length).toBe(31);
+    expect(got.at(-1)).toBe("2026-07-15T10:01:00.000Z");
+  });
+
+  it("makes hours of the estimate round a moment, each adjusted", () => {
+    const s = estimateSeries(45.7, 25.53, new Date("2026-07-15T10:20:00Z"), 530, (w) => ({ ...w, windKt: 7 }));
+    expect(s.map((w) => w.timeUtc.slice(11, 16))).toEqual(["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"]);
+    expect(s.every((w) => w.windKt === 7)).toBe(true);
+    // The sun's day (noon at 25.5°E is ~10:20 UTC): the boundary layer deepest near it.
+    expect(s[2]!.boundaryLayerM).toBeGreaterThan(s[0]!.boundaryLayerM);
+    expect(s[2]!.boundaryLayerM).toBeGreaterThan(s[8]!.boundaryLayerM);
   });
 
   it("turns the wind through north the short way", () => {

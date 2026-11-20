@@ -39,6 +39,12 @@ Open-Meteo's shortwave is the preceding hour's mean, so it sits half an hour ear
 - **The haze** takes the hour's visibility (or humidity) and the boundary layer's depth (its top);
   **the cirrus** the hour's high cloud, drifting with the wind aloft.
 
+The clock (`WeatherClock`, environment package) is the same in Node: `SoaringSim` takes one
+(`weather` option), and gym episodes follow their site's hours: the estimate's hours (the sun's
+day, in the episode's wind) where a site has no recorded weather, the recorded hours round each
+snapshot otherwise (`record-weather.ts` now keeps 2 h before to 6 h after; snapshot files from
+before keep their one hour). The clock runs on simulated time, so episodes stay deterministic.
+
 Checked on 10 Jul 2024 at Ghimbav with the weather's clock at 60× (`?wxrate=60`, for testing):
 from 08:30 no thermals, at 09:30 the first (no cloud: the base above the layer), at 10:30
 cumulus near and far, the tops rising from 1,440 to 2,000 m by 16:30 and the wind turning from
@@ -108,8 +114,7 @@ Still open:
 - **Weather over time, in part:** tints baked into shaders when they are built keep the start's
   sun (the globe's ground shader's sky light and dusk haze, OSM buildings and trees in globe mode,
   the twilight sky added for starts below 5°) and the sun a thermal's place was scored with
-  (each sky cell keeps the sun of the hour it came alive). Flights in Node (headless, the gym)
-  keep the start hour's weather throughout.
+  (each sky cell keeps the sun of the hour it came alive).
 - **Cumulus thermals' profile** above mid-height is ours (see the table).
 - **Overcast days are drawn clear:** when the model's low cloud cover is high (stratus, as on
   many November days) there are no cumulus, but no cloud deck is drawn either.
