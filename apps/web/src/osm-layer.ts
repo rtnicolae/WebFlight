@@ -55,7 +55,7 @@ export interface OsmLayerOptions {
   farRings: number;
   /** …and beyond those, out to this many, the skyline: blocks and large buildings only. */
   skylineRings: number;
-  /** Where another source already provides buildings/trees (swisstopo). */
+  /** Where another source already provides buildings/trees (swisstopo; Google's 3D cities). */
   covered: (latDeg: number, lonDeg: number) => boolean;
   /** Drawn under Google's 3D tiles (osm-worker.ts UNDER): theirs hide ours where they have them. */
   underGoogle?: boolean;

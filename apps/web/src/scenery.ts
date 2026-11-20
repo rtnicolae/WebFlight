@@ -32,6 +32,7 @@ import { lonLatToTile } from "@webflight/environment";
 import { BASE_VT, fetchWater, type WaterPolygon } from "@webflight/scenery";
 import { swissImageProvider } from "./imagery.ts";
 import { OsmLayer } from "./osm-layer.ts";
+import { tileInGoogle3d } from "./google-3d-areas.ts";
 
 const TLM3D = "https://vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.swisstlm3d.3d/20190313/tileset.json";
 const VEGETATION = "https://vectortiles0.geo.admin.ch/3d-tiles/ch.swisstopo.vegetation.3d/20190313/tileset.json";
@@ -60,7 +61,8 @@ export interface SceneryOptions {
   osmSkylineRings?: number;
   /**
    * Under Google's 3D tiles: OSM buildings only (not swisstopo's, which would double Google's),
-   * inset and lowered so Google's own buildings hide them where it has them (osm-worker.ts).
+   * none in the places where Google draws its own (google-3d-areas.ts), elsewhere inset and
+   * lowered so Google's buildings hide them where it has some after all (osm-worker.ts).
    */
   underGoogle?: boolean;
 }
@@ -164,7 +166,7 @@ export class Scenery {
         treeRings: o.osmTreeRings ?? 2,
         farRings: o.osmFarRings ?? 0,
         skylineRings: o.osmSkylineRings ?? 0,
-        covered: o.underGoogle ? () => false : inSwitzerland,
+        covered: o.underGoogle ? tileInGoogle3d : inSwitzerland,
         ...(o.underGoogle ? { underGoogle: true } : {}),
       }).then((l) => {
         this.osm = l;

@@ -6,6 +6,7 @@
 import { lonLatToTile, TerrariumTerrain, tileToLonLat } from "@webflight/environment";
 import { buildingMesh, fetchOsm, footprintColour, LAMP_HEIGHT_M, LocalFrame, townTreeInstances, treeInstances, type Mesh, type OsmPolygon, type OsmTile, type Rgba } from "@webflight/scenery";
 import { tileUrl } from "./tile-url.ts";
+import { inGoogle3d } from "./google-3d-areas.ts";
 
 /** shift: east, north [m] to move everything by, onto the aerial photo (photo-align.ts). */
 export type OsmRequest =
@@ -19,7 +20,8 @@ export type OsmRequest =
   | { id: number; kind: "trees"; url: string; x: number; y: number; spacingM: number; shift?: [number, number] };
 
 /**
- * Under Google's 3D tiles: each building 1.5 m inside its outline, at 65 % of its height and no
+ * Under Google's 3D tiles, where it draws no buildings of its own (google-3d-areas.ts lists the
+ * places where it does): each building 1.5 m inside its outline, at 65 % of its height and no
  * higher than 14 m, so where Google's tiles have the building (a mesh round the real one) they
  * hide ours, and where they have none (flat photo ground: small towns, villages) ours stands.
  * Nothing is read from Google's tiles: the depth test decides. The margins cover our ground
@@ -27,6 +29,13 @@ export type OsmRequest =
  * ~1 km, where Google draws a city coarser and lower, some of ours still show over theirs.
  */
 const UNDER = { insetM: 1.5, heightK: 0.65, capM: 14 };
+
+/** A footprint's centre as lat, lon (the mean of its outline's corners). */
+function centre(ring: [number, number][]): [number, number] {
+  let lon = 0, lat = 0;
+  for (const [x, y] of ring) { lon += x; lat += y; }
+  return [lat / ring.length, lon / ring.length];
+}
 
 export interface OsmResult {
   id: number;
@@ -155,7 +164,9 @@ async function build(req: OsmRequest): Promise<void> {
   const origin: [number, number, number] = [clon + dLon, clat + dLat, frame.heightM];
   if (req.kind === "buildings") {
     // (A copy: the decoded tile is cached and may be asked for again at another level.)
-    const buildings = req.skyline ? osm.buildings.filter((b) => skyline(b, frame)) : osm.buildings;
+    // Under Google's tiles: none where Google draws its own (google-3d-areas.ts).
+    const ours = req.under ? osm.buildings.filter((b) => !inGoogle3d(...centre(b.rings[0]!))) : osm.buildings;
+    const buildings = req.skyline ? ours.filter((b) => skyline(b, frame)) : ours;
     // Kept ~1.2 m inside the outline (eaves, the street, shadows beside the walls).
     const roofColour = photo ? roofColours(photo, pz, dLon, dLat, 1.2, buildings) : undefined;
     // Near the glider the small parts (balconies, rooftop units, parapets, lamp posts) come
