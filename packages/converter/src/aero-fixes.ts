@@ -58,6 +58,13 @@ export const ASK21_FIT = {
    * rises 2.75 km/h (manual: 3).
    */
   airbrakeLift: -0.12,
+  /**
+   * Elevator travel [rad, JSBSim sign: up negative]: the type data sheet's 90 +/- 5 mm up and
+   * 65 +/- 5 mm down measured 230 mm from the hinge (as chords: 22.6 and 16.2 degrees, which the
+   * ASK 21 B manual lists). FGAddon: +/-0.35 (20 degrees).
+   */
+  elevatorUp: -0.394,
+  elevatorDown: 0.284,
   /** Drag, fitted to the measured polar at 468 kg with the above in place (polar-reference test). */
   profileDrag: 0.0099,
   inducedK: 0.0214,
@@ -84,6 +91,9 @@ export function ask21Fixes(f: Fit = ASK21_FIT): AeroFix[] {
         { from: /(<location name="CG" unit="M">\s*<x>)\s*-0\.9\s*(<\/x>)/, to: `$1 ${x(-f.emptyCgAftM)} $2` },
         { from: /(<pointmass name="Pilot">[\s\S]*?<x>)\s*-2\.8\s*(<\/x>)/, to: `$1 ${x(f.frontSeatAheadM)} $2` },
         { from: /(<pointmass name="Copilot">[\s\S]*?<x>)\s*-1\.8\s*(<\/x>)/, to: `$1 ${x(f.rearSeatAheadM)} $2` },
+        // The elevator's stops (the control maps -1..1 onto them, each side to its own stop).
+        { from: /(<aerosurface_scale name="Elevator Control">[\s\S]*?<range>\s*<min>)\s*-0\.35\s*(<\/min>\s*<max>)\s*0\.35\s*(<\/max>)/, to: `$1 ${f.elevatorUp} $2 ${f.elevatorDown} $3` },
+        { from: /(<aerosurface_scale name="elevator normalization">[\s\S]*?<domain>\s*<min>)\s*-0\.35\s*(<\/min>\s*<max>)\s*0\.35\s*(<\/max>)/, to: `$1 ${f.elevatorUp} $2 ${f.elevatorDown} $3` },
       ],
     },
     {

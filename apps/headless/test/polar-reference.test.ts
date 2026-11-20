@@ -70,12 +70,13 @@ describe("ASK21 against its flight manual and measured polar", () => {
   }
 
   // The flight manual (p. 34): 65 km/h IAS at 470 kg solo, 74 at 600 kg two-up; 68 and 77 with the
-  // airbrakes out. Here the lowest steady (1 g) speed, trimmed down in 0.25 km/h steps. Solo the
-  // wing stalls; two-up the elevator reaches its stop first, 2.25 km/h above the manual's figure.
+  // airbrakes out. Here the lowest steady (1 g) speed, trimmed down in 0.25 km/h steps. Two-up it
+  // is 1.25 km/h above the manual's figure (the elevator at 95% of its published up travel).
   for (const [name, front, rear, brakes, manual, tol] of [
     ["470 kg solo", 90.1, 0, false, 65, 1],
-    ["600 kg two-up", 110, 110, false, 74, 2.5],
+    ["600 kg two-up", 110, 110, false, 74, 1.5],
     ["470 kg solo, airbrakes out", 90.1, 0, true, 68, 1],
+    ["600 kg two-up, airbrakes out", 110, 110, true, 77, 2],
   ] as const) {
     it(`stalls near the flight manual's speed, ${name}`, async () => {
       const fdm = await glider(front, rear, brakes);

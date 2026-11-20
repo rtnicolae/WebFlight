@@ -28,6 +28,7 @@ read (`packages/converter/src/aero-fixes.ts`), for the browser and Node alike:
 | Seats (ahead of the datum) | front 1,160, rear 160 mm | 1,217.5 and 80 mm | Schleicher's weight and balance sheet |
 | Lift | a wing section's table (slope 6.9/rad) | × 0.867 | lifting-line theory, aspect ratio 16.1 |
 | Elevator's pitching moment | −0.5 /rad | −0.8 | the model's own elevator lift × tail arm |
+| Elevator travel | ±20° | 22.6° up, 16.2° down | type data sheet (90 and 65 mm at 230 mm from the hinge); ASK 21 B manual |
 | Static stability | −0.7 /rad: neutral point 423 mm, ahead of the certified aft CG limit (469) | −1.06: 486 mm | tail volume (the model's tail geometry; Raymer) |
 | Airbrakes' lift loss | −0.05 | −0.12 | fitted: solo stall +3 km/h with them out (manual) |
 | Drag per unit of elevator travel | 0.02 (more than the airframe's two-up) | 0 | no drag numbers fit the measured polar with it |
@@ -43,14 +44,22 @@ Checks (`apps/headless/test/polar-reference.test.ts`):
   glide 32.8 at 92 km/h, minimum sink 0.67 m/s at 70 km/h (Schleicher: 34 at 90). Before: best
   glide 42.
 - **Stall speeds:** the lowest steady speed is 65.5 km/h solo at 470 kg (manual 65; not fitted:
-  it follows from the lifting-line lift), 76.25 two-up at 600 kg (manual 74: the elevator reaches
-  its stop first) and, with the airbrakes out, 68.5 and 79 (manual 68 and 77). Slowing at 1 kt/s
+  it follows from the lifting-line lift), 75.25 two-up at 600 kg (manual 74; 76.25 with FGAddon's
+  ±20° elevator) and, with the airbrakes out, 68.5 and 78.5 (manual 68 and 77). Slowing at 1 kt/s
   as in a flight test: 63.2 solo (just past the break), 73.7 two-up.
 - **Browser:** 0.82 m/s sink at 90 km/h at 1,450 m in still air, as Node predicts.
 
-Still open: two-up the elevator runs out 2 km/h above the manual's stall speed (the real
-elevator's travel and the glider's zero-lift pitching moment aren't in the data here); indicated
-speeds near the stall carry the real airspeed system's error, which the manual doesn't give.
+Still open:
+
+- **Two-up stall** 1.25 km/h above the manual's. The whole glider's pitching moment at zero lift
+  isn't published; the model's is +0.059 (nose-up, from its reference at zero incidence), needing
+  4.5° of down elevator at zero lift.
+- **Trim:** the model's trim moves the elevator over its whole travel, so one pilot can trim
+  hands-off at any speed. The real spring trim, full forward, trims at 150–160 km/h with one pilot
+  (Schleicher's continued-airworthiness instructions); in the model that is +0.06–0.07 rad of
+  elevator, about a quarter of its down travel. Not modelled.
+- Indicated speeds near the stall carry the real airspeed system's error, which the manual doesn't
+  give.
 
 ## Known limits
 
