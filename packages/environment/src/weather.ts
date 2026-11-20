@@ -257,16 +257,28 @@ interface OpenMeteoResponse {
  * the sun-based estimate for that quantity.
  */
 export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: number, when: Date, source: "forecast" | "archive" = "forecast"): Weather {
-  const h = json.hourly;
-  const times = h?.time;
-  if (!h || !times?.length) throw new Error("open-meteo: no hourly data");
-  const offset = json.utc_offset_seconds ?? 0;
+  const times = json.hourly?.time;
+  if (!json.hourly || !times?.length) throw new Error("open-meteo: no hourly data");
   let best = 0, bestDt = Infinity;
   for (let i = 0; i < times.length; i++) {
-    const t = times[i]! * 1000;
-    const dt = Math.abs(t - when.getTime());
+    const dt = Math.abs(times[i]! * 1000 - when.getTime());
     if (dt < bestDt) { bestDt = dt; best = i; }
   }
+  return parseHour(json, best, latDeg, lonDeg, when, source);
+}
+
+/** Every hour of an Open-Meteo response, in time order: the series weatherAt() interpolates. */
+export function parseOpenMeteoHours(json: OpenMeteoResponse, latDeg: number, lonDeg: number, source: "forecast" | "archive" = "forecast"): Weather[] {
+  const times = json.hourly?.time;
+  if (!json.hourly || !times?.length) throw new Error("open-meteo: no hourly data");
+  return times.map((t, i) => parseHour(json, i, latDeg, lonDeg, new Date(t * 1000), source)).sort((a, b) => Date.parse(a.timeUtc) - Date.parse(b.timeUtc));
+}
+
+/** Hour `best` of a response; missing values from the estimate for `when`. */
+function parseHour(json: OpenMeteoResponse, best: number, latDeg: number, lonDeg: number, when: Date, source: "forecast" | "archive"): Weather {
+  const h = json.hourly!;
+  const times = h.time!;
+  const offset = json.utc_offset_seconds ?? 0;
   const est = estimateWeather(latDeg, lonDeg, when, json.elevation ?? 0);
   const v = (k: string): number | undefined => {
     const a = h[k];
@@ -312,6 +324,94 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
     boundaryLayerM: v("boundary_layer_height") ?? estimateBoundaryLayer(sw),
     ...(v("surface_pressure") !== undefined ? { surfacePressureHpa: v("surface_pressure")! } : {}),
     ...(v("visibility") !== undefined ? { visibilityM: v("visibility")! } : {}),
+  };
+}
+
+const toUV = (fromDeg: number, kt: number): [number, number] => {
+  const r = (fromDeg * Math.PI) / 180;
+  return [-kt * Math.sin(r), -kt * Math.cos(r)];
+};
+const fromUV = (u: number, v: number): { fromDeg: number; kt: number } => ({ fromDeg: ((Math.atan2(-u, -v) * 180) / Math.PI + 360) % 360, kt: Math.hypot(u, v) });
+/** A wind between two: as vectors (through north the short way; a turn weakens it on the way). */
+function lerpWind(a: { fromDeg: number; kt: number }, b: { fromDeg: number; kt: number }, f: number): { fromDeg: number; kt: number } {
+  const [ua, va] = toUV(a.fromDeg, a.kt), [ub, vb] = toUV(b.fromDeg, b.kt);
+  return fromUV(ua + f * (ub - ua), va + f * (vb - va));
+}
+
+/**
+ * The weather at a moment between the hours of a series (parseOpenMeteoHours), linearly in
+ * time as the model's hourly output is meant (winds as vectors; visibility in extinction,
+ * 1/V). Open-Meteo's shortwave radiation is the preceding hour's mean, so its values are
+ * placed half an hour earlier. Levels and boundary winds pair up by pressure and height; one
+ * only one hour has comes from the nearer hour. Before the first hour or after the last, the
+ * end hour. timeUtc is the moment asked.
+ */
+export function weatherAt(series: readonly Weather[], when: Date): Weather {
+  if (!series.length) throw new Error("weatherAt: no hours");
+  const t = when.getTime();
+  const at = (shiftMs: number): [Weather, Weather, number] => {
+    const T = (w: Weather) => Date.parse(w.timeUtc) + shiftMs;
+    if (t <= T(series[0]!)) return [series[0]!, series[0]!, 0];
+    for (let i = 0; i + 1 < series.length; i++) {
+      const a = series[i]!, b = series[i + 1]!, ta = T(a), tb = T(b);
+      if (t <= tb) return [a, b, tb > ta ? (t - ta) / (tb - ta) : 0];
+    }
+    const last = series[series.length - 1]!;
+    return [last, last, 0];
+  };
+  const [a, b, f] = at(0);
+  const L = (x: number, y: number) => x + f * (y - x);
+  const near = f < 0.5 ? a : b;
+  const opt = (x: number | undefined, y: number | undefined) => (x !== undefined && y !== undefined ? L(x, y) : f < 0.5 ? x : y);
+  const pairLevel = (la: WindLevel, lb: WindLevel): WindLevel => {
+    const w = lerpWind(la, lb, f);
+    const tc = opt(la.tempC, lb.tempC), td = opt(la.dewPointC, lb.dewPointC);
+    return { ...la, altM: L(la.altM, lb.altM), fromDeg: w.fromDeg, kt: w.kt, ...(tc !== undefined ? { tempC: tc } : {}), ...(td !== undefined ? { dewPointC: td } : {}) };
+  };
+  const aloft: WindLevel[] = [];
+  const key = (l: WindLevel, i: number) => (l.hPa !== undefined ? `p${l.hPa}` : `i${i}`);
+  const bByKey = new Map(b.aloft.map((l, i) => [key(l, i), l]));
+  const aKeys = new Set(a.aloft.map((l, i) => key(l, i)));
+  a.aloft.forEach((la, i) => {
+    const lb = bByKey.get(key(la, i));
+    if (lb) aloft.push(pairLevel(la, lb));
+    else if (f < 0.5) aloft.push(la);
+  });
+  b.aloft.forEach((lb, i) => {
+    if (!aKeys.has(key(lb, i)) && f >= 0.5) aloft.push(lb);
+  });
+  aloft.sort((x, y) => x.altM - y.altM);
+  let boundary: BoundaryWind[] | undefined;
+  if (a.boundary || b.boundary) {
+    const byH = new Map((b.boundary ?? []).map((x) => [x.aglM, x]));
+    boundary = (a.boundary ?? []).flatMap((x) => {
+      const y = byH.get(x.aglM);
+      return y ? [{ aglM: x.aglM, ...lerpWind(x, y, f) }] : f < 0.5 ? [x] : [];
+    });
+    if (f >= 0.5) for (const y of b.boundary ?? []) if (!(a.boundary ?? []).some((x) => x.aglM === y.aglM)) boundary.push(y);
+    boundary.sort((x, y) => x.aglM - y.aglM);
+  }
+  const surf = lerpWind({ fromDeg: a.windFromDeg, kt: a.windKt }, { fromDeg: b.windFromDeg, kt: b.windKt }, f);
+  const [sa, sb, sf] = at(-1800_000);
+  const vis = a.visibilityM !== undefined && b.visibilityM !== undefined ? 1 / L(1 / a.visibilityM, 1 / b.visibilityM) : near.visibilityM;
+  const high = opt(a.highCloud, b.highCloud), ps = opt(a.surfacePressureHpa, b.surfacePressureHpa);
+  const { highCloud: _h, surfacePressureHpa: _p, visibilityM: _v, boundary: _b, ...rest } = near;
+  return {
+    ...rest,
+    timeUtc: new Date(t).toISOString(),
+    tempC: L(a.tempC, b.tempC),
+    dewPointC: L(a.dewPointC, b.dewPointC),
+    windFromDeg: surf.fromDeg,
+    windKt: surf.kt,
+    gustKt: L(a.gustKt, b.gustKt),
+    aloft,
+    ...(boundary ? { boundary } : {}),
+    lowCloud: L(a.lowCloud, b.lowCloud),
+    ...(high !== undefined ? { highCloud: high } : {}),
+    shortwaveWm2: sa.shortwaveWm2 + sf * (sb.shortwaveWm2 - sa.shortwaveWm2),
+    boundaryLayerM: L(a.boundaryLayerM, b.boundaryLayerM),
+    ...(ps !== undefined ? { surfacePressureHpa: ps } : {}),
+    ...(vis !== undefined ? { visibilityM: vis } : {}),
   };
 }
 
@@ -386,7 +486,7 @@ export async function weatherFor(
   now = new Date(),
   /** fetchJson: replace the fetch (e.g. with a cache); it should throw with a reason on failure. */
   opts: { fetchJson?: (url: string) => Promise<unknown> } = {},
-): Promise<{ weather: Weather; time: Date }> {
+): Promise<{ weather: Weather; time: Date; series?: Weather[] }> {
   // The local date isn't known before the offset is: ask for the day either side as well.
   const guessH = Math.round(lonDeg / 15);
   const localDay = when.kind === "local" && when.date ? when.date : ymd(new Date(now.getTime() + guessH * 3600_000));
@@ -430,7 +530,10 @@ export async function weatherFor(
   }
   if (json) {
     try {
-      return { weather: { ...parseOpenMeteo(json, latDeg, lonDeg, time, source), utcOffsetH: offsetH, ...(note ? { note } : {}) }, time };
+      const fix = (w: Weather): Weather => ({ ...w, utcOffsetH: offsetH, ...(note ? { note } : {}) });
+      // The three days asked for, hour by hour: the weather as the flight goes on (weatherAt).
+      const series = parseOpenMeteoHours(json, latDeg, lonDeg, source).map(fix);
+      return { weather: fix(parseOpenMeteo(json, latDeg, lonDeg, time, source)), time, series };
     } catch (e) {
       note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
     }

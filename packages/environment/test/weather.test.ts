@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateWeather, mixedLayerLcl, openMeteoUrl, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
+import { estimateWeather, mixedLayerLcl, openMeteoUrl, parseOpenMeteoHours, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherAt, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
 
 // Shape of an Open-Meteo /v1/forecast response with timezone=auto&timeformat=unixtime.
 const fixture = {
@@ -29,6 +29,45 @@ const fixture = {
 };
 
 describe("weather", () => {
+  it("keeps every hour and interpolates between them in time", () => {
+    const hours = parseOpenMeteoHours(fixture, 45.7, 25.53);
+    expect(hours.map((w) => w.timeUtc)).toEqual(["2026-07-15T09:00:00.000Z", "2026-07-15T10:00:00.000Z", "2026-07-15T11:00:00.000Z"]);
+    const w = weatherAt(hours, new Date("2026-07-15T10:30:00Z"));
+    expect(w.timeUtc).toBe("2026-07-15T10:30:00.000Z");
+    expect(w.tempC).toBeCloseTo(27.7, 6);
+    expect(w.dewPointC).toBeCloseTo(12.35, 6);
+    expect(w.lowCloud).toBeCloseTo(0.25, 6);
+    // 310°/7.2 and 315°/8.1 kt as vectors.
+    expect(w.windFromDeg).toBeGreaterThan(312);
+    expect(w.windFromDeg).toBeLessThan(313);
+    expect(w.windKt).toBeCloseTo(7.64, 1);
+    // The 850 hPa level pairs up: 11 kt and 12 kt, 1532 and 1533 m.
+    const l850 = w.aloft.find((l) => l.hPa === 850)!;
+    expect(l850.kt).toBeCloseTo(11.5, 1);
+    expect(l850.altM).toBeCloseTo(1532.5, 6);
+    // Shortwave is the preceding hour's mean: 760 W/m² (the 11:00 value) belongs to 10:30.
+    expect(w.shortwaveWm2).toBeCloseTo(760, 6);
+    expect(weatherAt(hours, new Date("2026-07-15T10:00:00Z")).shortwaveWm2).toBeCloseTo(780, 6);
+    // Exact hours give the hour; beyond the ends, the end hour.
+    expect(weatherAt(hours, new Date("2026-07-15T10:00:00Z")).tempC).toBe(27.4);
+    expect(weatherAt(hours, new Date("2026-07-15T03:00:00Z")).tempC).toBe(26.1);
+    expect(weatherAt(hours, new Date("2026-07-15T20:00:00Z")).tempC).toBe(28.0);
+  });
+
+  it("turns the wind through north the short way", () => {
+    const a = { ...estimateWeather(45.7, 25.53, new Date("2026-07-15T10:00:00Z")), timeUtc: "2026-07-15T10:00:00.000Z", windFromDeg: 350, windKt: 10 };
+    const b = { ...a, timeUtc: "2026-07-15T11:00:00.000Z", windFromDeg: 10 };
+    const w = weatherAt([a, b], new Date("2026-07-15T10:30:00Z"));
+    expect(Math.min(w.windFromDeg, 360 - w.windFromDeg)).toBeLessThan(1e-6);
+    expect(w.windKt).toBeCloseTo(10 * Math.cos((10 * Math.PI) / 180), 6);
+  });
+
+  it("returns the day's hours with the weather", async () => {
+    const r = await weatherFor(45.7, 25.53, parseWhen("2026-07-15T13:00"), 530, new Date("2026-07-20T08:00:00Z"), { fetchJson: async () => fixture });
+    expect(r.series?.length).toBe(3);
+    expect(r.series?.every((w) => w.utcOffsetH === r.weather.utcOffsetH)).toBe(true);
+  });
+
   it("reads the forecast's visibility, for the haze", () => {
     const json = { ...fixture, hourly: { ...fixture.hourly, visibility: [41000, 43960, 45000] } };
     expect(parseOpenMeteo(json, 45.7, 25.53, new Date("2026-07-15T10:20:00Z")).visibilityM).toBe(43960);
