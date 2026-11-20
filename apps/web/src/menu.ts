@@ -16,7 +16,6 @@ import type { Lifetime } from "./lifetime.ts";
 import { applyLighting, setLook } from "./lighting.ts";
 import { ThermalLayer, thermalView } from "./scene.ts";
 import { Scenery } from "./scenery.ts";
-import type { ThermalView } from "./protocol.ts";
 import { resolveFlight } from "./world.ts";
 
 const ICONS: Record<string, string> = {

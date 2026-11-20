@@ -336,6 +336,9 @@ async function addAerial(viewer: Viewer, source: Exclude<AerialSource, "s2">): P
 /** aerial: false when Google 3D tiles hide the globe (google3d.ts): no photo layer under them. */
 export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimuthDeg: number; elevationDeg: number }, opts: { aerial?: boolean } = {}): Promise<ImageryMode> {
   const layers = viewer.imageryLayers;
+  // Under Google's 3D tiles no photo layer is drawn: don't probe for one (it waited up to 10 s and,
+  // if both probes failed, started the painted-terrain workers for a globe nobody sees).
+  if (mode === "photo" && opts.aerial === false) return mode;
   if (mode === "photo" && !(await photoAvailable())) {
     console.warn("photo imagery unreachable; using painted terrain");
     mode = "painted";
@@ -346,7 +349,6 @@ export async function addImagery(viewer: Viewer, mode: ImageryMode, sun: { azimu
   // (ground-detail.ts). ?aerial=s2 for Sentinel-2 with the synthesized detail and the national
   // orthophotos. The Cesium ion token comes from VITE_CESIUM_ION_TOKEN (apps/web/.env.local);
   // without one, Cesium's evaluation token.
-  if (mode === "photo" && opts.aerial === false) return mode;
   if (mode === "photo" && AERIAL !== "s2") {
     await addAerial(viewer, AERIAL);
     if (new URLSearchParams(location.search).get("gdetail") !== "0") addGroundDetail(viewer, new URL(`${import.meta.env.BASE_URL}textures/`, location.href).href);

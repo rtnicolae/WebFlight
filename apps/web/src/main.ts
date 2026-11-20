@@ -14,7 +14,7 @@ import { addRunway, createViewer, followShadows, ThermalLayer, thermalView } fro
 import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
-import { addImagery, highResPhotoAt, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
+import { addImagery, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
 import { distanceM, soaringFrom, sounding, sunPosition, type WaveFieldData } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";

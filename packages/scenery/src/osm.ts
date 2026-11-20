@@ -668,45 +668,8 @@ export interface TreeOptions {
 }
 
 /**
- * Low-poly trees scattered through forest polygons on a jittered grid (stable: positions
- * depend only on the world grid, so neighbouring tiles and reloads agree). Broadleaf crowns
- * are rounded 6-sided blobs, conifers two-tier cones; conifers become commoner with height.
- */
-export function treeMesh(forests: OsmPolygon[], frame: LocalFrame, ground: GroundFn, o: TreeOptions): Mesh {
-  const m = new MeshBuilder();
-  const s = o.spacingM;
-  let placed = 0;
-  for (const poly of forests) {
-    const rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
-    let e0 = Infinity, n0 = Infinity, e1 = -Infinity, n1 = -Infinity;
-    for (const [x, y] of rings[0]!) { e0 = Math.min(e0, x); n0 = Math.min(n0, y); e1 = Math.max(e1, x); n1 = Math.max(n1, y); }
-    if (o.bounds) { e0 = Math.max(e0, o.bounds.e0); n0 = Math.max(n0, o.bounds.n0); e1 = Math.min(e1, o.bounds.e1); n1 = Math.min(n1, o.bounds.n1); }
-    for (let gy = Math.floor(n0 / s); gy * s <= n1; gy++) {
-      for (let gx = Math.floor(e0 / s); gx * s <= e1; gx++) {
-        if (o.max !== undefined && placed >= o.max) return m.build();
-        // Grid cells are anchored in world coordinates so trees don't move between tiles.
-        const [clon, clat] = frame.lonLat(gx * s, gy * s);
-        const r = rng(hash(Math.round(clon * 1e5) / 1e5, Math.round(clat * 1e5) / 1e5));
-        const x = (gx + r()) * s, y = (gy + r()) * s;
-        if (o.bounds && (x < o.bounds.e0 || x >= o.bounds.e1 || y < o.bounds.n0 || y >= o.bounds.n1)) continue;
-        if (!point(rings[0]!, x, y) || rings.slice(1).some((h) => point(h, x, y))) continue;
-        const [lon, lat] = frame.lonLat(x, y);
-        const g = ground(lon, lat);
-        const conifer = r() < 0.25 + Math.max(0, Math.min(0.6, (g - 700) / 800));
-        const H = (conifer ? 16 : 13) + r() * 10;
-        const shade = 0.75 + r() * 0.4;
-        const base = conifer ? [36, 52, 38] : [56, 74, 42];
-        const col = base.map((v) => Math.min(255, v * shade));
-        tree(m, x, y, frame.up(x, y, g - 0.5), H, conifer, col, r() * Math.PI);
-        placed++;
-      }
-    }
-  }
-  return m.build();
-}
-
-/**
- * Tree instances for impostors, with the same world-anchored placement as treeMesh: per tree
+ * Tree instances for impostors, placed on a jittered grid anchored in world coordinates (stable:
+ * neighbouring tiles and reloads agree): per tree
  * 5 floats — east, north, up (local frame) of the base, height [m], and kind + seed packed as
  * kind (0 broadleaf, 1 conifer) + a fraction in [0, 1) for the renderer's variant choice.
  */
@@ -813,29 +776,3 @@ export function townTreeInstances(t: OsmTile, frame: LocalFrame, ground: GroundF
   return new Float32Array(out);
 }
 
-function tree(m: MeshBuilder, x: number, y: number, z: number, H: number, conifer: boolean, col: number[], rot: number) {
-  // Crown profile: [height fraction, radius fraction] from bottom to top; radius = H/3.
-  const R = conifer ? H * 0.24 : H * 0.36;
-  const tiers = conifer ? [[0.12, 0.15], [0.18, 1], [0.55, 0.62], [0.6, 0.72], [1, 0]] : [[0.18, 0.25], [0.35, 0.92], [0.62, 1], [0.86, 0.6], [1, 0]];
-  const N = 6;
-  const ring0 = m.count;
-  const dark = col.map((v) => v * 0.7);
-  for (const [t, [hf, rf]] of tiers.entries()) {
-    for (let k = 0; k < N; k++) {
-      const a = rot + (k / N) * Math.PI * 2 + (t % 2) * (Math.PI / N);
-      const cx = Math.cos(a), cy = Math.sin(a);
-      // Smooth normals: mostly outward, tilted up towards the top.
-      const up = conifer ? 0.45 : (hf! - 0.5) * 1.6;
-      const l = Math.hypot(1, up);
-      m.vertex(x + cx * R * rf!, y + cy * R * rf!, z + H * hf!, cx / l, cy / l, up / l, t === 0 ? dark : col);
-    }
-  }
-  for (let t = 0; t < tiers.length - 1; t++) {
-    for (let k = 0; k < N; k++) {
-      const a = ring0 + t * N + k, b = ring0 + t * N + ((k + 1) % N);
-      const c = ring0 + (t + 1) * N + k, d = ring0 + (t + 1) * N + ((k + 1) % N);
-      m.tri(a, b, d);
-      m.tri(a, d, c);
-    }
-  }
-}

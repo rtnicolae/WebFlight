@@ -17,7 +17,7 @@
  */
 import { FT_PER_M, type Vec3 } from "@webflight/fdm-core";
 import { bodyPointEcef, directionInBody, ecef, geodetic, hitchBodyM, Launch, readAttitude } from "@webflight/launch";
-import { applyBaseAction, ASK21_HITCHES, BASE_ACTION, BASE_OBSERVATION, concatSpec, mainWheelOnGround, observeBase, structureOnGround, uniform, wrapDeg } from "../common.ts";
+import { applyBaseAction, ASK21_HITCHES, BASE_ACTION, BASE_OBSERVATION, concatSpec, mainWheelOnGround, observeBase, structureOnGround, wrapDeg } from "../common.ts";
 import type { BoxSpec, Episode, Evaluation, Task } from "../types.ts";
 
 const FT = 0.3048;

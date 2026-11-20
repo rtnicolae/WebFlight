@@ -428,5 +428,4 @@ export class ThermalLayer {
   }
 }
 
-export const offsetNorthDeg = (m: number) => m / M_PER_DEG_LAT;
 export { Cartesian3 };

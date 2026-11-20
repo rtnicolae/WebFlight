@@ -81,9 +81,3 @@ export function osmShiftIfKnown(x: number, y: number): [number, number] {
   const e = stored[`${x}/${y}`];
   return ENABLED && photoTileUrl && e?.s ? e.s : [0, 0];
 }
-
-/** The same for the zoom-14 tile under a position. */
-export function osmShiftAt(latDeg: number, lonDeg: number): Promise<[number, number]> {
-  const [x, y] = lonLatToTile(lonDeg, latDeg, 14);
-  return osmShift(Math.floor(x), Math.floor(y));
-}

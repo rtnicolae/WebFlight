@@ -453,7 +453,6 @@ export class VolumetricClouds {
   private readonly tex: { towers: unknown; far: unknown; shape?: unknown; detail?: unknown };
   private readonly ambTop: Cartesian3;
   private readonly ambBase: Cartesian3;
-  private ambFromSky = false;
   private ambVersion = -1;
   private readonly light: Cartesian4;
   private readonly form: Cartesian4;
@@ -647,7 +646,6 @@ export class VolumetricClouds {
       const a = this.atmosphere.skyAmbient();
       if (a) {
         this.ambVersion = this.atmosphere.ambientVersion;
-        this.ambFromSky = true;
         // Less blue than the sky itself: the cloud's own scattered light is white.
         const sky = a.top.map((v, i) => 0.55 * v + 0.45 * a.horizon[i]!);
         const lum = 0.2126 * sky[0]! + 0.7152 * sky[1]! + 0.0722 * sky[2]!;

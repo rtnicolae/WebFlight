@@ -32,10 +32,10 @@ export class FdmInterface {
   private readonly hostOut: { ref: PropRef; path: string }[] = [];
 
   constructor(
-    private readonly tree: PropertyTree,
+    tree: PropertyTree,
     private readonly fdm: FdmLike,
-    private readonly gearCount: number,
-    private readonly env: EnvironmentOptions = {},
+    gearCount: number,
+    env: EnvironmentOptions = {},
     hostInputs: readonly string[] = [],
     hostOutputs: readonly string[] = [],
   ) {
