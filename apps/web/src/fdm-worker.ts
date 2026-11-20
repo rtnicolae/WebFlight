@@ -176,7 +176,13 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
   let groundM = 0;
   if (terrain) {
     await terrain.load(s.latDeg, s.lonDeg, 4000);
-    groundM = await terrain.heightAtAsync(s.latDeg, s.lonDeg);
+    try {
+      groundM = await terrain.heightAtAsync(s.latDeg, s.lonDeg);
+    } catch (e) {
+      // No terrain here (offline, server down): the weather model's own ground, not sea level.
+      groundM = env?.config.profile?.elevationM ?? 0;
+      post({ type: "log", line: `warn: ${e instanceof Error ? e.message : e}; starting over the weather model's ground, ${groundM.toFixed(0)} m` });
+    }
   }
   const base = {
     "ic/terrain-elevation-ft": groundM * FT_PER_M,

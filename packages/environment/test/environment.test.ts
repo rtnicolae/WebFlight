@@ -168,6 +168,32 @@ describe("Environment", () => {
   });
 });
 
+describe("TerrariumTerrain when a download fails", () => {
+  // An airfield 530 m up; the first request for its tile fails (server hiccup), later ones work.
+  const flaky = () => {
+    let calls = 0;
+    return { calls: () => calls, fetchTile: async () => (calls++ === 0 ? Promise.reject(new Error("HTTP 503")) : terrariumPng(() => 530)) };
+  };
+  it("tries the tile again and finds the ground, not sea level", async () => {
+    const f = flaky();
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: f.fetchTile, retryMs: 5 });
+    expect(await t.heightAtAsync(45.7, 25.53)).toBeCloseTo(530, 3);
+    expect(f.calls()).toBe(2);
+  });
+  it("lets heightAt try a failed tile again later", async () => {
+    const f = flaky();
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: f.fetchTile });
+    await t.load(45.7, 25.53, 50);
+    expect(t.heightAt(45.7, 25.53)).toBeUndefined();
+    await t.load(45.7, 25.53, 50, 10, true);
+    expect(t.heightAt(45.7, 25.53)).toBeCloseTo(530, 3);
+  });
+  it("rejects when the ground can't be had", async () => {
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: () => Promise.reject(new Error("offline")), retryMs: 1 });
+    await expect(t.heightAtAsync(45.7, 25.53)).rejects.toThrow(/terrain unavailable/);
+  });
+});
+
 describe("TerrariumTerrain.heightmap", () => {
   it("samples a north-first grid at the matching zoom, equal to heightAt at full zoom", async () => {
     const zooms = new Set<number>();

@@ -19,6 +19,8 @@ export interface TerrainOptions {
   fetchTile?: (z: number, x: number, y: number) => Promise<Uint8Array>;
   /** Keep at most this many decoded tiles. */
   maxTiles?: number;
+  /** heightAtAsync's first wait before trying a failed tile again [ms] (doubles each time). */
+  retryMs?: number;
 }
 
 const tileKey = (z: number, x: number, y: number) => `${z}/${x}/${y}`;
@@ -57,7 +59,9 @@ export class TerrariumTerrain {
   /** Decoded heights per tile (256×256 Float32). */
   private readonly tiles = new Map<string, Float32Array>();
   private readonly pending = new Map<string, Promise<Float32Array | undefined>>();
-  private readonly failed = new Set<string>();
+  /** Tiles whose download failed: when, and how many times in a row (tried again later). */
+  private readonly failed = new Map<string, { at: number; n: number }>();
+  private readonly retryMs: number;
   /**
    * When frozen, heightAt() uses only tiles already loaded and never starts loads: results
    * then can't depend on when a download finishes (deterministic training episodes).
@@ -68,13 +72,19 @@ export class TerrariumTerrain {
     this.zoom = opts.zoom ?? 13;
     this.fetchTile = opts.fetchTile ?? ((z, x, y) => fetchTerrariumTile(z, x, y));
     this.maxTiles = opts.maxTiles ?? 256;
+    this.retryMs = opts.retryMs ?? 500;
   }
 
-  private loadTile(z: number, x: number, y: number): Promise<Float32Array | undefined> {
+  /**
+   * A failed tile is tried again after 2 s, doubling up to a minute (it stayed failed for good,
+   * and a start over it was put at sea level); `now` tries it again at once.
+   */
+  private loadTile(z: number, x: number, y: number, now = false): Promise<Float32Array | undefined> {
     const key = tileKey(z, x, y);
     const have = this.tiles.get(key);
     if (have) return Promise.resolve(have);
-    if (this.failed.has(key)) return Promise.resolve(undefined);
+    const f = this.failed.get(key);
+    if (f && !now && Date.now() - f.at < Math.min(60_000, 2000 * 2 ** (f.n - 1))) return Promise.resolve(undefined);
     let p = this.pending.get(key);
     if (!p) {
       p = this.fetchTile(z, x, y)
@@ -84,10 +94,11 @@ export class TerrariumTerrain {
           for (let i = 0, j = 0; i < h.length; i++, j += img.channels) h[i] = img.pixels[j]! * 256 + img.pixels[j + 1]! + img.pixels[j + 2]! / 256 - 32768;
           if (this.tiles.size >= this.maxTiles) this.tiles.delete(this.tiles.keys().next().value!);
           this.tiles.set(key, h);
+          this.failed.delete(key);
           return h;
         })
         .catch(() => {
-          this.failed.add(key);
+          this.failed.set(key, { at: Date.now(), n: (this.failed.get(key)?.n ?? 0) + 1 });
           return undefined;
         })
         .finally(() => this.pending.delete(key));
@@ -131,12 +142,12 @@ export class TerrariumTerrain {
     return this.tiles.size;
   }
 
-  async load(latDeg: number, lonDeg: number, radiusM = 3000, zoom = this.zoom): Promise<void> {
+  async load(latDeg: number, lonDeg: number, radiusM = 3000, zoom = this.zoom, now = false): Promise<void> {
     const dLat = radiusM / 111_132, dLon = radiusM / (111_320 * Math.cos((latDeg * Math.PI) / 180));
     const [x0, y0] = lonLatToTile(lonDeg - dLon, latDeg + dLat, zoom);
     const [x1, y1] = lonLatToTile(lonDeg + dLon, latDeg - dLat, zoom);
     const jobs: Promise<unknown>[] = [];
-    for (let x = Math.floor(x0); x <= Math.floor(x1); x++) for (let y = Math.floor(y0); y <= Math.floor(y1); y++) jobs.push(this.loadTile(zoom, x, y));
+    for (let x = Math.floor(x0); x <= Math.floor(x1); x++) for (let y = Math.floor(y0); y <= Math.floor(y1); y++) jobs.push(this.loadTile(zoom, x, y, now));
     await Promise.all(jobs);
   }
 
@@ -274,9 +285,18 @@ export class TerrariumTerrain {
     return out;
   }
 
-  /** Height after loading what it needs. */
+  /**
+   * Height after loading what it needs, trying failed tiles again three times (waits of
+   * retryMs, doubling). Rejects if the ground still can't be had: it returned 0, and a launch at
+   * an airfield 500 m up started at sea level.
+   */
   async heightAtAsync(latDeg: number, lonDeg: number, zoom = this.zoom): Promise<number> {
-    await this.load(latDeg, lonDeg, 50, zoom);
-    return this.heightAt(latDeg, lonDeg, zoom) ?? 0;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await new Promise<void>((r) => setTimeout(r, this.retryMs * 2 ** (attempt - 1)));
+      await this.load(latDeg, lonDeg, 50, zoom, attempt > 0);
+      const h = this.heightAt(latDeg, lonDeg, zoom);
+      if (h !== undefined) return h;
+    }
+    throw new Error(`terrain unavailable at ${latDeg.toFixed(4)}, ${lonDeg.toFixed(4)} (zoom ${zoom} tiles failed to load)`);
   }
 }
