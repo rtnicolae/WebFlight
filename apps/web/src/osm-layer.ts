@@ -320,6 +320,11 @@ void main() {
     if (fy < 0.9 && v > 1.0) { base = mix(g, v_color.rgb * 0.55, 0.7); spec *= 0.3; }
     if (min(pm.x, pm.y) < 0.05 * mix(1.0, 3.0, smoothstep(150.0, 600.0, d))) { base = vec3(0.55, 0.57, 0.6); spec = 0.0; }
   }
+  // The colours above are display values (palettes, photo, textures); with HDR the scene is
+  // linear light, and our own shaders must say so (hdr.ts): converted here (no-op in LDR).
+  // Unconverted, the final gamma lifted them pale: terracotta (150, 86, 66) came out a washed
+  // salmon (209, 163, 146) beside Google's roofs.
+  base = czm_gammaCorrect(base);
   float sun = max(dot(n, czm_lightDirectionEC), 0.0);
   // Sky light plus sun, scaled so a roof in full sun comes to ~1.1x its colour (it was ~1.4x:
   // mid-brown tiles rendered bright salmon, brighter and more saturated than the roofs in the
