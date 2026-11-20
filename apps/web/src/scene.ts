@@ -334,18 +334,20 @@ function cloudsOver(t: ThermalView): CloudSpec[] {
 
 /** Within this distance of the camera clouds are ray-marched volumes; beyond, sprites. */
 const VOLUME_M = VOLUME_RANGE_M;
+/** Where sprite puffs have faded out (clouds.ts: translucencyByDistance). */
+const SPRITE_FADE_M = 70_000;
 
 /**
  * A cumulus over each thermal: flat base at the thermal's cloud base, growing while the thermal
  * forms and fading as it dies, so clouds mark the lift as real ones do. Near ones (within
- * 45 km of the camera) are ray-marched volumes (vclouds.ts), farther ones sprite puffs
- * (clouds.ts): out there, in the haze, the two look alike, and sprites cost next to nothing.
- * The flight model's thermals reach ~20 km round the glider; setFar adds the same sky model's
- * thermals farther out (visual only), so the sky is full to the horizon. quality=low or
- * ?clouds=sprites: sprites throughout. With `columns`, the lift columns are drawn too.
+ * 45 km of the camera) are ray-marched volumes (vclouds.ts), farther ones, to 160 km, the
+ * volumes' far map. The flight model's thermals reach ~20 km round the glider; setFar adds the
+ * same sky model's thermals farther out (visual only), so the sky is full to the horizon.
+ * quality=low or ?clouds=sprites: sprite puffs (clouds.ts) instead, out to where they fade (70 km;
+ * a fifth of the puffs beyond 45 km). With `columns`, the lift columns are drawn too.
  */
 export class ThermalLayer {
-  private readonly sprites: CloudLayer;
+  private readonly sprites?: CloudLayer;
   private readonly volumes?: VolumetricClouds;
   private readonly columns = new Map<string, Entity>();
   private near: ThermalView[] = [];
@@ -362,10 +364,13 @@ export class ThermalLayer {
     /** Our sky (atmosphere.ts): the volumes take its light and haze. */
     atmosphere?: Atmosphere,
   ) {
-    const az = (sun.azimuthDeg * Math.PI) / 180, el = (Math.max(5, sun.elevationDeg) * Math.PI) / 180;
-    this.sprites = new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) });
     const q = new URLSearchParams(location.search);
+    // One renderer: the sprites' sheet, billboards and per-frame sort only when they draw.
     if (q.get("clouds") !== "sprites" && !(q.get("quality") === "low" && q.get("clouds") !== "volume")) this.volumes = new VolumetricClouds(viewer, atmosphere);
+    else {
+      const az = (sun.azimuthDeg * Math.PI) / 180, el = (Math.max(5, sun.elevationDeg) * Math.PI) / 180;
+      this.sprites = new CloudLayer(viewer.scene, { e: Math.sin(az) * Math.cos(el), n: Math.cos(az) * Math.cos(el), u: Math.sin(el) });
+    }
   }
 
   /** The flight model's thermals (near the glider). */
@@ -402,18 +407,23 @@ export class ThermalLayer {
     const ids = new Set(this.near.map((t) => t.id));
     const all = this.cumulus ? [...this.near, ...this.far.filter((t) => !ids.has(t.id))] : [];
     const specs: CloudSpec[] = all.flatMap(cloudsOver);
+    const cam = this.viewer.camera.positionWC, p = new Cartesian3();
+    const near: CloudSpec[] = [], far: CloudSpec[] = [];
+    for (const c of specs) {
+      const d = Cartesian3.distance(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, p), cam);
+      if (d <= VOLUME_M) near.push(c);
+      // Out there a cloud is a few pixels in the haze: a fifth of the puffs.
+      else if (this.volumes || d <= SPRITE_FADE_M + c.radiusM * 2) far.push({ ...c, lod: 0.2 });
+    }
     if (this.volumes) {
-      const cam = this.viewer.camera.positionWC, p = new Cartesian3();
-      const near: CloudSpec[] = [], far: CloudSpec[] = [];
-      for (const c of specs) {
-        if (Cartesian3.distance(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, p), cam) <= VOLUME_M) near.push(c);
-        // Out there a cloud is a few pixels in the haze: a fifth of the puffs.
-        else far.push({ ...c, lod: 0.2 });
-      }
       this.volumes.set(near);
       // Beyond, the volumes' far map: sprites under the atmosphere's sky are painted over by it.
       this.volumes.setFar(far);
-    } else this.sprites.set(specs);
+    } else {
+      // Sprites only as far as they show (they fade out by 70 km): the whole far field (to 160 km)
+      // was ~575k puffs beyond it on a flat summer test.
+      this.sprites?.set([...near, ...far]);
+    }
     this.shadows?.(specs);
   }
 }
