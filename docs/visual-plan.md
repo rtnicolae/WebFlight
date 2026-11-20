@@ -35,7 +35,7 @@ Still open from phase 1: 4× MSAA, which costs 5–10%.
 
 **Phase 2, same day:** one atmosphere (da8f28a, 639d459).
 - **The model:** Hillaire's sky and aerial perspective, with lookup tables computed on the GPU. It replaces Cesium's sky, sun and fog.
-- **The boundary layer:** its haze is set by humidity (about 60 km visibility on 10 July 2024) and by the depth of the layer. Since 20 Nov 2026 by the forecast's visibility where it has one (Open-Meteo; over Europe ICON's: ~43 km on 28 Sep 2026, where humidity gave 85 km); reanalysis days keep the humidity figure.
+- **The boundary layer:** its haze is set by humidity (about 60 km visibility on 10 July 2024) and by the depth of the layer. Since 20 Nov 2026 the forecast's visibility (Open-Meteo; over Europe ICON's) sets it where the air is murky (under 35 km: moist air, cloud, rain, fog); in clear air ICON's figure is a fixed curve of humidity (the same from Brașov to Berlin), so it is only a lower bound and humidity still sets the haze.
 - **The sun:** a disc that blooms.
 - **Dusk:** the sky brightens as the eye adapts.
 - **A bug fixed on the way:** Cesium's perspective depth has no precision left at our near and far planes. The atmosphere and the clouds now decode the logarithmic depth directly.
