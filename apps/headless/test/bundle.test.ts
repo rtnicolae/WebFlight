@@ -13,7 +13,9 @@ describe("ASK21 web bundle", () => {
     const dir = await ensureAircraft(ASK21);
     out = await fs.mkdtemp(path.join(os.tmpdir(), "bundle-"));
     manifest = buildBundle(dir, ASK21.setFile, out);
-  }, 300_000);
+  // Builds the glider bundle (4K livery, baked occlusion): ~90 s alone, past 5 min while the
+  // rest of the suite runs alongside on a busy machine.
+  }, 900_000);
 
   it("has the control-surface animations, defaults and input profile", () => {
     const surf = manifest.model.animations.filter((a) => (a.type === "rotate" || a.type === "translate") && a.value.property?.startsWith("/surface-positions/"));

@@ -23,12 +23,14 @@ const out = path.resolve(values.out ?? path.join(repoRoot(), "apps/web/bundles")
 const t0 = performance.now();
 // Convert, fetch any shared FGData files the aircraft references, repeat until stable.
 const fgdataDir = defaultFgdataDir();
-let m = buildBundle(dir, setFile, out, { fgdataDir });
+// The rounds skip the slow exterior look step (glider-look.ts); the last build has it.
+let m = buildBundle(dir, setFile, out, { fgdataDir, plainLook: true });
 for (let round = 0; round < 8 && m.missingShared.length > 0; round++) {
   const { fetched } = await fetchFgdataFiles(m.missingShared, fgdataDir, console.log);
   if (fetched.length === 0) break;
-  m = buildBundle(dir, setFile, out, { fgdataDir });
+  m = buildBundle(dir, setFile, out, { fgdataDir, plainLook: true });
 }
+m = buildBundle(dir, setFile, out, { fgdataDir });
 console.log(`${m.aircraft}/${m.setFile} → ${path.relative(repoRoot(), path.join(out, m.aircraft))} in ${(performance.now() - t0).toFixed(0)} ms`);
 console.log(`  FDM ${m.fdm.model}: ${m.fdm.files.length} files; host properties ${Object.keys(m.fdm.hostProperties).length}`);
 console.log(`  model: ${m.stats.models} model files, ${m.stats.objects} objects, ${m.stats.triangles} triangles, ${(m.stats.glbBytes / 1e6).toFixed(2)} MB glb`);

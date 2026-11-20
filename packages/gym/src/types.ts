@@ -1,4 +1,4 @@
-import type { Environment, TerrariumTerrain } from "@webflight/environment";
+import type { Environment, TerrariumTerrain, WeatherClock } from "@webflight/environment";
 import type { Fdm, FgControls } from "@webflight/fdm-core";
 import type { Launch } from "@webflight/launch";
 import type { RunwayFrame } from "./common.ts";
@@ -37,6 +37,8 @@ export interface Episode {
   /** Write ep.controls to JSBSim now (FG → JSBSim mapping). */
   applyControls(): void;
   launch: Launch | undefined;
+  /** Weather over time: the site's hours with the episode's clock (when the site has them). */
+  readonly weather?: WeatherClock;
   /** Episode RNG (seeded by reset). */
   readonly rand: () => number;
   /** Seconds since reset, and decision steps taken. */

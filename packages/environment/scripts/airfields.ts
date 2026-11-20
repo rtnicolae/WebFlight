@@ -40,6 +40,22 @@ export function surfaceClass(s: string): "paved" | "grass" | "other" {
   return "other";
 }
 
+/**
+ * The material, for drawing the runway: asphalt or concrete (the earlier named wins: "ASPH/
+ * CONC" is asphalt), grass, gravel, dirt, water; "o" when unknown. One letter each.
+ */
+export function surfaceMaterial(s: string): "a" | "c" | "g" | "v" | "d" | "w" | "o" {
+  const t = s.toUpperCase();
+  const at = (re: RegExp) => { const m = re.exec(t); return m ? m.index : Infinity; };
+  const asp = at(/ASP|BIT|TAR|PEM|MAC|PAVED|^PAV/), con = at(/CON|CEM|PCC/);
+  if (asp < Infinity || con < Infinity) return asp <= con ? "a" : "c";
+  if (/WAT/.test(t)) return "w";
+  if (/GRS|GRASS|GRE|TURF|SOD|^G$|^G-/.test(t)) return "g";
+  if (/GVL|GRAV|GRVL|GRV|PI\u00c7ARRA|CORAL|SHALE/.test(t)) return "v";
+  if (/DIRT|EARTH|SOIL|CLAY|SAND|LATERITE|^S$/.test(t)) return "d";
+  return "o";
+}
+
 const num = (s: string) => (s === "" ? null : Number(s));
 const round = (x: number | null, d: number) => (x === null ? null : Math.round(x * 10 ** d) / 10 ** d);
 
@@ -66,6 +82,7 @@ async function main() {
       round(num(r["le_longitude_deg"]!), 6),
       round(num(r["he_latitude_deg"]!), 6),
       round(num(r["he_longitude_deg"]!), 6),
+      surfaceMaterial(r["surface"]!),
     ]);
     if (!runways.length) continue;
     out.push([a["ident"], a["name"], round(Number(a["latitude_deg"]), 6), round(Number(a["longitude_deg"]), 6), round((num(a["elevation_ft"]!) ?? 0) * FT, 0), kinds[a["type"]!], a["municipality"], a["iso_country"], runways]);

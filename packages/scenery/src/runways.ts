@@ -33,24 +33,31 @@ export function runwayPiecesFromTile(data: Uint8Array, z: number, x: number, y: 
   return out;
 }
 
-/** Merge pieces lying on one line (direction within 3°, offset under 15 m) per ref. */
+/**
+ * Merge pieces lying on one line (direction within 3°, offset under 15 m) per ref. A group's
+ * line is its longest piece so far: a short first piece (tens of metres, its direction off by
+ * a degree from the tiles' coordinate grid) put the far end of a 3.5 km runway more than 15 m
+ * off its own line, and the runway came out in two halves.
+ */
 export function mergeRunwayPieces(pieces: RunwayLine[]): RunwayLine[] {
   const kx = (lat: number) => 111_320 * Math.cos((lat * Math.PI) / 180);
-  const groups: { ref?: string; o: [number, number]; ux: number; uy: number; pts: [number, number][] }[] = [];
+  const groups: { ref?: string; o: [number, number]; ux: number; uy: number; len: number; pts: [number, number][] }[] = [];
   for (const p of pieces) {
     const lat0 = p.a[0];
     const dx = (p.b[1] - p.a[1]) * kx(lat0), dy = (p.b[0] - p.a[0]) * 111_132;
     const l = Math.hypot(dx, dy);
     if (l < 1) continue;
     const ux = dx / l, uy = dy / l;
-    const g = groups.find((g) => {
-      if (g.ref !== p.ref) return false;
-      if (Math.abs(g.ux * uy - g.uy * ux) > Math.sin((3 * Math.PI) / 180)) return false;
-      const ex = (p.a[1] - g.o[1]) * kx(lat0), ey = (p.a[0] - g.o[0]) * 111_132;
-      return Math.abs(ex * g.uy - ey * g.ux) < 15;
-    });
-    if (g) g.pts.push(p.a, p.b);
-    else groups.push({ ...(p.ref !== undefined ? { ref: p.ref } : {}), o: p.a, ux, uy, pts: [p.a, p.b] });
+    // Off the group's line by under 15 m at one end, and the other within the 3° allowed.
+    const off = (g: (typeof groups)[number], q: [number, number]) => {
+      const ex = (q[1] - g.o[1]) * kx(lat0), ey = (q[0] - g.o[0]) * 111_132;
+      return Math.abs(ex * g.uy - ey * g.ux);
+    };
+    const g = groups.find((g) => g.ref === p.ref && Math.abs(g.ux * uy - g.uy * ux) <= Math.sin((3 * Math.PI) / 180) && Math.min(off(g, p.a), off(g, p.b)) < 15 && Math.max(off(g, p.a), off(g, p.b)) < 15 + 0.053 * l);
+    if (g) {
+      g.pts.push(p.a, p.b);
+      if (l > g.len) Object.assign(g, { o: p.a, ux, uy, len: l });
+    } else groups.push({ ...(p.ref !== undefined ? { ref: p.ref } : {}), o: p.a, ux, uy, len: l, pts: [p.a, p.b] });
   }
   return groups.map((g) => {
     const k = kx(g.o[0]);

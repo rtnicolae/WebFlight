@@ -22,7 +22,7 @@ export interface HudData {
   view: string;
   paused: boolean;
   /** Air at the aircraft (from the worker, ~1 Hz). */
-  air?: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number };
+  air?: { windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number; waveLiftMs?: number };
   site?: string;
   /** Launch status line. */
   launch?: string;
@@ -149,42 +149,67 @@ export class Hud {
     this.help.hidden = !this.help.hidden;
   }
 
+  private readout = 0;
+
   update(d: HudData, dt: number): void {
     this.varioSmooth += (d.varioMs - this.varioSmooth) * Math.min(1, dt / 0.6);
+    const c = d.controls;
+    style(this.stickDot, "left", `${(50 + c.aileron * 42).toFixed(1)}%`);
+    style(this.stickDot, "top", `${(50 + c.elevator * 42).toFixed(1)}%`);
+    style(this.rudderDot, "left", `${(50 + c.rudder * 45).toFixed(1)}%`);
+    style(this.brakeFill, "width", `${(c.airbrake * 100).toFixed(1)}%`);
+    style(this.trimMark, "left", `${(50 - c.elevatorTrim * 50).toFixed(1)}%`);
+    this.paused.hidden = !d.paused;
+    // The numbers at 15 Hz (as instruments update; and every write here forced a page layout
+    // in Cesium's per-frame canvas-size check). Each write happens only when the value changed.
+    this.readout += dt;
+    if (this.readout < 1 / 15) return;
+    this.readout = 0;
     const v = this.varioSmooth;
-    this.ias.textContent = d.iasKmh.toFixed(0);
-    this.alt.textContent = d.altM.toFixed(0);
-    this.vario.textContent = signed(v);
+    text(this.ias, d.iasKmh.toFixed(0));
+    text(this.alt, d.altM.toFixed(0));
+    text(this.vario, signed(v));
     const sign = v >= 0.05 ? "up" : v <= -0.05 ? "down" : "zero";
-    this.vario.dataset["sign"] = sign;
+    if (this.vario.dataset["sign"] !== sign) this.vario.dataset["sign"] = sign;
     const frac = Math.max(-1, Math.min(1, v / 5));
-    this.varioFill.style.width = `${Math.abs(frac) * 50}%`;
-    this.varioFill.style.left = frac >= 0 ? "50%" : `${50 + frac * 50}%`;
-    this.varioFill.dataset["sign"] = sign;
-    this.agl.textContent = `AGL ${d.aglM.toFixed(0)} m`;
-    this.te.textContent = `TE ${signed(d.teVarioMs)}`;
-    this.ld.textContent = Number.isFinite(d.glideRatio) && d.glideRatio > 0 && d.glideRatio < 200 ? `L/D ${d.glideRatio.toFixed(0)}` : "L/D –";
+    style(this.varioFill, "width", `${(Math.abs(frac) * 50).toFixed(1)}%`);
+    style(this.varioFill, "left", frac >= 0 ? "50%" : `${(50 + frac * 50).toFixed(1)}%`);
+    if (this.varioFill.dataset["sign"] !== sign) this.varioFill.dataset["sign"] = sign;
+    text(this.agl, `AGL ${d.aglM.toFixed(0)} m`);
+    text(this.te, `TE ${signed(d.teVarioMs)}`);
+    text(this.ld, Number.isFinite(d.glideRatio) && d.glideRatio > 0 && d.glideRatio < 200 ? `L/D ${d.glideRatio.toFixed(0)}` : "L/D –");
 
-    if (d.site) this.site.textContent = d.site;
+    if (d.site) text(this.site, d.site);
     if (d.air) {
       const a = d.air;
       // Arrow points where the wind blows to, relative to the nose (up = straight ahead).
       const rel = a.windFromDeg + 180 - (d.headingDeg ?? 0);
-      this.windArrow.style.transform = `rotate(${rel}deg)`;
-      this.windArrow.style.opacity = a.windKt > 0.5 ? "1" : "0.25";
-      this.windText.innerHTML = a.windKt > 0.5 ? `<b>${a.windKt.toFixed(0)}</b> kt <span>from ${a.windFromDeg.toFixed(0).padStart(3, "0")}°</span>` : "<b>Calm</b>";
-      this.lift.innerHTML = `<span data-sign="${a.thermalLiftMs > 0.2 ? "up" : "zero"}">Thermal ${signed(a.thermalLiftMs)}</span><span data-sign="${a.ridgeLiftMs > 0.2 ? "up" : a.ridgeLiftMs < -0.2 ? "down" : "zero"}">Ridge ${signed(a.ridgeLiftMs)}</span>`;
+      style(this.windArrow, "transform", `rotate(${rel.toFixed(0)}deg)`);
+      style(this.windArrow, "opacity", a.windKt > 0.5 ? "1" : "0.25");
+      html(this.windText, a.windKt > 0.5 ? `<b>${a.windKt.toFixed(0)}</b> kt <span>from ${a.windFromDeg.toFixed(0).padStart(3, "0")}°</span>` : "<b>Calm</b>");
+      const sign = (v: number) => (v > 0.2 ? "up" : v < -0.2 ? "down" : "zero");
+      html(this.lift, `<span data-sign="${a.thermalLiftMs > 0.2 ? "up" : "zero"}">Thermal ${signed(a.thermalLiftMs)}</span><span data-sign="${sign(a.ridgeLiftMs)}">Ridge ${signed(a.ridgeLiftMs)}</span>${a.waveLiftMs !== undefined ? `<span data-sign="${sign(a.waveLiftMs)}">Wave ${signed(a.waveLiftMs)}</span>` : ""}`);
     }
-    this.launch.textContent = d.launch ?? "";
-    this.launch.hidden = !d.launch;
-
-    const c = d.controls;
-    this.stickDot.style.left = `${50 + c.aileron * 42}%`;
-    this.stickDot.style.top = `${50 + c.elevator * 42}%`;
-    this.rudderDot.style.left = `${50 + c.rudder * 45}%`;
-    this.brakeFill.style.width = `${c.airbrake * 100}%`;
-    this.trimMark.style.left = `${50 - c.elevatorTrim * 50}%`;
-    this.status.textContent = `${d.fps.toFixed(0)} fps · FDM ${d.stepsPerSecond.toFixed(0)} Hz · ${d.view} · ${d.input}`;
-    this.paused.hidden = !d.paused;
+    text(this.launch, d.launch ?? "");
+    if (this.launch.hidden !== !d.launch) this.launch.hidden = !d.launch;
+    text(this.status, `${d.fps.toFixed(0)} fps · FDM ${d.stepsPerSecond.toFixed(0)} Hz · ${d.view} · ${d.input}`);
   }
+}
+
+/** DOM writes only when the value changed (each write invalidates the page's layout). */
+const last = new WeakMap<HTMLElement, Record<string, string>>();
+function changed(e: HTMLElement, k: string, v: string): boolean {
+  const m = last.get(e) ?? (last.set(e, {}), last.get(e)!);
+  if (m[k] === v) return false;
+  m[k] = v;
+  return true;
+}
+function text(e: HTMLElement, v: string): void {
+  if (changed(e, "#text", v)) e.textContent = v;
+}
+function html(e: HTMLElement, v: string): void {
+  if (changed(e, "#html", v)) e.innerHTML = v;
+}
+function style(e: HTMLElement, prop: "left" | "top" | "width" | "transform" | "opacity", v: string): void {
+  if (changed(e, prop, v)) e.style[prop] = v;
 }

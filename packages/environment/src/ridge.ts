@@ -25,6 +25,8 @@ export class RidgeLift {
   /** Current ridge lift [ft/s] (FG: /environment/ridge-lift-fps). */
   strengthFps = 0;
   liftFactor = 0;
+  /** FG's height factor of the last update: 1 near the slope, falling off above it. */
+  heightFactor = 0;
   readonly probeElevM = [0, 0, 0, 0, 0];
   readonly slope = [0, 0, 0, 0];
   private timer = 0;
@@ -62,6 +64,7 @@ export class RidgeLift {
     if (s.aglM < BOUNDARY1_M) aglFactor = 0.5 + (0.5 * s.aglM) / BOUNDARY1_M;
     else if (s.aglM < boundary2) aglFactor = 1;
     else aglFactor = Math.exp((-(2 + p[0]! / 2000) * (s.aglM - boundary2)) / Math.max(p[0]!, 200));
+    this.heightFactor = aglFactor;
     const liftMps = this.liftFactor * s.windKt * KT_TO_MPS * aglFactor;
     this.strengthFps = lowPass(this.strengthFps, liftMps * M_TO_FT, dt);
     return this.strengthFps;

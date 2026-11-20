@@ -1,40 +1,47 @@
 /// <reference lib="webworker" />
 /**
- * 3D grass for one cell of the ground near the camera (MSFS-style close-range grass):
- * tufts of three tapered blades where the ground is grass — green in the satellite image
- * and not a road, runway, building, water or forest in OpenStreetMap; short mown grass
- * inside aerodromes. Positions in a local east-north-up frame at the cell centre, on the
- * renderer's terrain. Colours come from the satellite pixel under each tuft, so the 3D grass
- * matches the textured ground it stands on. Visual only.
+ * The grass field's maps for a square of ground round a centre (grass-field.ts draws the
+ * blades from them on the GPU):
+ *  - where grass grows and its colour (RGBA): ground with green in it in Sentinel-2 (10 m, CC BY;
+ *    not Google's imagery: its terms rule out analysing it), denser where that green is
+ *    saturated, and not a road, runway, building, water or forest in OpenStreetMap; the colour from
+ *    Sentinel-2, brought towards a lush grass tone (its 10 m pixels average in soil and shade);
+ *  - which of it is mown (R): inside aerodromes and along grass runways and taxiways; how lush
+ *    it is (G) from Sentinel-2's saturation: washed-out green is degraded grass;
+ *  - the ground's height (Terrarium, as the renderer and the flight model use) every 2 m.
+ * Maps are rasterised with OffscreenCanvas (roads stroked at their width, areas filled): fast
+ * and antialiased. Visual only.
  */
 import { TerrariumTerrain, lonLatToTile } from "@webflight/environment";
-import { decodeMvt, LocalFrame, rng, type MvtLayer } from "@webflight/scenery";
+import { decodeMvt, LocalFrame, type MvtLayer } from "@webflight/scenery";
 
 declare const self: DedicatedWorkerGlobalScope;
 
-export interface GrassRequest {
+export interface FieldRequest {
   id: number;
-  /** Cell centre and size [m]. */
+  /** Centre and size of the square [deg, m]; res: map texels across. */
   lat: number;
   lon: number;
-  cellM: number;
-  /** Tufts per m² on full grass. */
-  density: number;
+  sizeM: number;
+  res: number;
+  /** Height samples across (spacing sizeM / (heightRes − 1)). */
+  heightRes: number;
   osmUrl: string;
   s2Url: string;
-  seed: number;
+  /** East, north [m] to move OpenStreetMap's roads, buildings etc. by, onto the photo (photo-align.ts). */
+  osmShift?: [number, number];
 }
 
-export interface GrassResult {
+export interface FieldResult {
   id: number;
-  origin: [number, number, number];
-  positions: Float32Array;
-  /** 0 at a blade's base, 1 at its tip (wind sway, fade). */
-  sway: Float32Array;
-  /** Per vertex: its tuft's root (local frame), so a tuft fades as one. */
-  roots: Float32Array;
-  colors: Uint8Array;
-  count: number;
+  /** Ground height at the centre [m] (the local frame's origin). */
+  originM: number;
+  /** res² RGBA, rows south to north: colour, A coverage. */
+  mask: Uint8Array;
+  /** res² RGBA: R mown (0–255). */
+  params: Uint8Array;
+  /** heightRes² ground heights above the origin [m], rows south to north. */
+  heights: Float32Array;
 }
 
 const terrain = new TerrariumTerrain({ zoom: 13, maxTiles: 64 });
@@ -42,170 +49,195 @@ const osmCache = new Map<string, Promise<MvtLayer[]>>();
 const s2Cache = new Map<string, Promise<Uint8ClampedArray>>();
 const fill = (u: string, z: number, x: number, y: number) => u.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
 
-function osm(url: string, x: number, y: number): Promise<MvtLayer[]> {
-  const k = `${x}/${y}`;
-  let p = osmCache.get(k);
+function cached<T>(m: Map<string, Promise<T>>, k: string, make: () => Promise<T>, max = 16): Promise<T> {
+  let p = m.get(k);
   if (!p) {
-    p = fetch(fill(url, 14, x, y)).then(async (r) => {
-      if (!r.ok) throw new Error(`osm ${r.status}`);
-      return decodeMvt(new Uint8Array(await r.arrayBuffer()));
-    });
-    p.catch(() => osmCache.delete(k));
-    osmCache.set(k, p);
-    if (osmCache.size > 16) osmCache.delete(osmCache.keys().next().value!);
+    p = make();
+    p.catch(() => m.delete(k));
+    m.set(k, p);
+    if (m.size > max) m.delete(m.keys().next().value!);
   }
   return p;
 }
-function s2(url: string, x: number, y: number): Promise<Uint8ClampedArray> {
-  const k = `${x}/${y}`;
-  let p = s2Cache.get(k);
-  if (!p) {
-    p = fetch(fill(url, 14, x, y)).then(async (r) => {
-      if (!r.ok) throw new Error(`s2 ${r.status}`);
-      const b = await createImageBitmap(await r.blob());
-      const c = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
-      c.drawImage(b, 0, 0);
-      return c.getImageData(0, 0, 256, 256).data;
-    });
-    p.catch(() => s2Cache.delete(k));
-    s2Cache.set(k, p);
-    if (s2Cache.size > 16) s2Cache.delete(s2Cache.keys().next().value!);
-  }
-  return p;
-}
+const osm = (url: string, x: number, y: number) =>
+  cached(osmCache, `${x}/${y}`, async () => {
+    const r = await fetch(fill(url, 14, x, y));
+    if (!r.ok) throw new Error(`osm ${r.status}`);
+    return decodeMvt(new Uint8Array(await r.arrayBuffer()));
+  });
+const s2 = (url: string, x: number, y: number) =>
+  cached(s2Cache, `${x}/${y}`, async () => {
+    const r = await fetch(fill(url, 14, x, y));
+    if (!r.ok) throw new Error(`s2 ${r.status}`);
+    const b = await createImageBitmap(await r.blob());
+    const c = new OffscreenCanvas(256, 256).getContext("2d", { willReadFrequently: true })!;
+    c.drawImage(b, 0, 0);
+    return c.getImageData(0, 0, 256, 256).data;
+  });
 
 const ROAD_W: Record<string, number> = { motorway: 22, trunk: 16, primary: 12, secondary: 9, tertiary: 7.5, minor: 5.5, service: 3.5, track: 3, path: 1.3, rail: 4, transit: 4 };
 
-const segDist = (px: number, py: number, ax: number, ay: number, bx: number, by: number) => {
-  const dx = bx - ax, dy = by - ay, l = dx * dx + dy * dy;
-  const t = l ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l)) : 0;
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
-};
-const inside = (ring: [number, number][], x: number, y: number) => {
-  let c = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i]!, [xj, yj] = ring[j]!;
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
-  }
-  return c;
-};
-
-self.onmessage = async (ev: MessageEvent<GrassRequest>) => {
+self.onmessage = async (ev: MessageEvent<FieldRequest>) => {
   try {
     const out = await build(ev.data);
-    self.postMessage(out, [out.positions.buffer, out.sway.buffer, out.roots.buffer, out.colors.buffer]);
+    self.postMessage(out, [out.mask.buffer, out.params.buffer, out.heights.buffer]);
   } catch (e) {
     self.postMessage({ id: ev.data.id, error: String(e) });
   }
 };
 
-async function build(q: GrassRequest): Promise<GrassResult> {
-  const [fx, fy] = lonLatToTile(q.lon, q.lat, 14);
-  const tx = Math.floor(fx), ty = Math.floor(fy);
-  await terrain.load(q.lat, q.lon, q.cellM + 100);
-  const [layers, sat] = await Promise.all([osm(q.osmUrl, tx, ty), s2(q.s2Url, tx, ty)]);
+async function build(q: FieldRequest): Promise<FieldResult> {
+  const half = q.sizeM / 2;
+  await terrain.load(q.lat, q.lon, q.sizeM + 100);
   const ground = (lon: number, lat: number) => terrain.heightAt(lat, lon) ?? 0;
   const frame = new LocalFrame(q.lon, q.lat, ground(q.lon, q.lat));
-  // Tile pixel (MVT extent e) → local metres.
-  const tileLL = (px: number, py: number, e: number): [number, number] => {
-    const X = tx + px / e, Y = ty + py / e, n = 2 ** 14;
-    return [(X / n) * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - (2 * Y) / n))) * 180) / Math.PI];
+  // The zoom-14 tiles the square touches (up to four).
+  const tiles = new Map<string, [number, number]>();
+  for (const [de, dn] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+    const [lon, lat] = frame.lonLat(de * half, dn * half);
+    const [fx, fy] = lonLatToTile(lon, lat, 14);
+    tiles.set(`${Math.floor(fx)}/${Math.floor(fy)}`, [Math.floor(fx), Math.floor(fy)]);
+  }
+  const loaded = await Promise.all([...tiles.values()].map(async ([x, y]) => ({ x, y, layers: await osm(q.osmUrl, x, y), sat: await s2(q.s2Url, x, y) })));
+
+  // Rasterise: canvas pixel (0,0) is the square's north-west corner.
+  const R = q.res, px = R / q.sizeM;
+  const toPx = (e: number, n: number): [number, number] => [(e + half) * px, (half - n) * px];
+  const allow = new OffscreenCanvas(R, R).getContext("2d", { willReadFrequently: true })!;
+  const mown = new OffscreenCanvas(R, R).getContext("2d", { willReadFrequently: true })!;
+  allow.fillStyle = "#fff";
+  allow.fillRect(0, 0, R, R);
+  mown.fillStyle = "#000";
+  mown.fillRect(0, 0, R, R);
+  for (const g of [allow, mown]) (g.lineCap = "round"), (g.lineJoin = "round");
+  const [se, sn] = q.osmShift ?? [0, 0];
+  const path = (g: OffscreenCanvasRenderingContext2D, rings: [number, number][][]) => {
+    g.beginPath();
+    for (const ring of rings)
+      ring.forEach(([e, n], i) => {
+        const [x, y] = toPx(e, n);
+        if (i === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      });
   };
-  const half = q.cellM / 2 + 30;
-  // Whether a feature can touch the cell: its bounding box overlaps the cell's (not its
-  // vertices: a runway or a long road has its vertices far away at the ends).
-  const near = (pts: [number, number][]) => {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
-    return x0 < half && x1 > -half && y0 < half && y1 > -half;
-  };
-  // Exclusions in local metres: lines with a half-width, polygons.
-  const lines: { pts: [number, number][]; hw: number }[] = [];
-  const polys: [number, number][][][] = [];
-  const mown: [number, number][][][] = [];
-  const mownLines: { pts: [number, number][]; hw: number }[] = [];
-  for (const l of layers) {
-    const toLocal = (r: [number, number][]) => r.map(([a, b]) => frame.en(...tileLL(a, b, l.extent)));
-    for (const f of l.features) {
-      const cls = String(f.properties["class"] ?? "");
-      if (l.name === "transportation" && f.type === 2 && ROAD_W[cls]) {
-        for (const g of f.geometry) {
-          const pts = toLocal(g);
-          if (near(pts)) lines.push({ pts, hw: ROAD_W[cls]! / 2 + 0.4 });
+  for (const { x: tx, y: ty, layers } of loaded) {
+    const tileLL = (ppx: number, ppy: number, ext: number): [number, number] => {
+      const X = tx + ppx / ext, Y = ty + ppy / ext, n2 = 2 ** 14;
+      return [(X / n2) * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - (2 * Y) / n2))) * 180) / Math.PI];
+    };
+    for (const l of layers) {
+      const toLocal = (r: [number, number][]) =>
+        r.map(([a, b]) => {
+          const [e, n] = frame.en(...tileLL(a, b, l.extent));
+          return [e + se, n + sn] as [number, number];
+        });
+      for (const f of l.features) {
+        const cls = String(f.properties["class"] ?? "");
+        const geo = () => f.geometry.map(toLocal);
+        if (l.name === "transportation" && f.type === 2 && ROAD_W[cls]) {
+          allow.strokeStyle = "#000";
+          allow.lineWidth = (ROAD_W[cls]! + 0.8) * px;
+          path(allow, geo());
+          allow.stroke();
+        } else if (l.name === "aeroway") {
+          const g = geo();
+          if (f.type === 2 && (cls === "runway" || cls === "taxiway")) {
+            // Paved runways have no grass; grass strips get mown grass. Untagged: paved only
+            // if long.
+            const surf = String(f.properties["surface"] ?? "");
+            let len = 0;
+            for (const pts of g) for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k]![0] - pts[k - 1]![0], pts[k]![1] - pts[k - 1]![1]);
+            const paved = /asphalt|concrete|paved/.test(surf) || (surf === "" && len > 1500);
+            const ctx = paved ? allow : mown;
+            ctx.strokeStyle = paved ? "#000" : "#fff";
+            ctx.lineWidth = (cls === "runway" ? (paved ? 32 : 36) : paved ? 14 : 16) * px;
+            path(ctx, g);
+            ctx.stroke();
+          } else if (f.type === 3 && cls === "aerodrome") {
+            mown.fillStyle = "#fff";
+            path(mown, g);
+            mown.fill("evenodd");
+          } else if (f.type === 3 && (cls === "apron" || cls === "runway" || cls === "taxiway" || cls === "helipad")) {
+            allow.fillStyle = "#000";
+            path(allow, g);
+            allow.fill("evenodd");
+          }
+        } else if ((l.name === "building" || l.name === "water" || (l.name === "landcover" && cls === "wood")) && f.type === 3) {
+          allow.fillStyle = "#000";
+          path(allow, geo());
+          allow.fill("evenodd");
         }
-      } else if (l.name === "aeroway") {
-        const geo = f.geometry.map(toLocal);
-        if (!geo.some(near)) continue;
-        if (f.type === 2 && (cls === "runway" || cls === "taxiway")) {
-          // Paved runways have no grass; grass strips get short mown grass. Untagged: paved
-          // only if long (as the detail layer judges, with the airfield data there).
-          const surf = String(f.properties["surface"] ?? "");
-          let len = 0;
-          for (const pts of geo) for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k]![0] - pts[k - 1]![0], pts[k]![1] - pts[k - 1]![1]);
-          const paved = /asphalt|concrete|paved/.test(surf) || (surf === "" && len > 1500);
-          if (paved) for (const pts of geo) lines.push({ pts, hw: cls === "runway" ? 16 : 7 });
-          else for (const pts of geo) mownLines.push({ pts, hw: cls === "runway" ? 18 : 8 });
-        } else if (f.type === 3 && cls === "aerodrome") mown.push(geo);
-        else if (f.type === 3 && (cls === "apron" || cls === "runway" || cls === "taxiway" || cls === "helipad")) polys.push(geo);
-      } else if ((l.name === "building" || l.name === "water") && f.type === 3) {
-        for (const g of f.geometry) {
-          const pts = toLocal(g);
-          if (near(pts)) polys.push([pts]);
-        }
-      } else if (l.name === "landcover" && f.type === 3 && cls === "wood") {
-        const geo = f.geometry.map(toLocal);
-        if (geo.some(near)) polys.push(geo);
       }
     }
   }
-  const inPoly = (p: [number, number][][], x: number, y: number) => p.length > 0 && inside(p[0]!, x, y) && !p.slice(1).some((h) => inside(h, x, y));
+  const A = allow.getImageData(0, 0, R, R).data, M = mown.getImageData(0, 0, R, R).data;
 
-  const r = rng(q.seed);
-  const n = Math.round(q.cellM * q.cellM * q.density);
-  const pos: number[] = [], sway: number[] = [], col: number[] = [], roots: number[] = [];
-  let count = 0;
-  for (let i = 0; i < n; i++) {
-    const e = (r() - 0.5) * q.cellM, nn = (r() - 0.5) * q.cellM;
-    const rot = r() * Math.PI, jitter = r();
-    if (lines.some((L) => L.pts.some((_, k) => k > 0 && segDist(e, nn, L.pts[k - 1]![0], L.pts[k - 1]![1], L.pts[k]![0], L.pts[k]![1]) < L.hw))) continue;
-    if (polys.some((p) => inPoly(p, e, nn))) continue;
-    const [lon, lat] = frame.lonLat(e, nn);
-    // Satellite colour under the tuft: only green ground gets grass.
-    const [sx, sy] = lonLatToTile(lon, lat, 14);
-    const px = Math.min(255, Math.max(0, Math.floor((sx - tx) * 256))), py = Math.min(255, Math.max(0, Math.floor((sy - ty) * 256)));
-    const k = (py * 256 + px) * 4;
-    const R = sat[k]!, G = sat[k + 1]!, B = sat[k + 2]!;
-    const green = G - (R + B) / 2;
-    if (green < 2 + jitter * 6) continue;
-    const onLine = (L: { pts: [number, number][]; hw: number }) => L.pts.some((_, k) => k > 0 && segDist(e, nn, L.pts[k - 1]![0], L.pts[k - 1]![1], L.pts[k]![0], L.pts[k]![1]) < L.hw);
-    const short = mownLines.some(onLine) || mown.some((p) => inPoly(p, e, nn));
-    const h = short ? 0.04 + 0.05 * r() : 0.12 + 0.24 * r();
-    const z = frame.up(e, nn, ground(lon, lat)) - 0.01;
-    // Blade colours from the satellite colour, brought up to the textured ground's tone (the
-    // 10 m pixel averages in soil and shadow): base about the ground, tips lighter.
-    const v = 0.9 + 0.2 * r();
-    // Towards the near-ground grass colour of the textured ground (detail/synth.ts LUSH).
-    const gR = (R * 1.15 * 0.4 + 98 * 0.6) * v, gG = (G * 1.25 * 0.4 + 128 * 0.6) * v, gB = (B * 0.95 * 0.4 + 56 * 0.6) * v;
-    const BL = 3;
-    // Per tuft: a random byte in the colour's alpha, so the renderer thins grass out with
-    // distance tuft by tuft (stable as the camera moves) rather than pixel by pixel.
-    const keep = Math.floor(r() * 255);
-    for (let b = 0; b < BL; b++) {
-      const a = rot + (b * Math.PI * 2) / BL + (r() - 0.5) * 0.8;
-      const w = (short ? 0.015 : 0.02) * (0.7 + 0.6 * r()); // three wider blades per tuft
-      const lean = (short ? 0.15 : 0.3) * h * r();
-      const ca = Math.cos(a), sa = Math.sin(a);
-      const rad = (short ? 0.03 : 0.05) * r();
-      const ox = Math.cos(a + 1.3) * rad, oy = Math.sin(a + 1.3) * rad;
-      const bh = h * (0.6 + 0.6 * r());
-      // Base left, base right, tip (leaning outwards).
-      pos.push(e + ox - sa * w, nn + oy + ca * w, z, e + ox + sa * w, nn + oy - ca * w, z, e + ox + ca * lean, nn + oy + sa * lean, z + bh);
-      sway.push(0, 0, 1);
-      roots.push(e, nn, z, e, nn, z, e, nn, z);
-      const tipK = 1.18 + 0.12 * r();
-      col.push(gR * 0.85, gG * 0.85, gB * 0.8, keep, gR * 0.85, gG * 0.85, gB * 0.8, keep, Math.min(255, gR * tipK + 8), Math.min(255, gG * tipK + 6), Math.min(255, gB * 1.05), keep);
+  // Colour and coverage per texel (rows from the south: texture v up = north).
+  const mask = new Uint8Array(R * R * 4), params = new Uint8Array(R * R * 4);
+  const satAt = (lon: number, lat: number): [number, number, number] => {
+    const [fx, fy] = lonLatToTile(lon, lat, 14);
+    const t = loaded.find((s) => s.x === Math.floor(fx) && s.y === Math.floor(fy)) ?? loaded[0]!;
+    // Bilinear in the 256² tile.
+    const x = Math.min(254.999, Math.max(0, (fx - t.x) * 256 - 0.5)), y = Math.min(254.999, Math.max(0, (fy - t.y) * 256 - 0.5));
+    const x0 = Math.floor(x), y0 = Math.floor(y), ax = x - x0, ay = y - y0, d = t.sat;
+    const c = [0, 0, 0] as [number, number, number];
+    for (let k = 0; k < 3; k++) {
+      const v = (xx: number, yy: number) => d[(yy * 256 + xx) * 4 + k]!;
+      c[k] = (v(x0, y0) * (1 - ax) + v(x0 + 1, y0) * ax) * (1 - ay) + (v(x0, y0 + 1) * (1 - ax) + v(x0 + 1, y0 + 1) * ax) * ay;
     }
-    count++;
+    return c;
+  };
+  for (let j = 0; j < R; j++) {
+    const n = ((j + 0.5) / R) * q.sizeM - half, cy = R - 1 - j; // canvas row of this texel
+    for (let i = 0; i < R; i++) {
+      const e = ((i + 0.5) / R) * q.sizeM - half;
+      const [lon, lat] = frame.lonLat(e, n);
+      const [r, g, b] = satAt(lon, lat);
+      // The ground's colour decides: saturated green is lush grass; the same hue washed out
+      // (low saturation) is degraded grass, sparse and dry; yellow (dry meadow, hay, stubble) has
+      // sparse dry tufts; brown or grey (soil, ploughed land, gravel) has none.
+      const green = g - (r + b) / 2;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), sat = mx > 0 ? (mx - mn) / mx : 0;
+      const smooth = (a0: number, a1: number, x: number) => {
+        const t = Math.min(1, Math.max(0, (x - a0) / (a1 - a0)));
+        return t * t * (3 - 2 * t);
+      };
+      // Hue [deg] (0 when grey).
+      let hue = 0;
+      if (mx > mn) {
+        const d = mx - mn;
+        hue = mx === r ? 60 * (((g - b) / d) % 6) : mx === g ? 60 * ((b - r) / d + 2) : 60 * ((r - g) / d + 4);
+        if (hue < 0) hue += 360;
+      }
+      const lum = 0.3 * r + 0.59 * g + 0.11 * b;
+      const greenHue = smooth(62, 76, hue) * (1 - smooth(170, 190, hue));
+      const yellowHue = smooth(36, 46, hue) * (1 - smooth(62, 76, hue));
+      const hasGreen = smooth(-2, 6, green) * Math.max(greenHue, 0.15);
+      const lush = smooth(0.12, 0.32, sat) * smooth(2, 12, green) * greenHue;
+      const yellow = yellowHue * smooth(0.12, 0.22, sat) * smooth(60, 90, lum);
+      // Mown airfield grass is kept: there wherever it isn't paved, denser where greener.
+      const mownHere = M[(cy * R + i) * 4]! / 255;
+      const cov = (A[(cy * R + i) * 4]! / 255) * Math.max(hasGreen * (0.3 + 0.7 * lush), 0.28 * yellow, mownHere * (0.55 + 0.45 * Math.max(hasGreen, lush)));
+      const o = (j * R + i) * 4;
+      // Colour: towards lush grass where it is green (Sentinel-2's pixels mix in soil and shade),
+      // towards straw where it is dry.
+      const gK = Math.max(lush, hasGreen * 0.5) * (1 - yellow * 0.8);
+      const dryC = [r * 0.35 + 176 * 0.65, g * 0.35 + 156 * 0.65, b * 0.35 + 100 * 0.65];
+      const lushC = [r * 1.15 * 0.4 + 98 * 0.6, g * 1.25 * 0.4 + 128 * 0.6, b * 0.95 * 0.4 + 56 * 0.6];
+      for (let k = 0; k < 3; k++) mask[o + k] = Math.min(255, dryC[k]! + (lushC[k]! - dryC[k]!) * gK);
+      mask[o + 3] = Math.round(255 * cov);
+      params[o] = M[(cy * R + i) * 4]!;
+      params[o + 1] = Math.round(255 * lush);
+      params[o + 3] = 255;
+    }
   }
-  return { id: q.id, origin: [q.lon, q.lat, frame.heightM], positions: new Float32Array(pos), sway: new Float32Array(sway), roots: new Float32Array(roots), colors: new Uint8Array(col), count };
+
+  const H = q.heightRes, heights = new Float32Array(H * H);
+  for (let j = 0; j < H; j++)
+    for (let i = 0; i < H; i++) {
+      const e = (i / (H - 1)) * q.sizeM - half, n = (j / (H - 1)) * q.sizeM - half;
+      const [lon, lat] = frame.lonLat(e, n);
+      heights[j * H + i] = frame.up(e, n, ground(lon, lat));
+    }
+  return { id: q.id, originM: frame.heightM, mask, params, heights };
 }

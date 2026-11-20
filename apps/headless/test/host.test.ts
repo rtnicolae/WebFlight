@@ -10,7 +10,9 @@ describe("fg-host with the ASK21 bundle", () => {
   let dir: string;
   beforeAll(async () => {
     dir = await ensureBundle(ASK21, { rebuild: true });
-  }, 300_000);
+  // Builds the glider bundle (4K livery, baked occlusion): ~90 s alone, past 5 min while the
+  // rest of the suite runs alongside on a busy machine.
+  }, 900_000);
 
   async function hosted() {
     const { files } = await loadBundleAircraft(async (r) => fs.readFileSync(path.join(dir, r), "utf8"));
@@ -61,7 +63,8 @@ describe("fg-host with the ASK21 bundle", () => {
   it("runs the ported Nasal and reports what is not ported", async () => {
     const { host } = await hosted();
     const by = (st: string) => host.nasalStatus.filter((n) => n.status === st).map((n) => n.file.split("/").pop());
-    expect(by("ported").sort()).toEqual(["ask21.nas", "door.nas", "electrical.nas", "groundhandling.nas", "ilec-sc7.nas", "limits.nas", "te-vario.nas"]);
+    // immat.nas: listed upstream with the same index as te-vario.nas; the converter adds it back.
+    expect(by("ported").sort()).toEqual(["ask21.nas", "door.nas", "electrical.nas", "groundhandling.nas", "ilec-sc7.nas", "immat.nas", "limits.nas", "te-vario.nas"]);
     expect(by("not-ported").sort()).toEqual(["anemoi.nas", "ar6201.nas", "dragrobot.nas", "flarm.nas", "global.canvas.nas", "walk.nas", "walker-animate.nas"]);
     expect(host.warnings.filter((w) => w.startsWith("script"))).toEqual([]);
   }, 30_000);

@@ -80,8 +80,22 @@ class WebFlightEnv(_Base):  # type: ignore[misc]
         return r
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
-        r = self._call({"cmd": "reset", "seed": 0 if seed is None else int(seed)})
-        return np.asarray(r["obs"], np.float64), r["info"]
+        # As gymnasium's convention: a seed is used as given and also starts the sequence later
+        # unseeded resets draw from (reset(seed=s), reset(), reset() repeats exactly); never
+        # seeded, they draw from fresh entropy. (Unseeded resets all sent 0: every episode the same.)
+        if _Base is not object:
+            super().reset(seed=seed)
+        if seed is not None:
+            self._seeds = np.random.default_rng(int(seed))
+            episode_seed = int(seed)
+        else:
+            if getattr(self, "_seeds", None) is None:
+                self._seeds = np.random.default_rng()
+            episode_seed = int(self._seeds.integers(0, 2**31 - 1))
+        r = self._call({"cmd": "reset", "seed": episode_seed})
+        info = dict(r["info"])
+        info.setdefault("seed", episode_seed)
+        return np.asarray(r["obs"], np.float64), info
 
     def step(self, action):
         r = self._call({"cmd": "step", "action": [float(a) for a in np.asarray(action, np.float64).ravel()]})

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { airfieldAt, estimateWeather, mulberry32, type Weather } from "@webflight/environment";
-import { aerotowBaseline, fixedSite, landingBaseline, randomPolicy, type GliderEnv, type Policy, type SitePicker, type StepResult } from "@webflight/gym";
+import { airfieldAt, estimateSeries, estimateWeather, mulberry32, type Weather } from "@webflight/environment";
+import { aerotowBaseline, dataSites, fixedSite, landingBaseline, randomPolicy, type GliderEnv, type Policy, type SitePicker, type StepResult } from "@webflight/gym";
 import { ASK21, ensureAircraft } from "../src/gliders.ts";
 import { makeGym } from "../src/gym.ts";
 
@@ -25,6 +25,28 @@ async function episode(env: GliderEnv, seed: number, policy: Policy, record?: nu
   }
   return { total, info: r.info, steps: record?.length };
 }
+
+describe("gym: weather over time", () => {
+  it("gives a site without recorded weather the estimate's hours, in the episode's wind", async () => {
+    const lszg = (await airfieldAt("LSZG", 47.18, 7.42))!;
+    const site = await dataSites([lszg])(mulberry32(4));
+    expect(site.hours?.length).toBe(9);
+    expect(site.hours!.every((h) => h.windFromDeg === site.weather.windFromDeg && h.windKt === site.weather.windKt)).toBe(true);
+  });
+
+  it("runs an episode's air on its clock (simulated time)", async () => {
+    await ensureAircraft(ASK21);
+    const lszg = (await airfieldAt("LSZG", 47.18, 7.42))!;
+    const base = await (await grenchen())(mulberry32(1));
+    const hours = estimateSeries(lszg.latDeg, lszg.lonDeg, new Date(base.weather.timeUtc), lszg.elevM, (w) => ({ ...w, windFromDeg: 240, windKt: 6 }));
+    const env = await makeGym("landing", { sites: () => ({ ...base, hours }) });
+    await env.reset(3);
+    const ep = env.episode!;
+    expect(ep.weather).toBeDefined();
+    for (let i = 0; i < 30 && !env.step(landingBaseline()(Float64Array.from([]))).terminated; i++);
+    expect((ep.weather!.now.getTime() - Date.parse(base.weather.timeUtc)) / 1000).toBeCloseTo(ep.t, 1);
+  }, 60_000);
+});
 
 describe("gym: landing (Grenchen from the data, randomized final)", () => {
   let env: GliderEnv;

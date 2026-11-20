@@ -46,11 +46,11 @@ export function trimmedPolar(fdm: Fdm, opts: { stepKmh?: number; maxKmh?: number
   const base = opts.base ?? START;
   const out: PolarPoint[] = [];
   const sweep = (from: number, dir: 1 | -1, limit: number) => {
-    let guess: { alphaDeg: number; gammaDeg: number; control: number } | undefined;
+    let guess: { alphaDeg: number; gammaDeg: number; control: number; stick: number } | undefined;
     for (let v = from; dir > 0 ? v <= limit : v >= limit; v += dir * step) {
       const t = trimSteadyGlide(fdm, { speed: { veKts: ktsFromKmh(v) }, base, ...(guess ? { guess } : {}) });
       if (!t.converged) break;
-      guess = { alphaDeg: t.alphaDeg, gammaDeg: t.gammaDeg, control: t.control };
+      guess = { alphaDeg: t.alphaDeg, gammaDeg: t.gammaDeg, control: t.control, stick: t.stick };
       out.push(toPoint(fdm, t));
     }
   };
@@ -153,7 +153,8 @@ export function summarizeGlide(r: GlideResult): GlideSummary {
 export function runGlide(fdm: Fdm, opts: { easKmh: number; durationS: number; sampleHz?: number; base?: InitialConditions }): GlideResult {
   const trim = trimSteadyGlide(fdm, { speed: { veKts: ktsFromKmh(opts.easKmh) }, base: opts.base ?? START });
   if (!trim.converged) throw new Error(`glide trim failed at ${opts.easKmh} km/h: ${JSON.stringify(trim)}`);
-  fdm.set(P.elevatorCmd, 0);
+  // Stick neutral unless the trim couldn't hold this speed alone.
+  fdm.set(P.elevatorCmd, trim.stick);
   fdm.set(P.aileronCmd, 0);
   fdm.set(P.rudderCmd, 0);
   const every = Math.round(1 / fdm.dt / (opts.sampleHz ?? 10));

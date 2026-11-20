@@ -3,7 +3,7 @@
  * thermals (same Environment as the browser worker), plus a small autopilot that holds a
  * heading or a bank angle and an airspeed. Used by tests and as a baseline for training.
  */
-import { applyEnvironment, Environment, type EnvironmentConfig, type EnvironmentOutput, type TerrariumTerrain } from "@webflight/environment";
+import { applyEnvironment, Environment, WeatherClock, type EnvironmentConfig, type EnvironmentOutput, type TerrariumTerrain } from "@webflight/environment";
 import { controlsToJsbsim, FT_PER_M, KMH_PER_KT, M_PER_FT, P, trimSteadyGlide, type AirbrakeRoute, type Fdm, type FgControls } from "@webflight/fdm-core";
 import { ASK21, createGlider, type GliderProfile } from "./gliders.ts";
 import { nodeTerrain } from "./terrain.ts";
@@ -39,13 +39,17 @@ export class SoaringSim {
     readonly airbrake: AirbrakeRoute,
   ) {}
 
-  static async create(start: SoaringStart, env: EnvironmentConfig, opts: { profile?: GliderProfile; terrain?: TerrariumTerrain } = {}): Promise<SoaringSim> {
+  /** Weather over time (as the browser's flight): the air follows its hours with the flight's clock. */
+  weatherClock: WeatherClock | undefined;
+
+  static async create(start: SoaringStart, env: EnvironmentConfig, opts: { profile?: GliderProfile; terrain?: TerrariumTerrain; weather?: WeatherClock } = {}): Promise<SoaringSim> {
     const terrain = opts.terrain ?? nodeTerrain();
     await terrain.load(start.latDeg, start.lonDeg, 6000);
     const ground = (await terrain.heightAtAsync(start.latDeg, start.lonDeg)) * FT_PER_M;
     const { fdm } = await createGlider(opts.profile ?? ASK21, "solo");
     const environment = new Environment(env, terrain);
     const sim = new SoaringSim(fdm, environment, ASK21_AIRBRAKE);
+    sim.weatherClock = opts.weather;
     fdm.set(P.terrainElevationAslFt, ground);
     const trim = trimSteadyGlide(fdm, {
       speed: { veKts: start.easKmh / KMH_PER_KT },
@@ -90,6 +94,8 @@ export class SoaringSim {
       if (ap) this.autopilot(ap, dt);
       this.apply();
       this.fdm.step(batch);
+      const w = this.weatherClock?.step(dt);
+      if (w) this.env.setWeather(w);
       this.last = applyEnvironment(this.env, this.fdm, dt);
       onSample?.(this);
     }

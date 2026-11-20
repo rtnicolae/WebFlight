@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SKIRT_M, LAMP_HEIGHT_M, BLOCK_FLOOR_M, buildingMesh, footprintRect, LocalFrame, MAT, parseColour, treeMesh, windowPitch, type Mesh, type OsmPolygon } from "../src/index.ts";
+import { SKIRT_M, LAMP_HEIGHT_M, BLOCK_FLOOR_M, buildingMesh, footprintRect, LocalFrame, MAT, parseColour, windowPitch, type Mesh, type OsmPolygon } from "../src/index.ts";
 
 const mats = (m: Mesh) => new Set(Array.from({ length: m.uvm.length / 4 }, (_, i) => Math.floor(m.uvm[i * 4 + 2]! + 0.001)));
 
@@ -122,25 +122,6 @@ describe("street lamps", () => {
   });
 });
 
-describe("osm trees", () => {
-  it("scatters trees inside forests only, stably", () => {
-    const wood: OsmPolygon = { rings: [rect(0, 0, 200, 100)], properties: { class: "wood" } };
-    const a = treeMesh([wood], frame, ground, { spacingM: 10 });
-    const b = treeMesh([wood], frame, ground, { spacingM: 10 });
-    expect(Array.from(a.positions)).toEqual(Array.from(b.positions));
-    const trees = a.positions.length / 3 / 30; // 5 tiers × 6 vertices
-    expect(trees).toBeGreaterThan(150);
-    expect(trees).toBeLessThan(230);
-    for (let i = 0; i < a.positions.length / 3; i++) {
-      expect(a.positions[3 * i]!).toBeGreaterThan(-12);
-      expect(a.positions[3 * i]!).toBeLessThan(212);
-    }
-    // A bounds square keeps only its share.
-    const half = treeMesh([wood], frame, ground, { spacingM: 10, bounds: { e0: 0, n0: 0, e1: 100, n1: 100 } });
-    expect(half.positions.length / 3 / 30).toBeCloseTo(trees / 2, -1);
-  });
-});
-
 import { treeInstances } from "../src/index.ts";
 describe("tree instances (impostors)", () => {
   it("places trees inside forests with heights and kinds, stably", () => {
@@ -163,6 +144,10 @@ describe("tree instances (impostors)", () => {
     // Varied: shrubs and young trees under tall ones.
     expect(Math.min(...hs)).toBeLessThan(8);
     expect(Math.max(...hs)).toBeGreaterThan(15);
+    // A bounds square keeps only its share (the grid is anchored in the world).
+    const half = treeInstances([wood], frame, ground, { spacingM: 10, bounds: { e0: 0, n0: 0, e1: 100, n1: 100 } });
+    expect(half.length / 5).toBeCloseTo(n / 2, -1);
+    for (let i = 0; i < half.length / 5; i++) expect(half[i * 5]!).toBeLessThan(100);
   });
 });
 

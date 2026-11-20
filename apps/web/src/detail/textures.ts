@@ -79,29 +79,6 @@ export function buildDetailTexture(rgba: Uint8ClampedArray, size: number, meters
 }
 
 /**
- * The texture's ratio at world point (wx, wy) [m] for a pixel of mPerPx [m], into out[0..2].
- * Bilinear within the level whose texel is at least the pixel; tiles seamlessly.
- */
-export function sampleRatio(t: DetailTexture, wx: number, wy: number, mPerPx: number, out: Float32Array, meters = t.meters): void {
-  const texel0 = meters / t.size;
-  let level = Math.max(0, Math.ceil(Math.log2(mPerPx / texel0)));
-  if (level >= t.levels.length) {
-    out[0] = out[1] = out[2] = 1;
-    return;
-  }
-  const s = t.size >> level;
-  const lv = t.levels[level]!;
-  // Texture v grows southwards (image rows), world y northwards.
-  const u = ((wx / meters) % 1 + 1) % 1 * s - 0.5, v = ((-wy / meters) % 1 + 1) % 1 * s - 0.5;
-  const x0 = Math.floor(u), y0 = Math.floor(v), fx = u - x0, fy = v - y0;
-  const X0 = ((x0 % s) + s) % s, X1 = (X0 + 1) % s, Y0 = ((y0 % s) + s) % s, Y1 = (Y0 + 1) % s;
-  for (let c = 0; c < 3; c++) {
-    const a = lv[(Y0 * s + X0) * 3 + c]!, b = lv[(Y0 * s + X1) * 3 + c]!, d = lv[(Y1 * s + X0) * 3 + c]!, e = lv[(Y1 * s + X1) * 3 + c]!;
-    out[c] = (a * (1 - fx) + b * fx) * (1 - fy) + (d * (1 - fx) + e * fx) * fy;
-  }
-}
-
-/**
  * Two scales of the same photo, multiplied (each averages 1): the macro layer stretches it
  * so its clumps read as meadow patches and crop texture from a glider's height; the micro
  * layer, at about true scale, shows on low passes and on the ground.

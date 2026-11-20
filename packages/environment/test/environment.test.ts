@@ -1,6 +1,6 @@
 import zlib from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { advance, Environment, RidgeLift, strengthFactor, TerrariumTerrain, Thermal, ThermalField, ThermalSky, tileToLonLat } from "../src/index.ts";
+import { advance, Environment, estimateWeather, RidgeLift, strengthFactor, TerrariumTerrain, Thermal, ThermalField, ThermalSky, tileToLonLat } from "../src/index.ts";
 
 /** Terrarium PNG (RGB) for a height function of pixel coordinates. */
 function terrariumPng(h: (px: number, py: number) => number): Uint8Array {
@@ -83,6 +83,33 @@ describe("FG thermals", () => {
     expect(th.run(0.1, { latDeg: 47.2, lonDeg: 8, altFt: 3500 }, wind)).toBe(-1); // global sink
   });
 
+  it("leans the column upwind below its top in a wind either side of north (FG's angle average flipped it)", () => {
+    // From 350° at the ground and 010° aloft: the air goes south, so below the top the column is to the north.
+    const th = new Thermal({ ...spec }, () => 0);
+    th.cycleTimer = 10 * 60;
+    th.run(0.1, { latDeg: 47, lonDeg: 8, altFt: 3500 }, { groundFromDeg: 350, groundKt: 10, aloftFromDeg: 10, aloftKt: 10 });
+    expect(th.sliceLatDeg).toBeGreaterThan(47 + 100 / 111_132);
+    expect(Math.abs(th.sliceLonDeg - 8) * 111_320 * Math.cos((47 * Math.PI) / 180)).toBeLessThan(5);
+  });
+
+  it("with the day's wind, leans as its air is carried: u/w metres downwind per metre risen", () => {
+    // 10 kt from the west at every height, a 10 ft/s (3.05 m/s) thermal, 5,000 ft deep.
+    const west = () => ({ fromDeg: 270, kt: 10 });
+    const th = new Thermal({ ...spec }, () => 0, undefined, west);
+    th.cycleTimer = 10 * 60;
+    const mPerDegLon = 111_320 * Math.cos((47 * Math.PI) / 180);
+    const at = (aglFt: number) => (th.run(0.1, { latDeg: 47, lonDeg: 8, altFt: 1000 + aglFt }, wind), (th.sliceLonDeg - 8) * mPerDegLon);
+    const slope = (10 * 1852) / 3600 / (10 * 0.3048); // 1.69: about 59° from the vertical
+    expect(at(5000)).toBeCloseTo(0, 6); // the top is the thermal's position
+    expect(at(2500)).toBeCloseTo(-2500 * 0.3048 * slope, 0);
+    const [footLat, footLon] = th.footLatLon;
+    expect(footLat).toBeCloseTo(47, 9);
+    expect((footLon - 8) * mPerDegLon).toBeCloseTo(-5000 * 0.3048 * slope, 0);
+    // Placed by its foot, the top moves downwind.
+    th.standOn(47, 8);
+    expect((th.spec.lonDeg - 8) * mPerDegLon).toBeCloseTo(5000 * 0.3048 * slope, 0);
+  });
+
   it("is reproducible from a seed", () => {
     const make = (seed: number) => new ThermalField({ seed, centerLatDeg: 47, centerLonDeg: 8, count: 5 }).thermals.map((t) => [t.spec.latDeg, t.spec.strengthFps, t.cycleTimer]);
     expect(make(42)).toEqual(make(42));
@@ -97,6 +124,73 @@ describe("Environment", () => {
     expect(o.windEastFps).toBeCloseTo(-16.878, 2); // from the east = blowing west
     expect(Math.abs(o.windNorthFps)).toBeLessThan(1e-9);
     expect(o.windDownFps === 0 || Object.is(o.windDownFps, -0)).toBe(true);
+  });
+
+  it("flies in the day's wind at its height, slowing towards the ground below 10 m", () => {
+    const profile = { elevationM: 0, windFromDeg: 270, windKt: 8, boundary: [{ aglM: 180, fromDeg: 280, kt: 12 }], aloft: [{ altM: 1500, fromDeg: 300, kt: 20 }] };
+    const env = new Environment({ windFromDeg: 270, windKt: 8, profile, ridgeLift: false, thermals: false });
+    const at = (altM: number) => env.update(0.1, { latDeg: 47, lonDeg: 8, altFt: altM / 0.3048 });
+    // (No terrain: the ground is at 0 m, so the near-ground levels are at 10 and 180 m.)
+    expect(at(10).windKt).toBeCloseTo(8, 9);
+    expect(at(180).windKt).toBeCloseTo(12, 9);
+    expect(at(1500).windFromDeg).toBeCloseTo(300, 9);
+    expect(at(1500).windKt).toBeCloseTo(20, 9);
+    expect(at(1).windKt).toBeCloseTo(8 * 0.6, 1);
+    const o = at(1500);
+    expect(Math.hypot(o.windNorthFps, o.windEastFps)).toBeCloseTo(20 * 1.6878099, 6);
+    expect(o.windEastFps).toBeGreaterThan(0); // from 300°: blowing to the south-east
+    expect(o.windNorthFps).toBeLessThan(0);
+  });
+
+  it("drives ridge lift with the wind at the glider's height, not the valley's 10 m wind", () => {
+    // A north–south crest at 2,000 m, its west face 1 in 2.5; the model's ground a basin at 620 m.
+    const mLon = 111_320 * Math.cos((45.5 * Math.PI) / 180);
+    const crest = { heightAt: (_la: number, lo: number) => Math.max(800, 2000 - 0.4 * Math.abs((lo - 25.2) * mLon)) } as unknown as ConstructorParameters<typeof Environment>[1];
+    const profile = { elevationM: 620, windFromDeg: 270, windKt: 2, aloft: [{ altM: 1500, fromDeg: 270, kt: 15 }, { altM: 3000, fromDeg: 270, kt: 40 }] };
+    const lift = (withProfile: boolean) => {
+      const env = new Environment({ windFromDeg: 270, windKt: 2, ...(withProfile ? { profile } : {}), ridgeLift: true, thermals: false }, crest);
+      const at = { latDeg: 45.5, lonDeg: 25.2 - 300 / mLon, altFt: (1880 + 150) / 0.3048 }; // 300 m west of the crest, 150 m up
+      let o = env.update(10, at);
+      for (let i = 0; i < 5; i++) o = env.update(10, at);
+      return o.ridgeLiftFps * 0.3048;
+    };
+    expect(lift(false)).toBeLessThan(0.5);
+    expect(lift(true)).toBeGreaterThan(3);
+  });
+
+  it("over terrain far above the weather model's ground, flies in the free air's wind at that height", () => {
+    // Model ground 620 m (a basin), its near-ground winds weak; 40 kt at 3 km. A crest at 2,000 m.
+    const profile = { elevationM: 620, windFromDeg: 285, windKt: 2, boundary: [{ aglM: 80, fromDeg: 280, kt: 5 }, { aglM: 180, fromDeg: 280, kt: 9 }], aloft: [{ altM: 1500, fromDeg: 280, kt: 10 }, { altM: 3000, fromDeg: 280, kt: 40 }] };
+    const crest = { heightAt: () => 2000 } as unknown as ConstructorParameters<typeof Environment>[1];
+    const env = new Environment({ windFromDeg: 285, windKt: 2, profile, ridgeLift: false, thermals: false }, crest);
+    const o = env.update(0.1, { latDeg: 45.5, lonDeg: 25.2, altFt: 2150 / 0.3048 });
+    expect(o.windKt).toBeCloseTo(10 + (30 * 650) / 1500, 1); // between 1,500 and 3,000 m, not the basin's 9 kt
+  });
+});
+
+describe("TerrariumTerrain when a download fails", () => {
+  // An airfield 530 m up; the first request for its tile fails (server hiccup), later ones work.
+  const flaky = () => {
+    let calls = 0;
+    return { calls: () => calls, fetchTile: async () => (calls++ === 0 ? Promise.reject(new Error("HTTP 503")) : terrariumPng(() => 530)) };
+  };
+  it("tries the tile again and finds the ground, not sea level", async () => {
+    const f = flaky();
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: f.fetchTile, retryMs: 5 });
+    expect(await t.heightAtAsync(45.7, 25.53)).toBeCloseTo(530, 3);
+    expect(f.calls()).toBe(2);
+  });
+  it("lets heightAt try a failed tile again later", async () => {
+    const f = flaky();
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: f.fetchTile });
+    await t.load(45.7, 25.53, 50);
+    expect(t.heightAt(45.7, 25.53)).toBeUndefined();
+    await t.load(45.7, 25.53, 50, 10, true);
+    expect(t.heightAt(45.7, 25.53)).toBeCloseTo(530, 3);
+  });
+  it("rejects when the ground can't be had", async () => {
+    const t = new TerrariumTerrain({ zoom: 10, fetchTile: () => Promise.reject(new Error("offline")), retryMs: 1 });
+    await expect(t.heightAtAsync(45.7, 25.53)).rejects.toThrow(/terrain unavailable/);
   });
 });
 
@@ -142,6 +236,24 @@ describe("TerrariumTerrain.mercatorHeightmap", () => {
       const [lon, lat] = tileToLonLat(1000 + c / (n - 1), 600 + r / (n - 1), 11);
       expect(g[r * n + c]).toBeCloseTo(t.heightAt(lat, lon, 10)!, 1);
     }
+  });
+});
+
+describe("Environment.setWeather (weather over time)", () => {
+  const base = estimateWeather(45.7, 25.53, new Date("2026-07-15T08:00:00Z"), 530);
+  const later = { ...base, timeUtc: "2026-07-15T12:00:00.000Z", windFromDeg: 200, windKt: 12, aloft: base.aloft.map((l) => ({ ...l, fromDeg: 220, kt: 25 })) };
+  const cfg = () => ({ windFromDeg: base.windFromDeg, windKt: base.windKt, profile: { elevationM: base.elevationM, windFromDeg: base.windFromDeg, windKt: base.windKt, aloft: base.aloft }, ridgeLift: false });
+  it("moves the wind by height on to the new hour's", () => {
+    const env = new Environment(cfg());
+    env.setWeather(later);
+    expect(env.config.windFromDeg).toBe(200);
+    expect(env.windHere(3000, 530).kt).toBeGreaterThan(20);
+  });
+  it("keeps a wind set by hand", () => {
+    const env = new Environment(cfg());
+    env.setWeather(later, { winds: false });
+    expect(env.config.windFromDeg).toBe(base.windFromDeg);
+    expect(env.config.profile!.aloft).toBe(base.aloft);
   });
 });
 

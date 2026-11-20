@@ -147,6 +147,8 @@ export interface Mesh {
    * (facade details need to know where the wall ends; a balcony's own height).
    */
   uvm: Float32Array;
+  /** With buildingMesh's `detailPart`: the small parts (balconies, rooftop units, parapets, lamp posts), by part. */
+  parts?: Mesh[];
 }
 
 class MeshBuilder {
@@ -238,6 +240,13 @@ export function windowPitch(seed: number, block: boolean): number {
 }
 /** Plaster, render and brick wall colours of central-European towns. */
 const WALLS = [[236, 230, 216], [228, 218, 196], [240, 236, 228], [222, 204, 176], [232, 214, 200], [214, 210, 202], [226, 222, 206], [196, 150, 120]];
+/**
+ * Blocks of flats in central and south-eastern Europe: concrete panels long since insulated
+ * and painted, each block (or stairwell) its own pastel: off-white, beige, pale yellow, peach,
+ * pale green, light grey, now and then a terracotta. With the house colours every block was
+ * the same light grey from a few km away, cardboard against the photo.
+ */
+const BLOCK_WALLS = [[232, 228, 218], [226, 212, 182], [234, 220, 164], [232, 196, 160], [204, 214, 182], [208, 208, 202], [222, 222, 210], [214, 150, 112], [198, 206, 210], [236, 206, 150]];
 /** Pitched roofs: clay tiles, weathered tiles, slate/metal. */
 const PITCHED = [[150, 86, 66], [136, 80, 64], [118, 74, 60], [156, 104, 80], [96, 92, 90], [82, 84, 90]];
 /** Flat roofs: gravel, bitumen, metal. */
@@ -262,7 +271,7 @@ export function parseColour(c: unknown): [number, number, number] | undefined {
  * the plaster. Untagged buildings are plaster, or brick as often as brick is common where they
  * stand (north of ~50.5° N: the Low Countries, northern Germany, Poland).
  */
-function wallFinish(props: Record<string, unknown>, latDeg: number, r: () => number): { kind: "plaster" | "brick" | "glass"; col: number[] } {
+function wallFinish(props: Record<string, unknown>, latDeg: number, r: () => number, block = false): { kind: "plaster" | "brick" | "glass"; col: number[] } {
   const raw = String(props["colour"] ?? "").toLowerCase();
   const col = parseColour(raw);
   if (raw === "#bd8161" || raw === "firebrick" || raw === "brown" || raw === "maroon") return { kind: "brick", col: brickTint(r) };
@@ -272,8 +281,11 @@ function wallFinish(props: Record<string, unknown>, latDeg: number, r: () => num
     const l = (col[0] + col[1] + col[2]) / 3;
     return { kind: "plaster", col: col.map((c) => Math.max(70, Math.min(245, 0.55 * c + 0.45 * l + 18))) };
   }
-  if (r() < (latDeg > 50.5 ? 0.4 : 0.06)) return { kind: "brick", col: brickTint(r) };
-  return { kind: "plaster", col: WALLS[Math.floor(r() * WALLS.length)]! };
+  const north = latDeg > 50.5;
+  // Brick: common in the north; further south houses only (blocks there are rendered panels).
+  if (r() < (north ? 0.4 : block ? 0 : 0.06)) return { kind: "brick", col: brickTint(r) };
+  const palette = block && !north ? BLOCK_WALLS : WALLS;
+  return { kind: "plaster", col: palette[Math.floor(r() * palette.length)]! };
 }
 /** Brick walls use the photo's own colour; the vertex colour is a mild per-building tint. */
 const brickTint = (r: () => number) => {
@@ -307,31 +319,83 @@ export function footprintRect(ring: [number, number][]): { corners: [number, num
   return { corners, fill: Math.abs(ringArea(ring)) / best.area, long: Math.max(l0, l1), short: Math.min(l0, l1) };
 }
 
+/** A closed ring (first = last) with the corners that stray less than `tolM` from it dropped (Douglas–Peucker). */
+export function simplifyRing(ring: [number, number][], tolM: number): [number, number][] {
+  const n = ring.length - 1;
+  if (n < 5) return ring;
+  // Split at the vertex farthest from the first, simplify both halves.
+  let far = 1, best = -1;
+  for (let i = 1; i < n; i++) {
+    const d = Math.hypot(ring[i]![0] - ring[0]![0], ring[i]![1] - ring[0]![1]);
+    if (d > best) (best = d), (far = i);
+  }
+  const keep = new Uint8Array(n + 1);
+  keep[0] = keep[far] = keep[n] = 1;
+  const stack: [number, number][] = [[0, far], [far, n]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    const [ax, ay] = ring[a]!, [bx, by] = ring[b]!;
+    const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1;
+    let worst = -1, at = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs((ring[i]![0] - ax) * dy - (ring[i]![1] - ay) * dx) / l;
+      if (d > worst) (worst = d), (at = i);
+    }
+    if (worst > tolM) {
+      keep[at] = 1;
+      stack.push([a, at], [at, b]);
+    }
+  }
+  const out = ring.filter((_, i) => keep[i]);
+  return out.length >= 4 ? out : ring;
+}
+
 /**
  * Extruded buildings with walls along the real footprints. Houses (low, roughly
  * rectangular, under ~25 m wide) get a hipped or gabled tile roof over their footprint's
  * rectangle; everything else a flat roof. The base sits on the lowest ground under the
  * footprint, so on slopes the uphill walls go into the ground instead of floating.
+ *
+ * `far`: the version for towns kilometres away, about a fifth of the triangles: the same
+ * walls and roofs (same colours), without balconies, parapets, rooftop units, lamp posts and
+ * sheds (under 25 m²).
+ * `roofColour`: a roof's colour [0–255] (from the aerial photo), instead of one from the palette.
+ * `detailPart`: the small parts (balconies, rooftop units, parapets, lamp posts) go into
+ * separate meshes (`parts`), by the part this gives for a building's (or lamp's) position, so
+ * the renderer can draw them only where they are close enough to be seen.
  */
-export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = []): Mesh {
+export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: GroundFn, lamps: OsmTile["lamps"] = [], o: { far?: boolean; simplifyM?: number; minAreaM2?: number; roofColour?: (poly: OsmPolygon) => readonly number[] | undefined; detailPart?: { count: number; of: (lonDeg: number, latDeg: number) => number } } = {}): Mesh {
   const m = new MeshBuilder();
-  for (const l of lamps) lampPost(m, frame, ground, l);
+  const parts = o.detailPart ? Array.from({ length: o.detailPart.count }, () => new MeshBuilder()) : undefined;
+  // Where the small parts of what is at lon, lat go (carrying the building's seed and height).
+  const detail = (lon: number, lat: number): MeshBuilder => {
+    if (!parts) return m;
+    const d = parts[o.detailPart!.of(lon, lat)]!;
+    d.seed = m.seed;
+    d.wallH = m.wallH;
+    return d;
+  };
+  const far = o.far ?? false;
+  if (!far) for (const l of lamps) lampPost(detail(...l.pole), frame, ground, l);
   for (const poly of polys) {
     // Outlines whose parts are mapped separately (the parts are drawn instead).
     if (poly.properties["hide_3d"]) continue;
-    const rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
+    let rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
+    if (o.simplifyM) rings = rings.map((r) => simplifyRing(r, o.simplifyM!)).filter((r, k) => k === 0 || r.length >= 4);
     const outer = rings[0]!;
     if (outer.length < 4) continue;
     const areaM2 = Math.abs(ringArea(outer));
-    if (areaM2 < 6) continue;
+    if (areaM2 < (o.minAreaM2 ?? (far ? 25 : 6))) continue;
     let base = Infinity;
     for (const [lon, lat] of poly.rings[0]!) base = Math.min(base, ground(lon, lat));
     base += Number(poly.properties["render_min_height"] ?? 0);
     const tall = Number(poly.properties["render_height"] ?? 5);
     const r = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]));
+    // The roof's own sequence: the same roof whether or not balconies drew numbers before it.
+    const rRoof = rng(hash(poly.rings[0]![0]![0], poly.rings[0]![0]![1]) ^ 0x9e3779b9);
     // Quantized so the renderer recovers it exactly (it hashes it per window).
     m.seed = Math.floor(r() * 500) / 512;
-    const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r);
+    const finish = wallFinish(poly.properties, poly.rings[0]![0]![1], r, tall - Number(poly.properties["render_min_height"] ?? 0) > BLOCK_WALL_M);
     const wall = finish.col;
     // Walls reach well below the ground: far away the renderer draws coarser terrain, which on
     // slopes lies metres off the true heights, and buildings must not float over it.
@@ -339,8 +403,9 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     const h1 = base + Math.max(2.5, tall) - Number(poly.properties["render_min_height"] ?? 0);
     m.wallH = h1 - base;
     const block = m.wallH > BLOCK_WALL_M;
+    const dm = detail(poly.rings[0]![0]![0], poly.rings[0]![0]![1]);
     const pitch = windowPitch(m.seed, block);
-    const balconies = block && finish.kind !== "glass" ? balconyStyle(r) : undefined;
+    const balconies = block && finish.kind !== "glass" && !far ? balconyStyle(r) : undefined;
     let nBalc = 0;
     const ccw = ringArea(outer) > 0; // positive = counter-clockwise with y up (north)
     for (const ring of rings) {
@@ -364,18 +429,23 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
         const a0 = vert(ax, ay, h0, u0), b0 = vert(bx, by, h0, u0 + l), b1 = vert(bx, by, h1, u0 + l), a1 = vert(ax, ay, h1, u0);
         m.tri(a0, b0, b1);
         m.tri(a0, b1, a1);
-        if (balconies && windows && l >= 9 && nBalc < 400) nBalc += balconyStack(m, frame, ax, ay, dx / l, dy / l, nx, ny, l, u0, pitch, base, m.wallH, balconies, r);
+        if (balconies && windows && l >= 9 && nBalc < 400) nBalc += balconyStack(dm, frame, ax, ay, dx / l, dy / l, nx, ny, l, u0, pitch, base, m.wallH, balconies, r);
       }
     }
     const rect = rings.length === 1 && outer.length <= 14 && tall <= 14 ? footprintRect(outer) : undefined;
-    if (rect && rect.fill > 0.82 && rect.short <= 24 && rect.short >= 4) pitchedRoof(m, frame, rect, h1, r);
+    const photoRoof = o.roofColour?.(poly);
+    if (rect && rect.fill > 0.82 && rect.short <= 24 && rect.short >= 4) pitchedRoof(m, frame, rect, h1, rRoof, photoRoof);
     else {
-      flatRoof(m, frame, rings, h1, FLAT[Math.floor(r() * FLAT.length)]!, r() < 0.35 ? 4 : 3);
-      if (h1 - base >= 4) parapet(m, frame, rings, ccw, base, h1, wall);
-      if (areaM2 > 180 && rings.length === 1) rooftopUnits(m, frame, outer, h1, areaM2, r);
+      const pal = FLAT[Math.floor(rRoof() * FLAT.length)]!;
+      flatRoof(m, frame, rings, h1, photoRoof ?? pal, rRoof() < 0.35 ? 4 : 3);
+      if (far) continue;
+      if (h1 - base >= 4) parapet(dm, frame, rings, ccw, base, h1, wall);
+      if (areaM2 > 180 && rings.length === 1) rooftopUnits(dm, frame, outer, h1, areaM2, rRoof);
     }
   }
-  return m.build();
+  const mesh = m.build();
+  if (parts) mesh.parts = parts.map((p) => p.build());
+  return mesh;
 }
 
 interface BalconyStyle {
@@ -541,8 +611,9 @@ function flatRoof(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][]
 }
 
 /** Hipped (or, one time in three, gabled) roof on a rectangle, 30–40° pitch, 0.4 m eaves. */
-function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof footprintRect>, h: number, r: () => number) {
-  const col = PITCHED[Math.floor(r() * PITCHED.length)]!;
+function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof footprintRect>, h: number, r: () => number, photo?: readonly number[]) {
+  const pal = PITCHED[Math.floor(r() * PITCHED.length)]!;
+  const col = photo ?? pal;
   let [c0, c1, c2, c3] = rect.corners as [[number, number], [number, number], [number, number], [number, number]];
   // Make c0→c1 the long side.
   if (Math.hypot(c1[0] - c0[0], c1[1] - c0[1]) < Math.hypot(c3[0] - c0[0], c3[1] - c0[1])) [c0, c1, c2, c3] = [c1, c2, c3, c0];
@@ -597,45 +668,8 @@ export interface TreeOptions {
 }
 
 /**
- * Low-poly trees scattered through forest polygons on a jittered grid (stable: positions
- * depend only on the world grid, so neighbouring tiles and reloads agree). Broadleaf crowns
- * are rounded 6-sided blobs, conifers two-tier cones; conifers become commoner with height.
- */
-export function treeMesh(forests: OsmPolygon[], frame: LocalFrame, ground: GroundFn, o: TreeOptions): Mesh {
-  const m = new MeshBuilder();
-  const s = o.spacingM;
-  let placed = 0;
-  for (const poly of forests) {
-    const rings = poly.rings.map((r) => r.map(([lon, lat]) => frame.en(lon, lat)));
-    let e0 = Infinity, n0 = Infinity, e1 = -Infinity, n1 = -Infinity;
-    for (const [x, y] of rings[0]!) { e0 = Math.min(e0, x); n0 = Math.min(n0, y); e1 = Math.max(e1, x); n1 = Math.max(n1, y); }
-    if (o.bounds) { e0 = Math.max(e0, o.bounds.e0); n0 = Math.max(n0, o.bounds.n0); e1 = Math.min(e1, o.bounds.e1); n1 = Math.min(n1, o.bounds.n1); }
-    for (let gy = Math.floor(n0 / s); gy * s <= n1; gy++) {
-      for (let gx = Math.floor(e0 / s); gx * s <= e1; gx++) {
-        if (o.max !== undefined && placed >= o.max) return m.build();
-        // Grid cells are anchored in world coordinates so trees don't move between tiles.
-        const [clon, clat] = frame.lonLat(gx * s, gy * s);
-        const r = rng(hash(Math.round(clon * 1e5) / 1e5, Math.round(clat * 1e5) / 1e5));
-        const x = (gx + r()) * s, y = (gy + r()) * s;
-        if (o.bounds && (x < o.bounds.e0 || x >= o.bounds.e1 || y < o.bounds.n0 || y >= o.bounds.n1)) continue;
-        if (!point(rings[0]!, x, y) || rings.slice(1).some((h) => point(h, x, y))) continue;
-        const [lon, lat] = frame.lonLat(x, y);
-        const g = ground(lon, lat);
-        const conifer = r() < 0.25 + Math.max(0, Math.min(0.6, (g - 700) / 800));
-        const H = (conifer ? 16 : 13) + r() * 10;
-        const shade = 0.75 + r() * 0.4;
-        const base = conifer ? [36, 52, 38] : [56, 74, 42];
-        const col = base.map((v) => Math.min(255, v * shade));
-        tree(m, x, y, frame.up(x, y, g - 0.5), H, conifer, col, r() * Math.PI);
-        placed++;
-      }
-    }
-  }
-  return m.build();
-}
-
-/**
- * Tree instances for impostors, with the same world-anchored placement as treeMesh: per tree
+ * Tree instances for impostors, placed on a jittered grid anchored in world coordinates (stable:
+ * neighbouring tiles and reloads agree): per tree
  * 5 floats — east, north, up (local frame) of the base, height [m], and kind + seed packed as
  * kind (0 broadleaf, 1 conifer) + a fraction in [0, 1) for the renderer's variant choice.
  */
@@ -742,29 +776,3 @@ export function townTreeInstances(t: OsmTile, frame: LocalFrame, ground: GroundF
   return new Float32Array(out);
 }
 
-function tree(m: MeshBuilder, x: number, y: number, z: number, H: number, conifer: boolean, col: number[], rot: number) {
-  // Crown profile: [height fraction, radius fraction] from bottom to top; radius = H/3.
-  const R = conifer ? H * 0.24 : H * 0.36;
-  const tiers = conifer ? [[0.12, 0.15], [0.18, 1], [0.55, 0.62], [0.6, 0.72], [1, 0]] : [[0.18, 0.25], [0.35, 0.92], [0.62, 1], [0.86, 0.6], [1, 0]];
-  const N = 6;
-  const ring0 = m.count;
-  const dark = col.map((v) => v * 0.7);
-  for (const [t, [hf, rf]] of tiers.entries()) {
-    for (let k = 0; k < N; k++) {
-      const a = rot + (k / N) * Math.PI * 2 + (t % 2) * (Math.PI / N);
-      const cx = Math.cos(a), cy = Math.sin(a);
-      // Smooth normals: mostly outward, tilted up towards the top.
-      const up = conifer ? 0.45 : (hf! - 0.5) * 1.6;
-      const l = Math.hypot(1, up);
-      m.vertex(x + cx * R * rf!, y + cy * R * rf!, z + H * hf!, cx / l, cy / l, up / l, t === 0 ? dark : col);
-    }
-  }
-  for (let t = 0; t < tiers.length - 1; t++) {
-    for (let k = 0; k < N; k++) {
-      const a = ring0 + t * N + k, b = ring0 + t * N + ((k + 1) % N);
-      const c = ring0 + (t + 1) * N + k, d = ring0 + (t + 1) * N + ((k + 1) % N);
-      m.tri(a, b, d);
-      m.tri(a, d, c);
-    }
-  }
-}

@@ -8,11 +8,15 @@ else comes from data for that place and time, fetched around the start point as 
 | Airfields, runway list (designators, length, width, surface) | OurAirports (public domain), `packages/environment/data/airfields/7/x/y.json` | the zoom-7 tile(s) around the start; the search index (`index.json`) only when you search |
 | Runway position and heading | OpenStreetMap runway lines (OpenFreeMap tiles), else OurAirports' runway ends, else the designator | zoom-14 tiles around the field |
 | Runway in use | the weather's wind: the end with a headwind | — |
-| Wind (10 m, 850 hPa, 700 hPa), temperature, dew point, low cloud, sunshine, boundary layer | Open-Meteo for the local hour asked: the forecast API for the last 90 days to 16 days ahead, the historical API (ERA5 / ECMWF IFS reanalysis; surface and 100 m wind, winds aloft extrapolated with a 1/7 power law) for any older day; offline, a sun-based estimate | one request at start |
-| Cloud base, thermal tops, strength, spacing, size | the weather: condensation level 125 m × (T − Td), boundary-layer depth, Deardorff w* from the sensible heat flux | — |
-| Where thermals are | terrain and sun: sunlit slopes and high ground trigger, shaded slopes don't (`triggerScore`) | per 6 km cell as its terrain tiles arrive |
-| Ridge lift | FlightGear's ridge lift from the terrain upwind, anywhere | — |
-| Terrain, imagery, water, buildings, trees | Terrarium, orthophotos / Sentinel-2, OpenFreeMap, swisstopo | streamed by view around the aircraft |
+| Wind (10, 80, 120, 180 m and 925 to 600 hPa), temperature, dew point, low and high cloud, sunshine, boundary layer | Open-Meteo for the local hour asked: the forecast API for the last 90 days to 16 days ahead, the historical API (ERA5 / ECMWF IFS reanalysis; surface and 100 m wind, winds aloft extrapolated with a 1/7 power law) for any older day, and for a recent day whose surface fields the forecast API no longer has (it keeps them ~70 days); offline, a sun-based estimate | one request at start (two for such a day) |
+| Wind the glider flies in | the weather's wind at the glider's height, layered as FlightGear does (the near-ground levels over the weather model's own ground, the pressure levels at their heights, 500 ft blend), so over a high ridge it is the free air's at that height; within 10 m of the ground it slows towards it (logarithmic surface layer, z0 = 0.03 m). The windsocks, grass and water use the 10 m wind | every FDM step |
+| Cloud base, thermal tops, strength, spacing, size | the weather: condensation level 125 m × (T − Td), boundary-layer depth, Deardorff w* from the sensible heat flux; each thermal's width skewed round the day's (many narrow, a few wide: lognormal), the wider ones stronger, and the cumulus over it as wide and as tall as its thermal makes it | — |
+| The lift in a thermal | NASA's updraft model (Allen 2006, from Lenschow & Stephens' and Konovalov's measurements): mean updraft and radius by height, bell-shaped profiles, a ring of sink round the upper half, sink between thermals from conservation of mass; under cumulus the updraft holds up to the base. Calibrated once so an average thermal gives a glider circling at mid-height w* (RASP's rule: the vario reads w* less the glider's sink). FlightGear's 30-minute life cycle and nearest-thermal rule | every FDM step |
+| Where thermals are | terrain and sun: sunlit slopes and high ground trigger, shaded slopes don't (`triggerScore`); the column then leans downwind as the day's wind carries its rising air (`columnDrift`), so its top and cumulus are downwind of the trigger | per 6 km cell as its terrain tiles arrive |
+| Ridge lift | FlightGear's ridge lift from the terrain upwind, anywhere, driven by the wind at the glider's height (FG: the surface wind, which among mountains is a valley's) | — |
+| Mountain waves | linear theory of stratified flow over the terrain (Queney, Scorer, Smith) with the day's wind and temperature at the pressure levels, the boundary layer at the ground absorbing part of the waves as Smith, Jiang & Doyle (2006) derive, with their values for rough ground (trapped lee waves fade downstream at the rate their simulations found), and waves absorbed where the wind along them turns through zero (Booker & Bretherton 1967). Near the slopes FG's ridge lift, the waves taking over as it fades with height. Days without temperatures aloft (the reanalysis, older than ~3 months) have no waves; `waves=0` turns them off | a 102 km square round the glider in a worker (~3 s), again 20 km on |
+| What you see: ground, buildings, trees, water | Google Photorealistic 3D Tiles via Cesium ion (the default; `google3d.ts`), or with `world=globe` the globe on Terrarium terrain with Bing aerial photos via Cesium ion and OpenFreeMap / swisstopo buildings and trees (`aerial=esri\|google\|s2` for other photos) | streamed by view around the aircraft |
+| What the glider flies on | Terrarium terrain heights (the 3D tiles are lowered onto them where the glider is: Google's heights are ellipsoidal, ours above sea level) | tiles around the aircraft |
 
 ## URL
 
@@ -23,7 +27,14 @@ else comes from data for that place and time, fetched around the start point as 
 ?lat=…&lon=…&hdg=…&agl=…            or start in the air anywhere (free flight)
 ```
 
-Overrides for testing: `rwy=04`, `wind=270@15`, `thermals=0`, `seed=N`.
+The title screen and every flight run in one page: "Fly", Esc and the browser's back and
+forward buttons swap them without reloading (`lifetime.ts` takes away what each added), so the
+viewer and Google's 3D tiles carry over, and with them Google's session (Cesium ion meters one
+root tile per session of up to three hours). Changing Quality or Scenery reloads the page.
+
+Overrides for testing: `rwy=04`, `wind=270@15`, `thermals=0`, `seed=N`. Scenery: `world=globe`
+(the globe with aerial photos instead of Google's 3D tiles), `g3dsse=N` (their detail, default
+8), `g3dgrade=0` (their photos as Google has them), `g3dreq=N` (tiles downloading at once).
 
 ## Rebuilding the airfield data
 
@@ -96,10 +107,23 @@ From the glider at 220 m:
 
 ## Close range (MSFS-style)
 
-- **Grass**: 3D blades near the camera (`grass/`): tufts where the ground is grass (green in
-  Sentinel-2, not a road, paved runway, building, water or forest in OSM), short mown grass on
-  grass strips and in aerodromes, coloured from the satellite, densest at the camera and
-  dithered out with distance, swaying in the wind. High 45 m, Ultra 70 m.
+- **Runways** (`runway-paint.ts`, with Google's tiles): every runway within 20 km of the camera
+  (the four nearest at a time) painted in the tiles' fragment shader: OSM's line for where,
+  OurAirports for designators, width and material. Paved ones get ICAO Annex 14 markings from
+  their length and width (threshold stripes, designation, centreline, aiming point,
+  touchdown zone, side stripes), concrete slabs or asphalt grain, rubber where wheels touch
+  down; grass strips get mower lanes, also in the 3D grass. `rwpaint=0` turns it off.
+- **Windsocks** (`windsocks.ts`): beside every runway near the camera (by the first threshold,
+  left of the landing direction; a second one on runways of 1,500 m or more), showing the
+  weather's surface wind. `windsocks=0` turns them off.
+- **Grass** (`grass/grass-field.ts`): blades generated on the GPU (instanced, from a hash of
+  their position), in tufts of 6 (`grasstuft=`), in rings to 75 m round the camera, 320 blades/m²
+  under it (Ultra 500, `grassdensity=`), thinning as 1/d² while widening. Where it grows, how lush and what colour
+  come from Sentinel-2 (washed-out green: degraded grass, sparse, short and dry; no green: none)
+  and OSM (no roads, paved runways, buildings, water, forest; mown on grass strips and in
+  aerodromes); meadows get knee-high patches, seed stalks and flower drifts; the day's wind
+  bends it in travelling gusts. With Google 3D the blades follow Google's ground (sampled, with
+  vehicles and trees filtered out). Only below ~40 m above the ground.
 - **Ground** under it: the HD textures at true scale, detail tiles down to zoom 21.
 - **Trees**: impostors (`tree-impostors.ts`): photoscanned CC0 trees (Poly Haven) rendered
   offline from the side and from above into one atlas; each tree is a side card turning to the

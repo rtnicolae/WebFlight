@@ -16,6 +16,11 @@ export interface WorldConfig {
   /** "terrarium": real terrain from Terrarium tiles; "flat": the WGS84 ellipsoid. */
   terrain: "terrarium" | "flat";
   environment: import("@webflight/environment").EnvironmentConfig;
+  /**
+   * The weather through the flight: its hours (weatherAt interpolates) and the start's time;
+   * the worker follows it with the simulation's clock.
+   */
+  weather?: { series: import("@webflight/environment").Weather[]; startUtc: string; /** Weather time per simulated second (1; ?wxrate= to watch a day go by). */ rate?: number };
 }
 
 /** One thermal as drawn by the renderer. */
@@ -30,6 +35,8 @@ export interface ThermalView {
   radiusM: number;
   strengthMs: number;
   phase: "forming" | "formed" | "dying" | "dead";
+  /** Seconds into its life cycle (FG's cycle timer: forming 0–300, formed –1200, dying –1500, dead –1800). */
+  cycleS?: number;
 }
 
 export type ToWorker =
@@ -52,6 +59,8 @@ export type ToWorker =
   | { type: "set"; props: Record<string, number> }
   /** Launch: clutch the winch / start the tow plane; open the hook; winch faster/slower. */
   | { type: "launch"; action: "start" | "release" | "faster" | "slower" }
+  /** The mountain-wave field round the aircraft (wave-worker.ts), replacing any before. */
+  | { type: "waves"; field: import("@webflight/environment").WaveFieldData }
   /** Change the wind (other environment settings stay). */
   | { type: "wind"; fromDeg: number; kt: number }
   | { type: "reset"; start: StartState }
@@ -68,9 +77,12 @@ export type FromWorker =
   | { type: "stats"; stepsPerSecond: number; simTime: number; lagMs: number }
   | { type: "log"; line: string }
   /** About once a second: thermals and the air at the aircraft. */
-  | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; thermalLiftMs: number; ridgeLiftMs: number; groundM: number | undefined }
+  /** windFromDeg/windKt: the wind at the aircraft; surfaceFromDeg/surfaceKt: the 10 m wind. */
+  | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; surfaceFromDeg: number; surfaceKt: number; thermalLiftMs: number; ridgeLiftMs: number; waveLiftMs?: number; groundM: number | undefined }
   /** Pilot messages (screen.log / popupTip in FG). */
   | { type: "messages"; lines: string[] }
+  /** The weather now (with the simulation's clock), after it was applied to the air. */
+  | { type: "weather"; weather: import("@webflight/environment").Weather }
   | { type: "error"; message: string };
 
 export type IcFromStart = (s: StartState) => InitialConditions;

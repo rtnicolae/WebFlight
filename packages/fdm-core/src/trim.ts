@@ -20,10 +20,15 @@ export interface GlideTrimOptions {
   control?: string;
   controlRange?: readonly [number, number];
   /** Initial guess. */
-  guess?: { alphaDeg?: number; gammaDeg?: number; control?: number };
+  guess?: { alphaDeg?: number; gammaDeg?: number; control?: number; stick?: number };
   maxIterations?: number;
   /** Convergence on |udot|,|wdot| [ft/s²] and |qdot| [rad/s²]. */
   tolerance?: number;
+  /**
+   * With the default control (the pitch trim): where the trim can't hold the speed (it reaches
+   * its stop, as a real trim does), leave it there and solve for the stick too. Default true.
+   */
+  stickBeyondTrim?: boolean;
 }
 
 export interface GlideTrimResult {
@@ -33,6 +38,8 @@ export interface GlideTrimResult {
   gammaDeg: number;
   thetaDeg: number;
   control: number;
+  /** The stick (fcs/elevator-cmd-norm) held besides the trim: 0 unless the trim reached its stop. */
+  stick: number;
   /** Control hit its range limit. */
   saturated: boolean;
   residual: { udot: number; wdot: number; qdot: number };
@@ -67,6 +74,22 @@ function solve3(A: number[][], b: number[]): number[] {
 }
 
 export function trimSteadyGlide(fdm: Fdm, opts: GlideTrimOptions): GlideTrimResult {
+  const byTrim = (opts.control ?? P.pitchTrimCmd) === P.pitchTrimCmd;
+  const stickToo = byTrim && opts.stickBeyondTrim !== false;
+  if (byTrim) fdm.set(P.elevatorCmd, 0);
+  // A sweep whose last point had the trim at a stop: start with the stick straight away.
+  const g = opts.guess?.control;
+  const atStop = stickToo && g !== undefined && Math.abs(g) >= 1 - 1e-9;
+  const r = atStop ? undefined : solveGlide(fdm, opts);
+  if (r && (r.converged || !r.saturated || !stickToo)) return r;
+  // The trim at its stop: hold it there and find the stick.
+  const trim = r ? r.control : g!;
+  fdm.set(P.pitchTrimCmd, trim);
+  const s = solveGlide(fdm, { ...opts, control: P.elevatorCmd, controlRange: [-1, 1], guess: { alphaDeg: r?.alphaDeg ?? opts.guess?.alphaDeg ?? 2, gammaDeg: r?.gammaDeg ?? opts.guess?.gammaDeg ?? -2, control: opts.guess?.stick ?? 0 } });
+  return { ...s, control: trim, stick: s.control };
+}
+
+function solveGlide(fdm: Fdm, opts: GlideTrimOptions): GlideTrimResult {
   const control = opts.control ?? P.pitchTrimCmd;
   const [cMin, cMax] = opts.controlRange ?? [-1, 1];
   const tol = opts.tolerance ?? 1e-5;
@@ -132,6 +155,7 @@ export function trimSteadyGlide(fdm: Fdm, opts: GlideTrimOptions): GlideTrimResu
     gammaDeg: fdm.get(P.gammaDeg),
     thetaDeg: fdm.get(P.thetaDeg),
     control: x[2]!,
+    stick: control === P.elevatorCmd ? x[2]! : fdm.get(P.elevatorCmd),
     saturated,
     residual: { udot: f[0], wdot: f[1], qdot: f[2] },
     vcKts: fdm.get(P.vcKts),

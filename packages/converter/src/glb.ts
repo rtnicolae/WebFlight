@@ -12,6 +12,13 @@ export interface GlbMaterial {
   texTransform?: boolean;
   /** Texture has cut-out transparency: alphaMode MASK. */
   alphaMask?: boolean;
+  /**
+   * Index into images of an occlusion (R) / roughness (G) / metallic (B) texture: used as
+   * metallicRoughnessTexture and occlusionTexture (roughness then comes from it, × roughness).
+   */
+  orm?: number;
+  /** KHR_materials_clearcoat: a glossy coat (gelcoat), its strength from an image's R channel. */
+  clearcoat?: { factor: number; roughness: number; image?: number };
 }
 
 export interface GlbPrimitive {
@@ -98,9 +105,11 @@ export function buildGlb(nodes: readonly GlbNode[], roots: readonly number[], ma
   });
 
   const usesTexTransform = materials.some((m) => m.texTransform && m.image !== undefined);
+  const usesClearcoat = materials.some((m) => m.clearcoat);
+  const extensionsUsed = [...(usesTexTransform ? ["KHR_texture_transform"] : []), ...(usesClearcoat ? ["KHR_materials_clearcoat"] : [])];
   const json = {
     asset: { version: "2.0", generator: "webflight converter (AC3D)" },
-    ...(usesTexTransform ? { extensionsUsed: ["KHR_texture_transform"] } : {}),
+    ...(extensionsUsed.length ? { extensionsUsed } : {}),
     scene: 0,
     scenes: [{ nodes: roots }],
     nodes: gltfNodes,
@@ -114,7 +123,20 @@ export function buildGlb(nodes: readonly GlbNode[], roots: readonly number[], ma
         ...(m.image !== undefined
           ? { baseColorTexture: { index: m.image, ...(m.texTransform ? { extensions: { KHR_texture_transform: { offset: [0, 1e-6] } } } : {}) } }
           : {}),
+        ...(m.orm !== undefined ? { metallicRoughnessTexture: { index: m.orm } } : {}),
       },
+      ...(m.orm !== undefined ? { occlusionTexture: { index: m.orm, strength: 1 } } : {}),
+      ...(m.clearcoat
+        ? {
+            extensions: {
+              KHR_materials_clearcoat: {
+                clearcoatFactor: m.clearcoat.factor,
+                clearcoatRoughnessFactor: m.clearcoat.roughness,
+                ...(m.clearcoat.image !== undefined ? { clearcoatTexture: { index: m.clearcoat.image } } : {}),
+              },
+            },
+          }
+        : {}),
       emissiveFactor: m.emissive,
       doubleSided: m.doubleSided,
       ...(m.baseColor[3] < 1 ? { alphaMode: "BLEND" } : m.alphaMask ? { alphaMode: "MASK", alphaCutoff: 0.5 } : {}),

@@ -21,7 +21,7 @@ import {
   type AirbrakeRoute,
   type FgControls,
 } from "@webflight/fdm-core";
-import { applyEnvironment, Environment, TerrariumTerrain, type EnvironmentOutput } from "@webflight/environment";
+import { applyEnvironment, Environment, TerrariumTerrain, WeatherClock, type EnvironmentOutput } from "@webflight/environment";
 import { hitchesFromProperties, Launch, type LaunchView } from "@webflight/launch";
 import type { FromWorker, StartState, ThermalView, ToWorker, WorldConfig } from "./protocol.ts";
 
@@ -38,7 +38,10 @@ let controls: FgControls | undefined;
 let applied: FgControls | undefined;
 let host: FgHost | undefined;
 let rateHz = 120;
-let paused = false;
+// Paused until the page says go (it does once the ground under the glider is in): the step loop
+// starts at "init", and running it while the page still loaded the 3D model and the terrain flew
+// the glider away from its start (up to 150 m in tests).
+let paused = true;
 let t0 = 0;
 let stepsSinceT0 = 0;
 let statSteps = 0;
@@ -54,9 +57,29 @@ let launch: Launch | undefined;
 const extras = new Map<string, number>();
 const pendingMessages: string[] = [];
 
+let pendingWaves: import("@webflight/environment").WaveFieldData | undefined;
+
 function setupWorld(w: WorldConfig): void {
   terrain = w.terrain === "terrarium" ? new TerrariumTerrain({ zoom: 13 }) : undefined;
   env = new Environment(w.environment, terrain);
+  if (pendingWaves) env.waves = pendingWaves;
+  weatherClock = w.weather?.series.length ? new WeatherClock(w.weather.series, w.weather.startUtc, Math.max(1, w.weather.rate ?? 1)) : undefined;
+}
+
+/**
+ * Weather over time: the flight's clock is the start's time plus the simulated time since the
+ * start (paused, it stands still; a reset starts it again). Every simulated minute the air
+ * takes the weather of that moment between the forecast's hours (weatherAt): the wind by
+ * height and the thermals (environment.ts, thermals.ts); the page hears of it too.
+ */
+let weatherClock: WeatherClock | undefined;
+/** A wind set by hand (the "wind" message) stays; the weather's thermals still change. */
+let windFixed = false;
+function stepWeather(dt: number): void {
+  const w = env ? weatherClock?.step(dt) : undefined;
+  if (!w || !env) return;
+  env.setWeather(w, { winds: !windFixed });
+  post({ type: "weather", weather: w });
 }
 
 /** Keep the tiles around the aircraft (and the ridge probes upwind) loaded ahead of time. */
@@ -74,11 +97,13 @@ function stepEnvironment(dt: number): void {
   envOut = applyEnvironment(env, fdm, dt);
   prefetch(fdm.get("position/lat-geod-deg"), fdm.get("position/long-gc-deg"));
   if (host) {
-    const t = host.tree, c = env.config;
+    const t = host.tree;
     t.set("/environment/thermal-lift-fps", envOut.thermalLiftFps);
     t.set("/environment/ridge-lift-fps", envOut.ridgeLiftFps);
-    t.set("/environment/wind-from-heading-deg", c.windFromDeg);
-    t.set("/environment/wind-speed-kt", c.windKt);
+    t.set("/environment/wave-lift-fps", envOut.waveLiftFps ?? 0); // (a WebFlight addition)
+    // At the aircraft, as FG's environment gives them.
+    t.set("/environment/wind-from-heading-deg", envOut.windFromDeg);
+    t.set("/environment/wind-speed-kt", envOut.windKt);
   }
 }
 
@@ -146,14 +171,18 @@ function postEnvironment(): void {
     radiusM: (th.spec.diameterFt * M_PER_FT) / 2,
     strengthMs: th.spec.strengthFps * M_PER_FT,
     phase: th.phase,
+    cycleS: th.cycleTimer,
   }));
   post({
     type: "environment",
     thermals,
-    windFromDeg: env.config.windFromDeg,
-    windKt: env.config.windKt,
+    windFromDeg: envOut.windFromDeg,
+    windKt: envOut.windKt,
+    surfaceFromDeg: env.config.windFromDeg,
+    surfaceKt: env.config.windKt,
     thermalLiftMs: envOut.thermalLiftFps * M_PER_FT,
     ridgeLiftMs: envOut.ridgeLiftFps * M_PER_FT,
+    ...(envOut.waveLiftFps !== undefined ? { waveLiftMs: envOut.waveLiftFps * M_PER_FT } : {}),
     groundM: envOut.groundElevFt === undefined ? undefined : envOut.groundElevFt * M_PER_FT,
   });
 }
@@ -164,7 +193,13 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
   let groundM = 0;
   if (terrain) {
     await terrain.load(s.latDeg, s.lonDeg, 4000);
-    groundM = await terrain.heightAtAsync(s.latDeg, s.lonDeg);
+    try {
+      groundM = await terrain.heightAtAsync(s.latDeg, s.lonDeg);
+    } catch (e) {
+      // No terrain here (offline, server down): the weather model's own ground, not sea level.
+      groundM = env?.config.profile?.elevationM ?? 0;
+      post({ type: "log", line: `warn: ${e instanceof Error ? e.message : e}; starting over the weather model's ground, ${groundM.toFixed(0)} m` });
+    }
   }
   const base = {
     "ic/terrain-elevation-ft": groundM * FT_PER_M,
@@ -175,6 +210,8 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
   };
   f.set(P.terrainElevationAslFt, groundM * FT_PER_M);
   launch = undefined;
+  // The flight's clock starts again (the weather as at the start, applied with the first step).
+  weatherClock?.restart();
   let t: { control: number; alphaDeg: number; converged: boolean };
   if (s.ground) {
     // Standing on the runway, wings held by the wing runner (FG: /controls/gear/assist-1).
@@ -185,7 +222,12 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
     // runner as soon as the main wheel is off the ground.
     f.step(Math.round(rateHz));
     t = { control: 0, alphaDeg: 0, converged: true };
-  } else t = trimSteadyGlide(f, { speed: { veKts: s.easKmh / KMH_PER_KT }, base });
+  } else {
+    t = trimSteadyGlide(f, { speed: { veKts: s.easKmh / KMH_PER_KT }, base });
+    // Faster than the trim reaches (the ASK 21's, full forward, ~155 km/h): it starts trimmed with
+    // the stick held forward; once the pilot's stick takes over it slows towards the trim's speed.
+    if ((t as { stick?: number }).stick) post({ type: "log", line: `start at ${s.easKmh} km/h: beyond the trim's reach, stick ${((t as { stick?: number }).stick ?? 0).toFixed(2)} needed` });
+  }
   controls = { aileron: 0, elevator: 0, rudder: 0, elevatorTrim: t.control, airbrake: 0 };
   applied = { ...controls };
   if (host) {
@@ -253,6 +295,7 @@ function tick(): void {
       applyControls();
       try {
         stepEnvironment(due / rateHz);
+        stepWeather(due / rateHz);
         stepLaunch(due / rateHz);
         host?.preStep();
         fdm.step(due);
@@ -311,8 +354,10 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         writer = new SnapshotWriter(buf, layout);
         setupWorld(msg.world);
         const trim = await applyStart(msg.start);
-        publish();
         post({ type: "ready", names: [...layout.names], shared: shared ? (buf as SharedArrayBuffer) : null, trim });
+        // After "ready": without shared memory the page keeps a snapshot only once it has the
+        // layout (a snapshot sent first was dropped, and while paused no other came).
+        publish();
         statT = performance.now();
         tick();
         break;
@@ -329,8 +374,10 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           paused = true; // no steps while the start area's terrain loads
           const trim = await applyStart(msg.start);
           paused = wasPaused;
-          publish();
+          // The air at the new spot, also while paused (the step loop posts it only when running).
+          postEnvironment();
           post({ type: "ready", names: [...layout!.names], shared: shared ? (writer!.buffer as SharedArrayBuffer) : null, trim });
+          publish();
         }
         break;
       case "launch":
@@ -341,10 +388,17 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           else launch.winch?.slower();
         }
         break;
+      case "waves":
+        pendingWaves = msg.field;
+        if (env) env.waves = msg.field;
+        break;
       case "wind":
         if (env) {
+          // One wind at every height from now on.
           env.config.windFromDeg = msg.fromDeg;
           env.config.windKt = msg.kt;
+          delete env.config.profile;
+          windFixed = true;
         }
         break;
       case "action":

@@ -9,7 +9,7 @@ describe("airfields (OurAirports)", async () => {
     expect(near.map((a) => a.ident)).toEqual(expect.arrayContaining(["RO-0010", "LRBV"]));
     expect(near.every((a) => Math.abs(a.latDeg - 45.7) < 0.3)).toBe(true);
     expect(ghimbav.name).toBe("Ghimbav Aerodrome");
-    expect(ghimbav.runways[0]).toMatchObject({ le: "04", he: "22", surface: "grass", lengthM: 1050 });
+    expect(ghimbav.runways[0]).toMatchObject({ le: "04", he: "22", surface: "grass", material: "grass", lengthM: 1050 });
   });
 
   it("finds fields in the search index by name, town or ident, accents ignored", async () => {
@@ -40,6 +40,7 @@ describe("airfields (OurAirports)", async () => {
     const r1 = resolveRunway(lrbv, lrbv.runways[0]!);
     expect(r1.source).toBe("ourairports");
     expect(r1.paved).toBe(true);
+    expect(r1.material).toBe("concrete"); // OurAirports "CONC"
     expect(r1.headingDeg).toBeGreaterThan(30);
     expect(r1.headingDeg).toBeLessThan(45);
     const r2 = resolveRunway(ghimbav, ghimbav.runways[0]!);

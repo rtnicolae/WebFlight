@@ -200,7 +200,13 @@ export const ask21Doors: AircraftScript = {
 export const ask21Immat: AircraftScript = {
   name: "immat.nas",
   init(api) {
-    if (!api.tree.node("/sim/model/immat").exists) api.setprop("/sim/model/immat", "D-1234");
+    // A fictional Romanian-style registration by default (the bundle wears the "Custom Callsign
+    // 2" livery, which carries the registration letters; its show-immat is true).
+    if (!api.tree.node("/sim/model/immat").exists) api.setprop("/sim/model/immat", "YR-FLY");
+    // The bundle's livery (Custom Callsign 2) has show-immat true (Liveries/custom2.xml);
+    // ask21-main.xml aliases /sim/multiplay/generic/int[6] to it.
+    api.setprop("/sim/model/livery/show-immat", 1);
+    api.setprop("/sim/multiplay/generic/int[6]", 1);
     const refresh = () => {
       const s = String(api.getprop("/sim/model/immat") ?? "").toUpperCase();
       for (let i = 0; i < 6; i++) {
