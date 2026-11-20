@@ -6,6 +6,7 @@
 import { lonLatToTile, TerrariumTerrain, tileToLonLat } from "@webflight/environment";
 import { buildingMesh, fetchOsm, footprintColour, LAMP_HEIGHT_M, LocalFrame, townTreeInstances, treeInstances, type Mesh, type OsmPolygon, type OsmTile, type Rgba } from "@webflight/scenery";
 import { tileUrl } from "./tile-url.ts";
+import { inGoogle3d } from "./google-3d-areas.ts";
 
 /** shift: east, north [m] to move everything by, onto the aerial photo (photo-align.ts). */
 export type OsmRequest =
@@ -14,9 +15,27 @@ export type OsmRequest =
    * far): only blocks and large buildings, what still shows ~10 km away; photoUrl: aerial photo
    * tiles (URL template, tile-url.ts) the roofs take their colours from.
    */
-  | { id: number; kind: "buildings"; url: string; x: number; y: number; far?: boolean; skyline?: boolean; photoUrl?: string; shift?: [number, number] }
+  | { id: number; kind: "buildings"; url: string; x: number; y: number; far?: boolean; skyline?: boolean; photoUrl?: string; shift?: [number, number]; under?: boolean }
   /** Trees of one zoom-16 cell (inside zoom-14 tile x >> 2, y >> 2). */
   | { id: number; kind: "trees"; url: string; x: number; y: number; spacingM: number; shift?: [number, number] };
+
+/**
+ * Under Google's 3D tiles, where it draws no buildings of its own (google-3d-areas.ts lists the
+ * places where it does): each building 1.5 m inside its outline, at 65 % of its height and no
+ * higher than 14 m, so where Google's tiles have the building (a mesh round the real one) they
+ * hide ours, and where they have none (flat photo ground: small towns, villages) ours stands.
+ * Nothing is read from Google's tiles: the depth test decides. The margins cover our ground
+ * (Terrarium, ~30 m SRTM: metres high under trees and in towns) against Google's; seen from
+ * ~1 km, where Google draws a city coarser and lower, some of ours still show over theirs.
+ */
+const UNDER = { insetM: 1.5, heightK: 0.65, capM: 14 };
+
+/** A footprint's centre as lat, lon (the mean of its outline's corners). */
+function centre(ring: [number, number][]): [number, number] {
+  let lon = 0, lat = 0;
+  for (const [x, y] of ring) { lon += x; lat += y; }
+  return [lat / ring.length, lon / ring.length];
+}
 
 export interface OsmResult {
   id: number;
@@ -145,13 +164,15 @@ async function build(req: OsmRequest): Promise<void> {
   const origin: [number, number, number] = [clon + dLon, clat + dLat, frame.heightM];
   if (req.kind === "buildings") {
     // (A copy: the decoded tile is cached and may be asked for again at another level.)
-    const buildings = req.skyline ? osm.buildings.filter((b) => skyline(b, frame)) : osm.buildings;
+    // Under Google's tiles: none where Google draws its own (google-3d-areas.ts).
+    const ours = req.under ? osm.buildings.filter((b) => !inGoogle3d(...centre(b.rings[0]!))) : osm.buildings;
+    const buildings = req.skyline ? ours.filter((b) => skyline(b, frame)) : ours;
     // Kept ~1.2 m inside the outline (eaves, the street, shadows beside the walls).
     const roofColour = photo ? roofColours(photo, pz, dLon, dLat, 1.2, buildings) : undefined;
     // Near the glider the small parts (balconies, rooftop units, parapets, lamp posts) come
     // in quarters of the tile (west/east × north/south), drawn only when close (osm-layer.ts).
     const detailPart = req.far ? undefined : { count: 4, of: (lon: number, lat: number) => (lon >= clon ? 1 : 0) + (lat < clat ? 2 : 0) };
-    const mesh = buildingMesh(buildings, frame, ground, osm.lamps, { far: req.far ?? false, ...(req.far ? { simplifyM: req.skyline ? 2 : 1 } : {}), ...(roofColour ? { roofColour } : {}), ...(detailPart ? { detailPart } : {}) });
+    const mesh = buildingMesh(buildings, frame, ground, osm.lamps, { far: req.far ?? false, ...(req.far ? { simplifyM: req.skyline ? 2 : 1 } : {}), ...(roofColour ? { roofColour } : {}), ...(detailPart ? { detailPart } : {}), ...(req.under ? { under: UNDER } : {}) });
     const lamps = new Float64Array(osm.lamps.length * 3);
     // The glow sits at the lamp head: 1.55 m from the pole towards the street.
     osm.lamps.forEach((l, i) => {

@@ -1,6 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
+import { PoseSmoother } from "./pose-smoother.ts";
 import { applyLighting, reflectSky, setLook, setSunLight, tintGround } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
@@ -189,8 +190,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
   // With Google 3D: their buildings, trees and water; our grass near the glider (the tiles
-  // are a blur at the height of a cockpit). The glider still flies on the Terrarium heights.
-  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low" && !google3d, trees: params.get("trees") !== "0" && QUALITY !== "low" && !google3d, water: params.get("water") !== "0" && !google3d, shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4, osmFarRings: params.has("far") ? Number(params.get("far")) : QUALITY === "ultra" ? 5 : 3, osmSkylineRings: params.has("skyline") ? Number(params.get("skyline")) : QUALITY === "ultra" ? 8 : 6 });
+  // are a blur at the height of a cockpit), and our OSM buildings under theirs, standing where
+  // their tiles are flat (villages). The glider still flies on the Terrarium heights.
+  const scenery = Scenery.create(viewer, { latDeg: F.latDeg, lonDeg: F.lonDeg }, { buildings: params.get("buildings") !== "0" && QUALITY !== "low", underGoogle: !!google3d, trees: params.get("trees") !== "0" && QUALITY !== "low" && !google3d, water: params.get("water") !== "0" && !google3d, shadows: QUALITY !== "low" && params.get("shadows") !== "0", treeDetail: QUALITY === "ultra" ? 12 : 24, drape: imageryMode === "photo", osmTreeSpacingM: QUALITY === "ultra" ? 7 : 8, osmTreeRings: QUALITY === "ultra" ? 6 : 4, osmFarRings: params.has("far") ? Number(params.get("far")) : QUALITY === "ultra" ? 5 : 3, osmSkylineRings: params.has("skyline") ? Number(params.get("skyline")) : QUALITY === "ultra" ? 8 : 6 });
   // 3D grass near the camera when it is low (on the field, low passes). ?grass=0|1.
   const grassParam = params.get("grass");
   const osmTiles = await openFreeMapTiles();
@@ -420,6 +422,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
 
   let last = performance.now();
   let fps = 60;
+  // ?smooth=0: draw the newest snapshot as it is (to compare).
+  const SMOOTH = params.get("smooth") !== "0";
+  let smoother: { layout: SnapshotLayout; s: PoseSmoother } | undefined;
   const dynres = new DynamicResolution(viewer, DYNRES === null ? undefined : DYNRES === "0" ? 1 : Number(DYNRES) || 1);
   life.onClose(() => dynres.reset());
   viewer.scene.preUpdate.addEventListener(() => {
@@ -434,7 +439,10 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     send({ type: "controls", controls });
     if (!reader || !layout) return;
     reader.read();
-    const d = reader.data;
+    // The pose at a smoothly running clock between the flight model's steps (pose-smoother.ts):
+    // the newest snapshot each frame moved the glider, and the camera with it, in uneven jumps.
+    if (smoother?.layout !== layout) smoother = { layout, s: new PoseSmoother(layout) };
+    const d = SMOOTH ? smoother.s.frame(reader.data, dt) : reader.data;
     const g = (n: string) => d[layout!.at(n)]!;
 
     aircraft.showInterior(cam.mode === "cockpit");

@@ -55,8 +55,10 @@ export interface OsmLayerOptions {
   farRings: number;
   /** …and beyond those, out to this many, the skyline: blocks and large buildings only. */
   skylineRings: number;
-  /** Where another source already provides buildings/trees (swisstopo). */
+  /** Where another source already provides buildings/trees (swisstopo; Google's 3D cities). */
   covered: (latDeg: number, lonDeg: number) => boolean;
+  /** Drawn under Google's 3D tiles (osm-worker.ts UNDER): theirs hide ours where they have them. */
+  underGoogle?: boolean;
 }
 
 /** A request without id/url (distributed over the union's members). */
@@ -672,7 +674,7 @@ export class OsmLayer {
           const k = `${v}/${x}/${y}`, d2 = dx * dx + dy * dy;
           want.add(k);
           // Near tiles first, then distant ones, then the skyline (each worker in this order).
-          jobs.push([v === "b" ? d2 * 16 : v === "f" ? d2 : 1000 + d2, k, { kind: "buildings", x, y, ...(v === "f" ? { far: true } : v === "s" ? { far: true, skyline: true } : {}) }, ring]);
+          jobs.push([v === "b" ? d2 * 16 : v === "f" ? d2 : 1000 + d2, k, { kind: "buildings", x, y, ...(v === "f" ? { far: true } : v === "s" ? { far: true, skyline: true } : {}), ...(this.o.underGoogle ? { under: true } : {}) }, ring]);
         }
     if (this.o.trees) {
       const r = this.o.treeRings;

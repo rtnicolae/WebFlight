@@ -8,6 +8,9 @@
  */
 const { chromium } = require("playwright");
 const base = process.argv[2] ?? "http://localhost:5173/";
+// A fixed day (the reanalysis's weather, the same on every run): "now" made the checks depend on
+// the hour's wind (an evening's tow didn't leave the ground within the 30 s allowed).
+const DAY = "&time=2024-07-10T13:00";
 
 (async () => {
   const browser = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
@@ -17,7 +20,7 @@ const base = process.argv[2] ?? "http://localhost:5173/";
   // The runway: a ground start stands 50 m past the threshold, facing along it. (Without lat/lon
   // every start is a ground start: "?agl=12&dist=500" started on the runway and "landed" at once.
   // With no parameters at all the page is the menu.)
-  await page.goto(new URL("?launch=aerotow", base).href);
+  await page.goto(new URL("?launch=aerotow" + DAY, base).href);
   await page.waitForSelector("#boot[hidden]", { state: "attached", timeout: 90000 });
   const rwy = await page.evaluate(() => {
     const w = window.webflight, g = (n) => w.reader.data[w.layout.at(n)];
@@ -27,7 +30,7 @@ const base = process.argv[2] ?? "http://localhost:5173/";
   // An approach 550 m back along it, 12 m up at 80 km/h, hands off.
   const back = 550, h = (rwy.hdg * Math.PI) / 180;
   const lat = rwy.lat - (back * Math.cos(h)) / 111132, lon = rwy.lon - (back * Math.sin(h)) / (111320 * Math.cos((rwy.lat * Math.PI) / 180));
-  const approach = `?lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}&hdg=${rwy.hdg.toFixed(1)}&agl=12&eas=80`;
+  const approach = `?lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}&hdg=${rwy.hdg.toFixed(1)}&agl=12&eas=80${DAY}`;
   const result = { errors };
   for (const transport of ["shared", "nosab"]) {
     const p = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -62,12 +65,14 @@ const base = process.argv[2] ?? "http://localhost:5173/";
   for (const kind of ["winch", "aerotow"]) {
     const p = await browser.newPage({ viewport: { width: 1280, height: 720 } });
     p.on("pageerror", (e) => errors.push(`${kind}: ${e.message}`));
-    await p.goto(new URL(`?launch=${kind}`, base).href);
+    await p.goto(new URL(`?launch=${kind}${DAY}`, base).href);
     await p.waitForSelector("#boot[hidden]", { state: "attached", timeout: 90000 });
     await p.waitForTimeout(1500);
     await p.keyboard.press("KeyL");
     let maxF = 0, maxAgl = 0, rope = 0, tug = 0;
-    for (let i = 0; i < (kind === "winch" ? 30 : 60); i++) {
+    // (The tug needs ~12 s to take up the slack, then the roll to lift-off ~20 s at the ASK 21's
+    // measured stall speed: 45 s.)
+    for (let i = 0; i < (kind === "winch" ? 30 : 90); i++) {
       await p.waitForTimeout(500);
       const s = await p.evaluate(() => { const w = window.webflight, g = (n) => w.reader.data[w.layout.at(n)]; return { F: g("/sim/hitches/rope/force-N"), agl: g("position/h-agl-ft") * 0.3048, rope: g("/sim/hitches/rope/exist"), tug: g("/ai/models/dragger/valid") }; });
       maxF = Math.max(maxF, s.F); maxAgl = Math.max(maxAgl, s.agl); rope = Math.max(rope, s.rope); tug = Math.max(tug, s.tug);

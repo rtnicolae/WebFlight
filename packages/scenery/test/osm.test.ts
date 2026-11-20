@@ -41,6 +41,26 @@ describe("osm buildings", () => {
     }
   });
 
+  it("under another source's buildings: inside the outline, lower, and tall outlines capped", () => {
+    const UNDER = { insetM: 1.5, heightK: 0.65, capM: 14 };
+    const span = (m: Mesh, k: 0 | 1 | 2) => {
+      const v = Array.from({ length: m.positions.length / 3 }, (_, i) => m.positions[3 * i + k]!);
+      return [Math.min(...v), Math.max(...v)] as const;
+    };
+    const house: OsmPolygon = { rings: [rect(10, 10, 12, 8)], properties: { render_height: 5 } };
+    const plain = buildingMesh([house], frame, ground), under = buildingMesh([house], frame, ground, [], { under: UNDER });
+    // ~1.5 m in from each wall (about the centre), roof lower by the 35 % of the walls.
+    expect(span(plain, 0)[1] - span(plain, 0)[0] - (span(under, 0)[1] - span(under, 0)[0])).toBeGreaterThan(2.5);
+    expect(span(plain, 2)[1] - span(under, 2)[1]).toBeGreaterThan(1);
+    expect(span(under, 2)[0]).toBeCloseTo(span(plain, 2)[0], 0); // same foot
+    // A church outline tagged with its tower's 65 m: walls no higher than the cap (its pitched
+    // roof over the 20 m width on top), not a 42 m block.
+    const church = buildingMesh([{ rings: [rect(0, 0, 40, 20)], properties: { render_height: 65 } }], frame, ground, [], { under: UNDER });
+    expect(span(church, 2)[1]).toBeLessThan(20 + UNDER.capM + 0.35 * 20);
+    // A part starting above the cap is left out (the source's own tower stands there).
+    expect(buildingMesh([{ rings: [rect(0, 0, 6, 6)], properties: { render_height: 65, render_min_height: 40 } }], frame, ground, [], { under: UNDER }).positions.length).toBe(0);
+  });
+
   it("gives large or irregular buildings a flat roof with courtyards left open, a parapet and rooftop units", () => {
     const block: OsmPolygon = { rings: [rect(0, 0, 60, 60), rect(20, 20, 20, 20).reverse()], properties: { render_height: 18 } };
     const m = buildingMesh([block], frame, ground);
