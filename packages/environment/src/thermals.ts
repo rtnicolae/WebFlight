@@ -241,7 +241,10 @@ export class Thermal {
   /** The column's offset [east, north m] from its foot at a height above the foot [m]. */
   private driftAt(hM: number): [number, number] {
     const s = this.spec, g = s.groundElevFt * FT_TO_M, top = Math.max(100, s.heightMslFt * FT_TO_M - g), w = Math.max(0.5, s.strengthFps * FT_TO_M);
-    const key = `${g}|${top}|${w}`;
+    // (Rounded: the ground is re-sampled every 10 s at a foot found by moving back down the
+    // column, a millimetre off, and a key of exact numbers recomputed every column each time:
+    // on the page's distant skies, ~13,000 of them, a 100–200 ms stall every 12 s.)
+    const key = `${Math.round(g * 2)}|${Math.round(top)}|${Math.round(w * 100)}`;
     // To 1.1 × the top: FG's thermal reaches that far above it.
     if (this.drift?.key !== key) this.drift = { key, ...columnDrift(this.windAt!, g, 1.1 * top + 50, w) };
     const d = this.drift, x = Math.max(0, Math.min(hM / d.dz, d.east.length - 1));
@@ -563,6 +566,27 @@ export function thermalSize(rand: () => number): { widthK: number; strengthK: nu
   return { widthK, strengthK: Math.min(1.28, Math.max(0.72, widthK ** 0.4 * (0.85 + 0.3 * rand()))) };
 }
 
+/**
+ * The day's wind by height as a table (every 10 m from 500 m below sea level to 12 km): a
+ * column's lean asks for the wind at 40 heights, for thousands of thermals at once when the
+ * weather moves on. Linear in the wind's components between the table's heights (the weather's
+ * own levels are hundreds of metres apart).
+ */
+function windTable(w: Weather): WindAtFn {
+  const z0 = -500, dz = 10, n = 1251;
+  const u = new Float64Array(n), v = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = windAt(w, z0 + i * dz), to = ((x.fromDeg + 180) * Math.PI) / 180;
+    u[i] = x.kt * Math.sin(to);
+    v[i] = x.kt * Math.cos(to);
+  }
+  return (alt) => {
+    const x = Math.min(n - 1, Math.max(0, (alt - z0) / dz)), i = Math.min(n - 2, Math.floor(x)), f = x - i;
+    const ue = u[i]! + f * (u[i + 1]! - u[i]!), vn = v[i]! + f * (v[i + 1]! - v[i]!);
+    return { fromDeg: ((Math.atan2(ue, vn) * 180) / Math.PI + 540) % 360, kt: Math.hypot(ue, vn) };
+  };
+}
+
 /** A deterministic 32-bit mix of a cell's seed, an index and a stream tag. */
 const mix = (h: number, k: number, tag: number) => (Math.imul(h ^ Math.imul(tag, 0x9e3779b9), 0x85ebca6b) ^ Math.imul(k + 1, 0xc2b2ae35)) >>> 0;
 
@@ -595,6 +619,8 @@ export class ThermalSky {
   }
 
   private soaring: Soaring | undefined;
+  /** The wind table of the weather the thermals were last tuned with. */
+  private wind: { w: Weather; fn: WindAtFn } | undefined;
 
   /**
    * The weather now (weather over time, weatherAt): every cell's thermals follow it. Each keeps
@@ -645,7 +671,8 @@ export class ThermalSky {
     // above sea level; where the ground reaches it there is no thermal under a cumulus to have.
     const baseMsl = w.elevationM + s.thermalTopAglM;
     const topM = (_g: number) => baseMsl;
-    const wind: WindAtFn = (alt) => windAt(w, alt);
+    if (this.wind?.w !== w) this.wind = { w, fn: windTable(w) };
+    const wind = this.wind.fn;
     for (let k = 0; k < Math.max(n, cell.thermals.length); k++) {
       const t = cell.thermals[k];
       const c = k < n ? cand.slice(4 * k, 4 * k + 4).sort((a, b) => b.score - a.score)[0]! : undefined;

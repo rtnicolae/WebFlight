@@ -404,6 +404,7 @@ export class ThermalLayer {
   setCumulus(on: boolean): void {
     if (on === this.cumulus) return;
     this.cumulus = on;
+    this.farDirty = true;
     // Turning blue: the clouds there are now dissolve; thermals starting after it get none.
     this.fading = on ? undefined : new Set([...this.near, ...this.far].map((t) => t.id));
     this.refresh();
@@ -429,8 +430,11 @@ export class ThermalLayer {
   /** Thermals beyond the flight model's reach: clouds only. */
   setFar(list: ThermalView[]): void {
     this.far = list;
+    this.farDirty = true;
     this.refresh();
   }
+  /** The far map is drawn again when the far clouds change (every 3 s) or the cumulus fades. */
+  private farDirty = true;
 
   private refresh(): void {
     const ids = new Set(this.near.map((t) => t.id));
@@ -449,7 +453,10 @@ export class ThermalLayer {
     if (this.volumes) {
       this.volumes.set(near);
       // Beyond, the volumes' far map: sprites under the atmosphere's sky are painted over by it.
-      this.volumes.setFar(far);
+      // (Rasterised again only when the far clouds change or the cumulus is fading: it was redone
+      // with every update of the near thermals, ~20 ms a second.)
+      if (this.farDirty || (k > 0 && k < 1)) this.volumes.setFar(far);
+      this.farDirty = false;
     } else {
       // Sprites only as far as they show (they fade out by 70 km): the whole far field (to 160 km)
       // was ~575k puffs beyond it on a flat summer test.
