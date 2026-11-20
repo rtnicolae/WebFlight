@@ -1,0 +1,36 @@
+# Type checks and the test suite on every push (any branch) and pull request. Pages (pages.yml)
+# publishes from the default branch only; work on other branches was never tested in CI.
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # FlightGear aircraft data (GPL) is downloaded at test time, not committed.
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: fgdata-${{ hashFiles('packages/converter/src/**') }}
+          restore-keys: fgdata-
+      - run: pnpm fetch:ask21
+      - run: pnpm typecheck
+      - run: pnpm test
