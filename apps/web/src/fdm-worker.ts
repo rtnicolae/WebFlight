@@ -38,7 +38,10 @@ let controls: FgControls | undefined;
 let applied: FgControls | undefined;
 let host: FgHost | undefined;
 let rateHz = 120;
-let paused = false;
+// Paused until the page says go (it does once the ground under the glider is in): the step loop
+// starts at "init", and running it while the page still loaded the 3D model and the terrain flew
+// the glider away from its start (up to 150 m in tests).
+let paused = true;
 let t0 = 0;
 let stepsSinceT0 = 0;
 let statSteps = 0;
@@ -325,8 +328,10 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         writer = new SnapshotWriter(buf, layout);
         setupWorld(msg.world);
         const trim = await applyStart(msg.start);
-        publish();
         post({ type: "ready", names: [...layout.names], shared: shared ? (buf as SharedArrayBuffer) : null, trim });
+        // After "ready": without shared memory the page keeps a snapshot only once it has the
+        // layout (a snapshot sent first was dropped, and while paused no other came).
+        publish();
         statT = performance.now();
         tick();
         break;
@@ -343,10 +348,10 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           paused = true; // no steps while the start area's terrain loads
           const trim = await applyStart(msg.start);
           paused = wasPaused;
-          publish();
           // The air at the new spot, also while paused (the step loop posts it only when running).
           postEnvironment();
           post({ type: "ready", names: [...layout!.names], shared: shared ? (writer!.buffer as SharedArrayBuffer) : null, trim });
+          publish();
         }
         break;
       case "launch":

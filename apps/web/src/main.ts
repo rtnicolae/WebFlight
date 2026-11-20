@@ -361,8 +361,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   setStatus("Loading 3D model…");
   await Promise.all([ready, warm, aircraft.load(viewer.scene), launchView?.load().catch((e: unknown) => console.warn("launch models:", e))]);
-  // The flight starts paused behind the loading screen (until the ground is in: below).
-  send({ type: "pause", paused: true });
+  // The flight model stays paused (the worker starts so) behind the loading screen, until the
+  // ground is in: below.
   setStatus("Loading the ground…");
   const interaction = new CockpitInteraction(viewer, aircraft, send, cam);
   if (aircraft.texMissing.length) console.warn("texture animations without readers:", aircraft.texMissing);
