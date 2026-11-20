@@ -41,6 +41,22 @@ describe("osm buildings", () => {
     }
   });
 
+  it("measures a gable end's height from the house's foot, like its walls", () => {
+    // Houses on ground 20 m below the tile's origin: from the origin their gables read as below
+    // ground (the renderer drew them as earth).
+    const low = () => 480;
+    let gables = 0;
+    for (let k = 0; k < 12; k++) {
+      const m = buildingMesh([{ rings: [rect(k * 40, 0, 12, 8)], properties: { render_height: 5 } }], frame, low);
+      for (let i = 0; i < m.uvm.length / 4; i++)
+        if (Math.floor(m.uvm[4 * i + 2]! + 0.001) === MAT.plainWall && m.positions[3 * i + 2]! > -20 + 4) {
+          gables++;
+          expect(m.uvm[4 * i + 1]!).toBeGreaterThan(4.5); // eaves at 5 m (less 0.2) and up
+        }
+    }
+    expect(gables).toBeGreaterThan(0);
+  });
+
   it("under another source's buildings: inside the outline, lower, and tall outlines capped", () => {
     const UNDER = { insetM: 1.5, heightK: 0.65, capM: 14 };
     const span = (m: Mesh, k: 0 | 1 | 2) => {
