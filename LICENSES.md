@@ -11,6 +11,8 @@ served and shipped with the bundle.
 |---|---|---|---|---|
 | Schleicher ASK 21 (JSBSim, `ask21-jsb`) | `Aircraft/ASK21` | GPL v2 or later | `COPYING`, `README.md` | Heiko Schulz, Detlef Faber, AJ MacLeod, Thomas Polzer, Viktor Radnai, Bea Wolf, Gilberto Agostinho, Herbert Wagner, Patrice Poly (ASK13 parts), Anders Gidenstam (dual control) |
 
+The ASK 21's flight model is corrected where it is read (`packages/converter/src/aero-fixes.ts`, for the bundle and the Node loader alike, GPL v2 or later like the file it edits): three drag numbers in `Systems/ask21-aero.xml`, fitted to a measured speed polar. The reference polar (`apps/headless/src/gliders.ts`, three speed/sink points at 468 kg, used as data in a test) is XCSoar's (`src/Polar/PolarStore.cpp`, GPL v2 or later, https://github.com/XCSoar/XCSoar); it agrees with the chart in Schleicher's ASK 21 flight manual (p. 40, measurements credited to DFVLR and Idaflieg), which was only read, not copied.
+
 The ASK 21's outside in the bundle (`packages/converter/src/glider-look.ts`, at bundle time) is derived from its own `Models/Liveries/customcallsign-2.png` (the "Custom Callsign 2" livery of the ASK21 package; its `liveries.txt` calls the custom-callsign liveries not present in real life) and model (GPL v2 or later, like the bundle), with the package's own registration letters (`Models/Immat`, `Nasal/immat.nas` by Zakharov) showing a fictional registration, YR-FLY: the texture enlarged to 4096² (Lanczos), a little bug spatter and belly grime drawn in, ambient occlusion baked by ray casting against the model, roughness and a clearcoat mask from the colours. Nothing from other sources.
 
 Check each new aircraft's `COPYING` before adding it to this table.

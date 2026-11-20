@@ -9,6 +9,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { applyAeroFixes } from "./aero-fixes.ts";
 import { getProp, propToNumber, readPropertyList } from "./proplist.ts";
 import type { FgResolver } from "./resolve.ts";
 
@@ -78,6 +79,8 @@ export function loadJsbsimFiles(aircraftDir: string, setFileName: string, resolv
 
   const files: Record<string, string> = {};
   for (const rel of [...rels].sort()) files[rel] = fs.readFileSync(path.join(modelDir, rel), "utf8");
+  // Corrections fitted to measurements (aero-fixes.ts).
+  warnings.push(...applyAeroFixes(aircraft, files));
 
   const hostProperties: Record<string, number> = {};
   for (const text of Object.values(files)) {

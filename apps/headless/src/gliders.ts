@@ -9,6 +9,8 @@ export interface GliderProfile {
   setFile: string;
   /** Named loadouts: pointmass index -> kg. */
   loadouts: Record<string, Record<number, number>>;
+  /** A measured speed polar: sea-level speed [km/h] and sink [m/s] at a mass, and where from. */
+  reference?: { source: string; massKg: number; points: [number, number][] };
 }
 
 /** ASK21 pointmasses in ask21-jsb.xml: 0 Pilot (80 kg), 1 Copilot (80 kg), 2 Spin Ballast (0). */
@@ -19,6 +21,9 @@ export const ASK21: GliderProfile = {
     solo: { 0: 80, 1: 0, 2: 0 },
     dual: { 0: 80, 1: 80, 2: 0 },
   },
+  // XCSoar's polar store (src/Polar/PolarStore.cpp, "ASK-21"); the flight manual's chart (p. 40,
+  // DFVLR and Idaflieg) reads the same within 0.01-0.02 m/s at 469 and 563 kg.
+  reference: { source: "XCSoar PolarStore, ASK-21", massKg: 468, points: [[74.1, 0.67], [101.9, 0.9], [166.7, 2.68]] },
 };
 
 /** Make sure the aircraft is in the local FGAddon cache, downloading it if needed. */
