@@ -1,13 +1,14 @@
 /**
- * Fetch FGAddon aircraft folders through the SourceForge web UI.
- *
- * The SVN endpoint (svn.code.sf.net) and FlightGear mirrors are not reachable from every
- * environment, but the Allura tree browser is: folder listings are HTML pages and single
- * files are served raw with `?format=raw`.
+ * Fetch FGAddon aircraft folders over HTTP, from SourceForge's SVN server (svn.code.sf.net:
+ * folder listings are plain HTML lists, files are served as they are) or, where that host isn't
+ * reachable, from the Allura tree browser (listings as HTML pages, files with `?format=raw`).
+ * The browser's tree pages answered 404 from November 2026 (every fresh checkout and CI failed
+ * to get the aircraft); whichever source answers first is used from then on.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 
+export const FGADDON_SVN = "https://svn.code.sf.net/p/flightgear/fgaddon/trunk/Aircraft/";
 export const FGADDON_TREE = "https://sourceforge.net/p/flightgear/fgaddon/HEAD/tree/trunk/Aircraft/";
 
 export interface ListingEntry {
@@ -45,23 +46,46 @@ async function fetchWithRetry(url: string, tries = 5): Promise<Response | null> 
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-/** Parse an Allura tree listing page into its child entries. */
+/**
+ * Parse a folder listing into its child entries: an SVN server's (`<li><a href="name/">`,
+ * folders ending in "/") or an Allura tree page's.
+ */
 export function parseListing(html: string): ListingEntry[] {
-  const re = /<a class="icon" href="([^"]+)"[^>]*><i class="fa (fa-folder|fa-file-o)"/g;
   const out: ListingEntry[] = [];
-  for (const m of html.matchAll(re)) {
-    const name = decodeURIComponent(m[1]!);
-    out.push({ name, kind: m[2] === "fa-folder" ? "dir" : "file" });
+  const allura = /<a class="icon" href="([^"]+)"[^>]*><i class="fa (fa-folder|fa-file-o)"/g;
+  for (const m of html.matchAll(allura)) out.push({ name: decodeURIComponent(m[1]!), kind: m[2] === "fa-folder" ? "dir" : "file" });
+  if (out.length) return out;
+  for (const m of html.matchAll(/<li><a href="([^"]+)">/g)) {
+    const href = m[1]!;
+    if (href === "../" || href.startsWith("/") || href.includes("://")) continue;
+    const dir = href.endsWith("/");
+    out.push({ name: decodeURIComponent(dir ? href.slice(0, -1) : href), kind: dir ? "dir" : "file" });
   }
   return out;
 }
 
 const encodePath = (p: string) => p.split("/").map(encodeURIComponent).join("/");
 
+/** Where listings and files come from: the SVN server, else the tree browser. */
+const SOURCES = [
+  { list: (rel: string) => FGADDON_SVN + encodePath(rel) + "/", file: (rel: string) => FGADDON_SVN + encodePath(rel) },
+  { list: (rel: string) => FGADDON_TREE + encodePath(rel) + "/", file: (rel: string) => `${FGADDON_TREE}${encodePath(rel)}?format=raw` },
+];
+let source: (typeof SOURCES)[number] | undefined;
+
 export async function listDir(relPath: string): Promise<ListingEntry[]> {
-  const res = await fetchWithRetry(FGADDON_TREE + encodePath(relPath) + "/");
-  if (!res) throw new Error(`FGAddon folder not found: ${relPath}`);
-  return parseListing(await res.text());
+  let lastErr: unknown;
+  for (const s of source ? [source] : SOURCES) {
+    try {
+      const res = await fetchWithRetry(s.list(relPath), source ? 5 : 2);
+      if (!res) continue;
+      source = s;
+      return parseListing(await res.text());
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(`FGAddon folder not found: ${relPath}${lastErr ? ` (${lastErr instanceof Error ? lastErr.message : lastErr})` : ""}`);
 }
 
 function wanted(rel: string, kind: "dir" | "file", only: readonly string[] | undefined): boolean {
@@ -97,7 +121,7 @@ export async function fetchAircraft(aircraft: string, opts: FetchOptions): Promi
       const target = path.join(root, rel);
       const exists = await fs.stat(target).then(() => true, () => false);
       if (!exists) {
-        const res = await fetchWithRetry(`${FGADDON_TREE}${encodePath(`${aircraft}/${rel}`)}?format=raw`);
+        const res = await fetchWithRetry((source ?? SOURCES[0]!).file(`${aircraft}/${rel}`));
         if (!res) throw new Error(`listed file missing: ${rel}`);
         await fs.mkdir(path.dirname(target), { recursive: true });
         const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.part`;

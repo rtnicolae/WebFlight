@@ -17,6 +17,21 @@ describe("parseListing", () => {
       { name: "ask21-jsb.xml", kind: "file" },
     ]);
   });
+  it("separates folders and files in an SVN server's listing", () => {
+    const html = `<html><head><title>p/flightgear/fgaddon - Revision 21802: /trunk/Aircraft/ASK21</title></head><body>
+      <h2>p/flightgear/fgaddon - Revision 21802: /trunk/Aircraft/ASK21</h2>
+      <ul>
+       <li><a href="../">..</a></li>
+       <li><a href="Models/">Models/</a></li>
+       <li><a href="ask21-jsb.xml">ask21-jsb.xml</a></li>
+       <li><a href="My%20File.txt">My File.txt</a></li>
+      </ul><hr noshade><em><a href="http://subversion.apache.org/">Powered by Apache Subversion</a></em></body></html>`;
+    expect(parseListing(html)).toEqual([
+      { name: "Models", kind: "dir" },
+      { name: "ask21-jsb.xml", kind: "file" },
+      { name: "My File.txt", kind: "file" },
+    ]);
+  });
 });
 
 describe("PropertyList reader", () => {
