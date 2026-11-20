@@ -29,6 +29,12 @@ const fixture = {
 };
 
 describe("weather", () => {
+  it("reads the forecast's visibility, for the haze", () => {
+    const json = { ...fixture, hourly: { ...fixture.hourly, visibility: [41000, 43960, 45000] } };
+    expect(parseOpenMeteo(json, 45.7, 25.53, new Date("2026-07-15T10:20:00Z")).visibilityM).toBe(43960);
+    expect(parseOpenMeteo(fixture, 45.7, 25.53, new Date("2026-07-15T10:20:00Z")).visibilityM).toBeUndefined();
+  });
+
   it("picks the hour nearest the requested time, in UTC", () => {
     // 10:20 UTC = 13:20 local → the 13:00 row.
     const w = parseOpenMeteo(fixture, 45.7, 25.53, new Date("2026-07-15T10:20:00Z"));

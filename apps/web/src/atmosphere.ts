@@ -12,12 +12,12 @@
  * the glider, the grass. Cesium's sky, sun and drawn fog are off (its fog still decides tile
  * detail).
  *
- * The aerosol (Mie) is the day's boundary layer: as hazy as the humidity makes it up to the
+ * The aerosol (Mie) is the day's boundary layer: as hazy as the forecast's visibility up to the
  * convective top (the ground plus the weather's boundary-layer depth, where the cumulus
- * sit), 3% of that above: from above the layer its top is a line on the horizon. The
- * haze's strength from relative humidity (moist air hazes more: the particles swell):
- * visibility ~107 km at 20%, ~87 km at 35%, ~57 km at 60%, ~30 km at 80% (the owner: "reduce
- * the haze a bit"; at 60 km on the July test day the near ground already looked washed).
+ * sit), 3% of that above: from above the layer its top is a line on the horizon. Without a
+ * forecast visibility (the reanalysis days), from relative humidity (moist air hazes more:
+ * the particles swell): ~107 km at 20%, ~87 km at 35%, ~57 km at 60%, ~30 km at 80% (see
+ * hazeVisibilityKm).
  *
  * HDR only (hdr.ts), with Google's tiles: the sky and haze are radiances, scaled into the
  * scene's units (SKY_SCALE, AP_SCALE), and more as the sun goes down (the eye adapts). Stars
@@ -57,6 +57,8 @@ export interface AtmosphereOptions {
   hazeTopM: number;
   /** Relative humidity at the ground, 0–1. */
   humidity: number;
+  /** The weather's visibility at the ground [km], if it has one. */
+  visibilityKm?: number;
   /** High cloud cover, 0–1 (the weather's): a cirrus layer. */
   highCloud?: number;
   /** The wind aloft (the highest level the weather has): the cirrus's fibres and drift. */
@@ -426,6 +428,21 @@ void main() {
   out_FragColor = c;
 }`;
 
+/**
+ * The haze's visibility [km]: the forecast's where it has one (Open-Meteo; over Europe ICON's,
+ * DWD's diagnosis from humidity, cloud and precipitation: ~45 km on dry afternoons, ~25 km at
+ * 85%, from Sep–Nov 2026 at Ghimbav). GFS reports 24.14 km (15 statute miles) for anything
+ * clearer, so that figure is only a lower bound. Below ~1 km it is fog, which this haze layer
+ * can't draw. Without one (the reanalysis has none): from the humidity, as before (owner,
+ * 2026-11-18: "reduce the haze a bit" at 60 km on 10 July 2024).
+ */
+export function hazeVisibilityKm(humidity: number, forecastKm?: number): number {
+  const fromHumidity = Math.min(160, Math.max(20, 130 * Math.pow(1 - humidity, 0.9)));
+  if (forecastKm === undefined || !Number.isFinite(forecastKm)) return fromHumidity;
+  if (Math.abs(forecastKm - 24.14) < 0.005) return Math.max(forecastKm, fromHumidity);
+  return Math.min(160, Math.max(1, forecastKm));
+}
+
 /** Relative humidity from temperature and dew point (Magnus). */
 export function relativeHumidity(tempC: number, dewC: number): number {
   const es = (t: number) => Math.exp((17.62 * t) / (243.12 + t));
@@ -468,9 +485,9 @@ export class Atmosphere {
     const scene = viewer.scene;
     const context = (scene as unknown as { context: unknown }).context;
     const params = new URLSearchParams(location.search);
-    // Haze from the humidity (or ?vis=): the aerosol's extinction at the ground from the
-    // visibility (Koschmieder, 3.912 / V), less the air's own (~0.0116 / km); 90% of it scattering.
-    const visKm = params.has("vis") ? Number(params.get("vis")) : Math.min(160, Math.max(20, 130 * Math.pow(1 - opts.humidity, 0.9)));
+    // The aerosol's extinction at the ground from the visibility (Koschmieder, 3.912 / V), less
+    // the air's own (~0.0116 / km); 90% of it scattering. ?vis= tries a visibility.
+    const visKm = params.has("vis") ? Number(params.get("vis")) : hazeVisibilityKm(opts.humidity, opts.visibilityKm);
     const mieExt = Math.max(0.002, 3.912 / visKm - 0.0116);
     const mie = new Cesium.Cartesian4(mieExt * 0.9, 1 / 0.9, opts.hazeTopM / 1000, opts.groundM / 1000);
     // The eye's adaptation as the sun goes down (no auto-exposure here): the twilight sky's

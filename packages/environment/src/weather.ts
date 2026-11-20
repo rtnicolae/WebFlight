@@ -73,6 +73,8 @@ export interface Weather {
   boundaryLayerM: number;
   /** Surface pressure [hPa] at the model's ground (with the levels' dew points: the mixed-layer parcel). */
   surfacePressureHpa?: number;
+  /** Visibility [m] (the forecast's; the reanalysis has none). Only drawn: the haze. */
+  visibilityM?: number;
   /** Why the estimate was used (e.g. "Open-Meteo: daily request limit reached"). */
   note?: string;
 }
@@ -228,6 +230,7 @@ const HOURLY = [
   ...BOUNDARY_M.flatMap((m) => [`wind_speed_${m}m`, `wind_direction_${m}m`]),
   ...LEVELS_HPA.flatMap((p) => [`wind_speed_${p}hPa`, `wind_direction_${p}hPa`, `geopotential_height_${p}hPa`, `temperature_${p}hPa`, `dew_point_${p}hPa`]),
   "surface_pressure",
+  "visibility",
   "cloud_cover_low",
   "cloud_cover_high",
   "shortwave_radiation",
@@ -308,6 +311,7 @@ export function parseOpenMeteo(json: OpenMeteoResponse, latDeg: number, lonDeg: 
     shortwaveWm2: sw,
     boundaryLayerM: v("boundary_layer_height") ?? estimateBoundaryLayer(sw),
     ...(v("surface_pressure") !== undefined ? { surfacePressureHpa: v("surface_pressure")! } : {}),
+    ...(v("visibility") !== undefined ? { visibilityM: v("visibility")! } : {}),
   };
 }
 
