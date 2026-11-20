@@ -1,6 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
+import { PoseSmoother } from "./pose-smoother.ts";
 import { applyLighting, reflectSky, setLook, setSunLight, tintGround } from "./lighting.ts";
 import "./style.css";
 import { KMH_PER_KT, M_PER_FT, SnapshotLayout, SnapshotReader, type BundleManifestCore } from "@webflight/fdm-core";
@@ -420,6 +421,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
 
   let last = performance.now();
   let fps = 60;
+  // ?smooth=0: draw the newest snapshot as it is (to compare).
+  const SMOOTH = params.get("smooth") !== "0";
+  let smoother: { layout: SnapshotLayout; s: PoseSmoother } | undefined;
   const dynres = new DynamicResolution(viewer, DYNRES === null ? undefined : DYNRES === "0" ? 1 : Number(DYNRES) || 1);
   life.onClose(() => dynres.reset());
   viewer.scene.preUpdate.addEventListener(() => {
@@ -434,7 +438,10 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     send({ type: "controls", controls });
     if (!reader || !layout) return;
     reader.read();
-    const d = reader.data;
+    // The pose at a smoothly running clock between the flight model's steps (pose-smoother.ts):
+    // the newest snapshot each frame moved the glider, and the camera with it, in uneven jumps.
+    if (smoother?.layout !== layout) smoother = { layout, s: new PoseSmoother(layout) };
+    const d = SMOOTH ? smoother.s.frame(reader.data, dt) : reader.data;
     const g = (n: string) => d[layout!.at(n)]!;
 
     aircraft.showInterior(cam.mode === "cockpit");
