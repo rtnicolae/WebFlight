@@ -15,7 +15,7 @@ import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
-import { distanceM, soaringFrom, sounding, sunPosition, type WaveFieldData } from "@webflight/environment";
+import { distanceM, soaringFrom, sounding, sunPosition, type WaveFieldData, type Weather } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
@@ -148,7 +148,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   setStatus("Loading aircraft bundle…");
   const manifest = await loadManifest();
   const RUNWAY = F.runway, TIME = F.time;
-  const WORLD: WorldConfig = { terrain: "terrarium", environment: F.environment };
+  const WORLD: WorldConfig = { terrain: "terrarium", environment: F.environment, ...(F.series ? { weather: { series: F.series, startUtc: F.time.toISOString(), rate: Number(params.get("wxrate") ?? 1) || 1 } } : {}) };
+  /** The weather now, as the worker's clock moves it on (set up below). */
+  let onWeather: ((w: Weather) => void) | undefined;
   const { viewer, renderTerrain, google3d } = a;
   viewer.clock.currentTime = JulianDate.fromDate(TIME);
   const sun = sunPosition(TIME, F.latDeg, F.lonDeg);
@@ -283,6 +285,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
         case "messages":
           for (const l of m.lines) hud.message(l);
           break;
+        case "weather":
+          onWeather?.(m.weather);
+          break;
         case "error":
           setStatus(`FDM error: ${m.message}`);
           status.hidden = false;
@@ -299,12 +304,28 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // Clouds to the horizon: the flight model's thermals reach ~20 km; the same sky model (same
   // seed: the same thermals, cell by cell) out to ~50 km gives the clouds beyond (visual only).
   let gliderAt = { latDeg: start.latDeg, lonDeg: start.lonDeg };
-  if (cumulus && F.environment.thermalSky) {
+  // The weather moving on (the worker's clock): far skies, the clouds' cumulus, waves.
+  const weatherHooks: ((w: Weather) => void)[] = [(w) => thermalLayer.setCumulus(soaringFrom(w).cumulus)];
+  onWeather = (w) => weatherHooks.forEach((f) => f(w));
+  // (Built also on a blue start: the day may turn to cumulus.)
+  if (F.environment.thermalSky) {
     const farSky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 7, groundAt: (la, lo) => renderTerrain.heightAt(la, lo, 11) });
     // And on to the horizon (~160 km): the same sky on coarse terrain (zoom 9, ~25 tiles), its
     // cells beyond the ring above; drawn from the clouds' far map (vclouds.ts).
     const outerSky = new ThermalSky({ ...F.environment.thermalSky, radiusCells: 27, groundAt: (la, lo) => renderTerrain.heightAt(la, lo, 9) });
-    const e = F.environment, wind = { groundFromDeg: e.windFromDeg, groundKt: e.windKt, aloftFromDeg: e.aloftFromDeg ?? e.windFromDeg, aloftKt: e.aloftKt ?? e.windKt };
+    const e = F.environment;
+    let wind = { groundFromDeg: e.windFromDeg, groundKt: e.windKt, aloftFromDeg: e.aloftFromDeg ?? e.windFromDeg, aloftKt: e.aloftKt ?? e.windKt };
+    // Visual only, thousands of thermals: every 5 simulated minutes is enough.
+    let farWx = Date.parse(F.weather.timeUtc);
+    weatherHooks.push((w) => {
+      const t = Date.parse(w.timeUtc);
+      if (Math.abs(t - farWx) < 5 * 60_000) return;
+      farWx = t;
+      farSky.setWeather(w);
+      outerSky.setWeather(w);
+      const a = w.aloft[0];
+      wind = { groundFromDeg: w.windFromDeg, groundKt: w.windKt, aloftFromDeg: a?.fromDeg ?? w.windFromDeg, aloftKt: a?.kt ?? w.windKt };
+    });
     const tickFar = () => {
       farSky.update(3, { ...gliderAt, altFt: 0 }, wind);
       outerSky.update(3, { ...gliderAt, altFt: 0 }, wind);
@@ -321,7 +342,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   // Mountain waves (waves.ts) for the day's pressure levels: built off the main thread round the
   // glider, again when it is 20 km from the last centre; the flight model adds them to the air.
   // (No levels with temperatures, as for reanalysis days: no waves.) ?waves=0 turns them off.
-  const levels = sounding(F.weather);
+  let levels = sounding(F.weather);
   if (levels.length >= 2 && params.get("waves") !== "0") {
     const ww = new Worker(new URL("./wave-worker.ts", import.meta.url), { type: "module" });
     let centre: { latDeg: number; lonDeg: number } | undefined, busy = false, id = 0;
@@ -339,6 +360,16 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
       else console.warn("waves:", ev.data.error ?? "no field");
       waveBuildMs = ev.data.ms;
     };
+    // Built again for the air every half hour of the flight's clock, where it is now.
+    let wavesWx = Date.parse(F.weather.timeUtc);
+    weatherHooks.push((w) => {
+      const t = Date.parse(w.timeUtc), next = sounding(w);
+      if (Math.abs(t - wavesWx) < 30 * 60_000 || next.length < 2) return;
+      wavesWx = t;
+      levels = next;
+      centre = undefined;
+      want();
+    });
     want();
     const timer = setInterval(want, 5000);
     life.onClose(() => (clearInterval(timer), ww.terminate()));

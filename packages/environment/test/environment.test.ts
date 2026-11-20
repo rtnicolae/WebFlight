@@ -1,6 +1,6 @@
 import zlib from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { advance, Environment, RidgeLift, strengthFactor, TerrariumTerrain, Thermal, ThermalField, ThermalSky, tileToLonLat } from "../src/index.ts";
+import { advance, Environment, estimateWeather, RidgeLift, strengthFactor, TerrariumTerrain, Thermal, ThermalField, ThermalSky, tileToLonLat } from "../src/index.ts";
 
 /** Terrarium PNG (RGB) for a height function of pixel coordinates. */
 function terrariumPng(h: (px: number, py: number) => number): Uint8Array {
@@ -236,6 +236,24 @@ describe("TerrariumTerrain.mercatorHeightmap", () => {
       const [lon, lat] = tileToLonLat(1000 + c / (n - 1), 600 + r / (n - 1), 11);
       expect(g[r * n + c]).toBeCloseTo(t.heightAt(lat, lon, 10)!, 1);
     }
+  });
+});
+
+describe("Environment.setWeather (weather over time)", () => {
+  const base = estimateWeather(45.7, 25.53, new Date("2026-07-15T08:00:00Z"), 530);
+  const later = { ...base, timeUtc: "2026-07-15T12:00:00.000Z", windFromDeg: 200, windKt: 12, aloft: base.aloft.map((l) => ({ ...l, fromDeg: 220, kt: 25 })) };
+  const cfg = () => ({ windFromDeg: base.windFromDeg, windKt: base.windKt, profile: { elevationM: base.elevationM, windFromDeg: base.windFromDeg, windKt: base.windKt, aloft: base.aloft }, ridgeLift: false });
+  it("moves the wind by height on to the new hour's", () => {
+    const env = new Environment(cfg());
+    env.setWeather(later);
+    expect(env.config.windFromDeg).toBe(200);
+    expect(env.windHere(3000, 530).kt).toBeGreaterThan(20);
+  });
+  it("keeps a wind set by hand", () => {
+    const env = new Environment(cfg());
+    env.setWeather(later, { winds: false });
+    expect(env.config.windFromDeg).toBe(base.windFromDeg);
+    expect(env.config.profile!.aloft).toBe(base.aloft);
   });
 });
 

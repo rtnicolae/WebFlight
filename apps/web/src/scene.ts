@@ -358,7 +358,7 @@ export class ThermalLayer {
     private readonly showColumns = false,
     sun: { azimuthDeg: number; elevationDeg: number } = { azimuthDeg: 230, elevationDeg: 40 },
     /** Whether the day's thermals are marked by cumulus (else blue: no clouds drawn). */
-    private readonly cumulus = true,
+    private cumulus = true,
     /** Gets every cloud on each change (their shadows on the ground: google3d.ts). */
     private readonly shadows?: (clouds: CloudSpec[]) => void,
     /** Our sky (atmosphere.ts): the volumes take its light and haze. */
@@ -395,6 +395,13 @@ export class ThermalLayer {
   /** How many thermals mark clouds now (near: the flight model's; far: visual only). For checks. */
   get cloudCount(): { near: number; far: number } {
     return { near: this.cumulus ? this.near.length : 0, far: this.cumulus ? this.far.length : 0 };
+  }
+
+  /** The day turned (weather over time): its thermals marked by cumulus now, or blue. */
+  setCumulus(on: boolean): void {
+    if (on === this.cumulus) return;
+    this.cumulus = on;
+    this.refresh();
   }
 
   /** Thermals beyond the flight model's reach: clouds only. */

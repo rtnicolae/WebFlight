@@ -15,6 +15,26 @@ gives its JSBSim.
 | Ridge lift | FlightGear's ridge lift, driven by the wind at the glider's height (FG: the surface wind) | terrain, wind by height | Jura (test); 12 Nov 2026, Bucegi crest: +4.3 windward, −3.8 lee in a browser flight |
 | Mountain waves | linear theory (Queney, Scorer, Smith); layers joined by displacement and pressure (Jiang, Doyle & Smith 2006); absorption at critical levels (Booker & Bretherton 1967); the boundary layer absorbing at the ground with Smith, Jiang & Doyle (2006)'s values for rough ground; near the slopes FG's ridge lift, the waves taking over as it fades with height | terrain; wind and temperature at the pressure levels (forecast days only) | Queney's exact solution (8 %); the papers' worked example (R̂, q̂); trapped-wave decay in the simulations' range; undamped limit (< 1 %); 12 Nov 2026: ASK21 crabbing along the Bucegi lee wave climbs +224 m in 4 min in a browser flight (Node: same path) |
 
+## Weather over time
+
+The flight's clock is the start's time plus the simulated time (it stands still while paused; a
+reset starts it again). Every simulated minute the air takes the weather of that moment between
+the forecast's hours (`weatherAt`: linear in time, winds as vectors, visibility as extinction;
+Open-Meteo's shortwave is the preceding hour's mean, so it sits half an hour earlier):
+
+- **Wind by height** in the flight model, as at the start (a wind set by hand stays).
+- **Thermals** keep their place and their life cycle; strength, width, top and lean follow the
+  new weather. Where the day has room for more (the morning) new ones start forming; where it has
+  room for fewer (a deeper layer spaces them wider, the evening) the spare ones die out through
+  their cycle and are not reborn. Cumulus appear and go with the day.
+- **On the page:** the near clouds follow the flight model's thermals; the far ones (to 160 km)
+  every 5 simulated minutes; the mountain waves are built again every 30.
+
+Checked on 10 Jul 2024 at Ghimbav with the weather's clock at 60× (`?wxrate=60`, for testing):
+from 08:30 no thermals, at 09:30 the first (no cloud: the base above the layer), at 10:30
+cumulus near and far, the tops rising from 1,440 to 2,000 m by 16:30 and the wind turning from
+240° to 70° as the reanalysis has it.
+
 ## The glider
 
 The climb a pilot sees is the air's movement less the glider's sink, so the glider comes first.
@@ -73,7 +93,9 @@ Still open:
   winds, with each halving of the 62.5 m layers.
 - **No waves without temperatures aloft:** reanalysis days (older than ~3 months) and the gym.
 - **No turbulence:** JSBSim's MIL-spec model is not switched on.
-- **The weather is the start hour's** for the whole flight.
+- **Weather over time, in part:** the sun's position (the light, the shadows, how candidate
+  thermal spots are scored), the haze and the cirrus stay the start hour's; flights in Node
+  (headless, the gym) keep the start hour's weather throughout.
 - **Cumulus thermals' profile** above mid-height is ours (see the table).
 - **Overcast days are drawn clear:** when the model's low cloud cover is high (stratus, as on
   many November days) there are no cumulus, but no cloud deck is drawn either.

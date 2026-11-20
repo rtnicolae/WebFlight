@@ -16,6 +16,11 @@ export interface WorldConfig {
   /** "terrarium": real terrain from Terrarium tiles; "flat": the WGS84 ellipsoid. */
   terrain: "terrarium" | "flat";
   environment: import("@webflight/environment").EnvironmentConfig;
+  /**
+   * The weather through the flight: its hours (weatherAt interpolates) and the start's time;
+   * the worker follows it with the simulation's clock.
+   */
+  weather?: { series: import("@webflight/environment").Weather[]; startUtc: string; /** Weather time per simulated second (1; ?wxrate= to watch a day go by). */ rate?: number };
 }
 
 /** One thermal as drawn by the renderer. */
@@ -76,6 +81,8 @@ export type FromWorker =
   | { type: "environment"; thermals: ThermalView[]; windFromDeg: number; windKt: number; surfaceFromDeg: number; surfaceKt: number; thermalLiftMs: number; ridgeLiftMs: number; waveLiftMs?: number; groundM: number | undefined }
   /** Pilot messages (screen.log / popupTip in FG). */
   | { type: "messages"; lines: string[] }
+  /** The weather now (with the simulation's clock), after it was applied to the air. */
+  | { type: "weather"; weather: import("@webflight/environment").Weather }
   | { type: "error"; message: string };
 
 export type IcFromStart = (s: StartState) => InitialConditions;

@@ -73,10 +73,55 @@ describe("thermal placement from terrain and sun", () => {
     // Many narrow, a few wide: the median below the mean, the widest well over twice the median.
     expect(median).toBeLessThan(mean);
     expect(d[d.length - 1]! / median).toBeGreaterThan(2);
-    // Wider thermals are stronger on average.
+    // Wider thermals are stronger on average: ~1.15 over thousands of thermals (1.15-1.17 across
+    // seeds at 80 km); a 40 km sample scatters about ±0.01 round that.
     const by = (lo: number, hi: number) => ts.filter((t) => t.spec.diameterFt >= d[Math.floor(lo * d.length)]! && t.spec.diameterFt <= d[Math.floor(hi * (d.length - 1))]!);
     const avg = (xs: typeof ts) => xs.reduce((a, t) => a + t.spec.strengthFps, 0) / xs.length;
-    expect(avg(by(0.75, 1))).toBeGreaterThan(avg(by(0, 0.25)) * 1.15);
+    expect(avg(by(0.75, 1))).toBeGreaterThan(avg(by(0, 0.25)) * 1.1);
+  });
+
+  describe("as the weather changes through the flight (setWeather)", () => {
+    const calm = { groundFromDeg: 0, groundKt: 0, aloftFromDeg: 0, aloftKt: 0 };
+    const at = { latDeg: 45.7, lonDeg: 25.5, altFt: 4000 };
+    const hour = (h: number) => estimateWeather(45.7, 25.53, new Date(`2026-07-15T${String(h).padStart(2, "0")}:00:00Z`), 530);
+    it("adds forming thermals where the morning had none", () => {
+      const sky = new ThermalSky({ seed: 3, weather: hour(3), groundAt: () => 530 });
+      sky.update(1, at, calm);
+      expect(sky.thermals).toEqual([]);
+      sky.setWeather(hour(10));
+      const ts = sky.thermals;
+      expect(ts.length).toBeGreaterThan(20);
+      // They start at the beginning of their life (no cloud yet), not mid-cycle.
+      expect(ts.every((t) => t.cycleTimer === 0)).toBe(true);
+    });
+    it("keeps each thermal in place and in its cycle, with the new strength", () => {
+      const sky = new ThermalSky({ seed: 3, weather: hour(8), groundAt: () => 530 });
+      sky.update(1, at, calm);
+      const before = new Map(sky.thermals.map((t) => [t.id, { foot: t.footLatLon, cycle: t.cycleTimer, s: t.spec.strengthFps }]));
+      sky.setWeather(hour(11));
+      const kept = sky.thermals.filter((t) => before.has(t.id));
+      expect(kept.length).toBeGreaterThan(10);
+      for (const t of kept) {
+        const b = before.get(t.id)!;
+        // (Within a metre: the flat-earth offsets there and back don't cancel exactly.)
+        expect(Math.abs(t.footLatLon[0] - b.foot[0]) * 111_132).toBeLessThan(1);
+        expect(Math.abs(t.footLatLon[1] - b.foot[1]) * 77_800).toBeLessThan(1);
+        if (!t.retiring) expect(t.cycleTimer).toBe(b.cycle);
+      }
+      // The sun higher: stronger.
+      const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+      expect(mean(kept.map((t) => t.spec.strengthFps))).toBeGreaterThan(mean(kept.map((t) => before.get(t.id)!.s)));
+    });
+    it("lets them die out at night and drops them", () => {
+      const sky = new ThermalSky({ seed: 3, weather: hour(11), groundAt: () => 530 });
+      sky.update(1, at, calm);
+      expect(sky.thermals.length).toBeGreaterThan(20);
+      sky.setWeather(hour(23));
+      expect(sky.thermals.every((t) => t.retiring)).toBe(true);
+      // At most 10 more minutes of dying, then dead: dropped.
+      for (let i = 0; i < 12 * 60; i++) sky.update(1, at, calm);
+      expect(sky.thermals).toEqual([]);
+    });
   });
 
   it("has no thermals at night", () => {

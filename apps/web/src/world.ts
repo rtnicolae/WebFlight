@@ -32,6 +32,8 @@ export interface Flight {
   latDeg: number;
   lonDeg: number;
   weather: Weather;
+  /** The weather's hours round the flight (interpolated as it goes on), when fetched. */
+  series?: Weather[];
   time: Date;
   when: WhenSpec;
   environment: EnvironmentConfig;
@@ -87,15 +89,15 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
   const air = params.has("lat") && params.has("lon");
   const lat = air ? Number(params.get("lat")) : field?.latDeg ?? HOME_AIRFIELD.latDeg;
   const lon = air ? Number(params.get("lon")) : field?.lonDeg ?? HOME_AIRFIELD.lonDeg;
-  const [{ weather, time }, osmLines] = await Promise.all([
+  const [{ weather, time, series }, osmLines] = await Promise.all([
     weatherFor(lat, lon, when, field?.elevM ?? 0, new Date(), { fetchJson: cachedOpenMeteo }),
     field ? withTimeout(openFreeMapTiles().then((u) => (u ? fetchRunwayLines(u, field.latDeg, field.lonDeg) : [])), 8000, []) : Promise.resolve([]),
   ]);
   // Wind: the weather's, or ?wind=from@kt for every level.
   const m = /^(\d+(?:\.\d+)?)@(\d+(?:\.\d+)?)$/.exec(params.get("wind") ?? "");
-  const w: Weather = m
-    ? { ...weather, windFromDeg: Number(m[1]), windKt: Number(m[2]), gustKt: Number(m[2]), aloft: weather.aloft.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })), ...(weather.boundary ? { boundary: weather.boundary.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })) } : {}) }
-    : weather;
+  const windOf = (x: Weather): Weather =>
+    m ? { ...x, windFromDeg: Number(m[1]), windKt: Number(m[2]), gustKt: Number(m[2]), aloft: x.aloft.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })), ...(x.boundary ? { boundary: x.boundary.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })) } : {}) } : x;
+  const w: Weather = windOf(weather);
   let runway: Runway | undefined;
   if (field) {
     const rws = field.runways.map((r) => resolveRunway(field, r, osmLines));
@@ -124,6 +126,7 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
     time,
     when,
     environment,
+    ...(series?.length ? { series: series.map(windOf) } : {}),
     name: air ? `free flight${field ? ` near ${field.name}` : ""}` : field && runway ? `${field.name} · ${runway.name.split("/")[0]}` : "?",
     weatherText: describeWeather(w),
   };

@@ -21,7 +21,7 @@ import {
   type AirbrakeRoute,
   type FgControls,
 } from "@webflight/fdm-core";
-import { applyEnvironment, Environment, TerrariumTerrain, type EnvironmentOutput } from "@webflight/environment";
+import { applyEnvironment, Environment, TerrariumTerrain, weatherAt, type EnvironmentOutput, type Weather } from "@webflight/environment";
 import { hitchesFromProperties, Launch, type LaunchView } from "@webflight/launch";
 import type { FromWorker, StartState, ThermalView, ToWorker, WorldConfig } from "./protocol.ts";
 
@@ -63,6 +63,34 @@ function setupWorld(w: WorldConfig): void {
   terrain = w.terrain === "terrarium" ? new TerrariumTerrain({ zoom: 13 }) : undefined;
   env = new Environment(w.environment, terrain);
   if (pendingWaves) env.waves = pendingWaves;
+  weatherSeries = w.weather?.series;
+  weatherStartMs = w.weather ? Date.parse(w.weather.startUtc) : 0;
+  weatherRate = Math.max(1, w.weather?.rate ?? 1);
+}
+
+/**
+ * Weather over time: the flight's clock is the start's time plus the simulated time since the
+ * start (paused, it stands still; a reset starts it again). Every simulated minute the air
+ * takes the weather of that moment between the forecast's hours (weatherAt): the wind by
+ * height and the thermals (environment.ts, thermals.ts); the page hears of it too.
+ */
+let weatherSeries: Weather[] | undefined;
+let weatherStartMs = 0;
+/** Weather seconds per simulated second: 1 (?wxrate= runs the day faster, to watch it). */
+let weatherRate = 1;
+let flightS = 0;
+let weatherAppliedS = -Infinity;
+/** A wind set by hand (the "wind" message) stays; the weather's thermals still change. */
+let windFixed = false;
+const WEATHER_EVERY_S = 60;
+function stepWeather(dt: number): void {
+  if (!weatherSeries?.length || !env) return;
+  flightS += dt;
+  if (flightS - weatherAppliedS < Math.max(1, WEATHER_EVERY_S / weatherRate)) return;
+  weatherAppliedS = flightS;
+  const w = weatherAt(weatherSeries, new Date(weatherStartMs + flightS * weatherRate * 1000));
+  env.setWeather(w, { winds: !windFixed });
+  post({ type: "weather", weather: w });
 }
 
 /** Keep the tiles around the aircraft (and the ridge probes upwind) loaded ahead of time. */
@@ -193,6 +221,9 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
   };
   f.set(P.terrainElevationAslFt, groundM * FT_PER_M);
   launch = undefined;
+  // The flight's clock starts again (the weather as at the start, applied with the first step).
+  flightS = 0;
+  weatherAppliedS = -Infinity;
   let t: { control: number; alphaDeg: number; converged: boolean };
   if (s.ground) {
     // Standing on the runway, wings held by the wing runner (FG: /controls/gear/assist-1).
@@ -276,6 +307,7 @@ function tick(): void {
       applyControls();
       try {
         stepEnvironment(due / rateHz);
+        stepWeather(due / rateHz);
         stepLaunch(due / rateHz);
         host?.preStep();
         fdm.step(due);
@@ -378,6 +410,7 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           env.config.windFromDeg = msg.fromDeg;
           env.config.windKt = msg.kt;
           delete env.config.profile;
+          windFixed = true;
         }
         break;
       case "action":

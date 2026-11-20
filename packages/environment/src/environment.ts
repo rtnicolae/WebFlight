@@ -128,6 +128,25 @@ export class Environment {
     };
   }
 
+  /**
+   * The weather now (weather over time, weatherAt): the wind by height the aircraft flies in
+   * and the thermal sky follow it. winds: false keeps the winds as they are (a wind set by hand).
+   */
+  setWeather(w: Weather, opts: { winds?: boolean } = {}): void {
+    const c = this.config;
+    if (opts.winds !== false) {
+      c.windFromDeg = w.windFromDeg;
+      c.windKt = w.windKt;
+      const aloft = w.aloft[0];
+      if (aloft) {
+        c.aloftFromDeg = aloft.fromDeg;
+        c.aloftKt = aloft.kt;
+      }
+      if (c.profile) c.profile = { elevationM: w.elevationM, windFromDeg: w.windFromDeg, windKt: w.windKt, aloft: w.aloft, ...(w.boundary ? { boundary: w.boundary } : {}) };
+    }
+    if (this.thermals instanceof ThermalSky) this.thermals.setWeather(w);
+  }
+
   /** The wind at a height [m] over a ground height [m]. */
   windHere(altM: number, groundM: number): { fromDeg: number; kt: number } {
     const c = this.config, p = c.profile;
