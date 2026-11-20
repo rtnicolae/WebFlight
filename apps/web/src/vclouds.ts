@@ -138,8 +138,9 @@ vec4 g_b[${TOWERS}];
 void towers(int i) {
   for (int k = 0; k < ${TOWERS}; k++) g_b[k] = texelFetch(u_towers, ivec2(k, i), 0);
 }
-// Density of cloud i at q (relative to its base centre, world axes).
-float density(int i, vec3 q, bool detail) {
+// Density of cloud i at q (relative to its base centre, world axes); detail: how much of the
+// detail erosion (0–1).
+float density(int i, vec3 q, float detail) {
   float R = u_c[i].w, H = u_d[i].x;
   float h = dot(q, u_up);
   if (h < 0.0 || h > H) return 0.0;
@@ -163,12 +164,12 @@ float density(int i, vec3 q, bool detail) {
   float base = remap(sn.r, wf - 1.0, 1.0, 0.0, 1.0);
   float d = remap(base, 1.0 - cov, 1.0, 0.0, 1.0) * cov;
   if (d <= 0.0) return 0.0;
-  if (detail) {
+  if (detail > 0.0) {
     // World-scale wisps (~260 m tile): ragged at the base, billowy above.
     vec3 dn = texture(u_detail, q / u_form.w + u_d[i].z * 3.1).rgb;
     float df = dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125;
     float dm = mix(1.0 - df, df, clamp(hn * 4.0, 0.0, 1.0));
-    d = remap(d, dm * u_form.y, 1.0, 0.0, 1.0);
+    d = remap(d, dm * u_form.y * detail, 1.0, 0.0, 1.0);
   }
   // Dense right behind the surface: crisp edges (real cumulus are), soft only where eroded.
   // Level base: a short fade at the bottom only.
@@ -344,20 +345,22 @@ void main() {
     float R = u_c[i].w, H = u_d[i].x;
     float a0 = t0s[h], a1 = t1s[h];
     towers(i);
-    // Fewer steps and no detail far away (a cloud 30 km off is a few dozen pixels).
+    // Fewer steps and no detail far away (a cloud 30 km off is a few dozen pixels). The detail
+    // fades out with each sample's distance: switched off where the ray entered the cloud's
+    // cylinder beyond 20 km, a cloud about that far was cut into upright bands (the middle
+    // eroded and grey, the sides smooth and white).
     float far = smoothstep(5000.0, 30000.0, a0);
-    bool detail = a0 < 20000.0;
     float dt = max((a1 - a0) / mix(u_light.w, 14.0, far), R * 0.015);
     float t = a0 + dt * jit;
     for (int it = 0; it < 64; it++) {
       if (t >= a1) break;
       vec3 q = dir * t - u_c[i].xyz;
-      float dens = density(i, q, detail);
+      float dens = density(i, q, 1.0 - smoothstep(14000.0, 24000.0, t));
       if (dens <= 0.0) { t += dt; continue; }
       if (firstT < 0.0) firstT = t;
       // Towards the sun: 5 steps, growing, shape only.
       float od = 0.0, ls = R * 0.1;
-      for (int s = 1; s <= 5; s++) od += density(i, q + sun * (ls * float(s * s) * 0.4), false) * ls * float(s) * 0.8;
+      for (int s = 1; s <= 5; s++) od += density(i, q + sun * (ls * float(s * s) * 0.4), 0.0) * ls * float(s) * 0.8;
       od *= sigma;
       // Multiple scattering, three octaves.
       float powder = mix(0.55, 1.0, 1.0 - exp(-dens * 6.0));
@@ -373,7 +376,9 @@ void main() {
       t += dt;
     }
   }
-  if (firstT < 0.0) { out_FragColor = vec4(0.0); return; }
+  // Nothing of them here (the ray only crossed their bounds): the far field alone. (It returned
+  // nothing: far clouds behind a near cloud's bounds were cut out along upright edges.)
+  if (firstT < 0.0) { out_FragColor = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sun, sunColFar, ph0, ph1, ph2, jitF); return; }
   float a = 1.0 - T;
   vec3 col = lin;
   if (u_ap0.y > 0.5) {
