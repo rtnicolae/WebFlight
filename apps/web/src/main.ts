@@ -149,7 +149,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   setStatus("Loading aircraft bundle…");
   const manifest = await loadManifest();
   const RUNWAY = F.runway, TIME = F.time;
-  const WORLD: WorldConfig = { terrain: "terrarium", environment: F.environment, ...(F.series ? { weather: { series: F.series, startUtc: F.time.toISOString(), rate: Number(params.get("wxrate") ?? 1) || 1 } } : {}) };
+  const WORLD: WorldConfig = { terrain: "terrarium", environment: F.environment, ...(F.series ? { weather: { series: F.series, startUtc: F.time.toISOString(), rate: Number(params.get("wxrate") ?? 1) || 1, ...(F.grid ? { grid: F.grid } : {}) } } : {}) };
   /** The weather now, as the worker's clock moves it on (set up below). */
   let onWeather: ((w: Weather) => void) | undefined;
   const { viewer, renderTerrain, google3d } = a;

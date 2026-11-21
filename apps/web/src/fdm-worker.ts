@@ -63,7 +63,7 @@ function setupWorld(w: WorldConfig): void {
   terrain = w.terrain === "terrarium" ? new TerrariumTerrain({ zoom: 13 }) : undefined;
   env = new Environment(w.environment, terrain);
   if (pendingWaves) env.waves = pendingWaves;
-  weatherClock = w.weather?.series.length ? new WeatherClock(w.weather.series, w.weather.startUtc, Math.max(1, w.weather.rate ?? 1)) : undefined;
+  weatherClock = w.weather?.series.length ? new WeatherClock(w.weather.series, w.weather.startUtc, Math.max(1, w.weather.rate ?? 1), 60, w.weather.grid) : undefined;
 }
 
 /**
@@ -75,8 +75,9 @@ function setupWorld(w: WorldConfig): void {
 let weatherClock: WeatherClock | undefined;
 /** A wind set by hand (the "wind" message) stays; the weather's thermals still change. */
 let windFixed = false;
-function stepWeather(dt: number): void {
-  const w = env ? weatherClock?.step(dt) : undefined;
+function stepWeather(dt: number, at?: { latDeg: number; lonDeg: number }): void {
+  // With the weather by place: the weather where the glider is (or `at`: a start not yet flown to).
+  const w = env && fdm ? weatherClock?.step(dt, at ?? { latDeg: fdm.get("position/lat-geod-deg"), lonDeg: fdm.get("position/long-gc-deg") }) : undefined;
   if (!w || !env) return;
   env.setWeather(w, { winds: !windFixed });
   post({ type: "weather", weather: w });
@@ -213,7 +214,7 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
   // The flight's clock starts again, and the weather as at the start is applied now: the air's
   // temperature and pressure at the start's height go into the trim (its airspeed → true airspeed).
   weatherClock?.restart();
-  stepWeather(0);
+  stepWeather(0, { latDeg: s.latDeg, lonDeg: s.lonDeg });
   if (env) applyAir(env, f, groundM + (s.ground ? 0 : s.aglM));
   let t: { control: number; alphaDeg: number; converged: boolean };
   if (s.ground) {

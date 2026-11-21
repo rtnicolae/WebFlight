@@ -53,6 +53,30 @@ turn backlit, and at 20:30 its disc sits on the horizon in an orange glow, with 
 19:00 the cumulus end and the clouds dissolve (half gone after 5 real minutes). From 19:30: at
 20:30 the disc on the horizon, at 21:30 an orange band under a purple sky over a dark ground.
 
+## Weather by place
+
+The weather used to be one column's, the start's, everywhere. Now the browser also fetches
+Open-Meteo's columns on a 5 × 5 grid round the start, 16.5 km apart (±33 km; one request for
+the same days and model as the start's), each on the forecast model's own smooth ground
+(`elevation=nan`: without downscaling to a 90 m height model, one node landed on a peak and the
+next in a valley). `weatherOnGrid` blends the four columns round a point bilinearly, by physical
+height (`blendWeather`): each column's 2 m air and surface pressure at the blended ground
+(`air.ts`), the convective layer's top above sea level, winds as vectors, levels by pressure.
+
+- **The flight model** takes the weather where the glider is (`WeatherClock.step` with its
+  position, every simulated minute): wind by height, temperature, humidity and pressure.
+- **Thermals:** every sky cell, near (the flight model's) and far (the page's, to 160 km), takes
+  the convective layer over its centre: strength, spacing and width, cloud base, cumulus or
+  blue. On 10 Jul 2024 at 13:00 near Ghimbav: thermal tops from 2,170 to 2,645 m (the
+  mountains to the south 2,520 m on average, the basin 2,300 m), against one 2,157 m with the
+  start's column. Same frame rate.
+- **Not by place yet:** the wind the thermal columns lean in (the glider's weather's, one wind
+  table for all cells), the haze, cirrus and light (the glider's), and the gym and headless
+  flights (the start's column). Beyond the grid, its edge's weather. `?wxgrid=0`: the start's
+  column everywhere. The grid's answer (~1 MB) is cached in the browser's Cache Storage
+  (archive days kept, forecasts an hour): 25 columns count as 25 of Open-Meteo's free calls (×
+  ~6 for the number of variables).
+
 ## The air's temperature, humidity and pressure
 
 JSBSim used to fly in the standard atmosphere (15 °C and 1013.25 hPa at sea level, dry) whatever

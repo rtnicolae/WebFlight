@@ -27,7 +27,7 @@
  */
 import { sunPosition } from "./sun.ts";
 import { advance, distanceM, mulberry32 } from "./util.ts";
-import { soaringFrom, windAt, type Soaring, type Weather } from "./weather.ts";
+import { soaringFrom, weatherOnGrid, windAt, type Soaring, type Weather, type WeatherGrid } from "./weather.ts";
 
 /** Wind at a height [m MSL] over a ground height [m]. */
 export type WindAtFn = (altM: number, groundM: number) => { fromDeg: number; kt: number };
@@ -509,6 +509,12 @@ export interface ThermalSkyOptions {
    * terrain and sun trigger them (needs groundAt; cells wait until their terrain is loaded).
    */
   weather?: Weather;
+  /**
+   * The weather by place (weatherOnGrid, at the time of `weather`): each cell's convective
+   * layer (thermal strength, spacing and width, cloud base, cumulus or blue) is the one over
+   * its centre. The wind the columns lean in stays `weather`'s (one wind table for all cells).
+   */
+  grid?: WeatherGrid;
 }
 
 /** Where thermals start: how well a spot is heated and how well it releases bubbles. */
@@ -606,16 +612,32 @@ interface SkyCell {
   nFactor?: number;
   cand?: Candidate[];
   sun?: { azimuthDeg: number; elevationDeg: number };
+  /** With a grid: the weather over the cell's centre, and the field it was taken from. */
+  wx?: { of: unknown; w: Weather; s: Soaring };
 }
 
 export class ThermalSky {
   private readonly cells = new Map<string, SkyCell>();
   /** FGAIManager: lift of the nearest thermal [ft/s]. */
   strengthFps = 0;
-  private readonly o: Required<Omit<ThermalSkyOptions, "groundAt" | "weather">> & Pick<ThermalSkyOptions, "groundAt" | "weather">;
+  private readonly o: Required<Omit<ThermalSkyOptions, "groundAt" | "weather" | "grid">> & Pick<ThermalSkyOptions, "groundAt" | "weather" | "grid">;
+  /** The weather by place now (with a grid). */
+  private field: ((latDeg: number, lonDeg: number) => Weather) | undefined;
 
   constructor(o: ThermalSkyOptions) {
     this.o = { cellM: 6000, perCellSpread: 3, radiusCells: 3, cloudBaseM: 1800, strengthMs: [1.0, 3.0], diameterM: [300, 700], ...o };
+    if (o.grid && o.weather) this.field = weatherOnGrid(o.grid, new Date(o.weather.timeUtc));
+  }
+
+  /** The weather over a cell (its centre's, with a grid; else the one weather) and its soaring numbers. */
+  private cellWeather(cell: SkyCell, cx: number, cy: number, w: Weather): { w: Weather; s: Soaring } {
+    const f = this.field;
+    if (!f) return { w, s: (this.soaring ??= soaringFrom(w)) };
+    if (cell.wx?.of !== f) {
+      const cw = f(((cy + 0.5) * this.o.cellM) / SKY_M_LAT, ((cx + 0.5) * this.o.cellM) / SKY_M_LON);
+      cell.wx = { of: f, w: cw, s: soaringFrom(cw) };
+    }
+    return cell.wx;
   }
 
   private soaring: Soaring | undefined;
@@ -633,6 +655,7 @@ export class ThermalSky {
     if (!this.o.weather) return;
     this.o.weather = w;
     this.soaring = soaringFrom(w);
+    if (this.o.grid) this.field = weatherOnGrid(this.o.grid, new Date(w.timeUtc));
     for (const [key, cell] of this.cells) {
       const [x, y] = key.split(":").map(Number) as [number, number];
       this.fillCell(cell, x, y, w, false); // terrain missing for new candidates: as it was, next time
@@ -657,9 +680,10 @@ export class ThermalSky {
    * (±40 %, the cell's own factor), each the best of four candidates scored by terrain and sun;
    * kept, retuned, added or retired against what the cell had. False while terrain is missing.
    */
-  private fillCell(cell: SkyCell, cx: number, cy: number, w: Weather, fresh: boolean): boolean {
+  private fillCell(cell: SkyCell, cx: number, cy: number, weather: Weather, fresh: boolean): boolean {
     const o = this.o, ground = o.groundAt;
-    const s = (this.soaring ??= soaringFrom(w));
+    // The convective layer over this cell; the wind the columns lean in is the one weather's.
+    const { w, s } = this.cellWeather(cell, cx, cy, weather);
     const n = s.wStarMs < 0.5 ? 0 : Math.round(((o.cellM * o.cellM) / (s.spacingM * s.spacingM)) * cell.nFactor!);
     const cand = cell.cand!;
     for (let j = cand.length; j < 4 * n; j++) {
@@ -671,7 +695,7 @@ export class ThermalSky {
     // above sea level; where the ground reaches it there is no thermal under a cumulus to have.
     const baseMsl = w.elevationM + s.thermalTopAglM;
     const topM = (_g: number) => baseMsl;
-    if (this.wind?.w !== w) this.wind = { w, fn: windTable(w) };
+    if (this.wind?.w !== weather) this.wind = { w: weather, fn: windTable(weather) };
     const wind = this.wind.fn;
     for (let k = 0; k < Math.max(n, cell.thermals.length); k++) {
       const t = cell.thermals[k];
