@@ -3,7 +3,7 @@
  * thermals (same Environment as the browser worker), plus a small autopilot that holds a
  * heading or a bank angle and an airspeed. Used by tests and as a baseline for training.
  */
-import { applyEnvironment, Environment, WeatherClock, type EnvironmentConfig, type EnvironmentOutput, type TerrariumTerrain } from "@webflight/environment";
+import { applyAir, applyEnvironment, Environment, WeatherClock, type EnvironmentConfig, type EnvironmentOutput, type TerrariumTerrain } from "@webflight/environment";
 import { controlsToJsbsim, FT_PER_M, KMH_PER_KT, M_PER_FT, P, trimSteadyGlide, type AirbrakeRoute, type Fdm, type FgControls } from "@webflight/fdm-core";
 import { ASK21, createGlider, type GliderProfile } from "./gliders.ts";
 import { nodeTerrain } from "./terrain.ts";
@@ -51,6 +51,8 @@ export class SoaringSim {
     const sim = new SoaringSim(fdm, environment, ASK21_AIRBRAKE);
     sim.weatherClock = opts.weather;
     fdm.set(P.terrainElevationAslFt, ground);
+    // The day's air at the start's height (with an air column), before the trim.
+    applyAir(environment, fdm, ground / FT_PER_M + start.aglM);
     const trim = trimSteadyGlide(fdm, {
       speed: { veKts: start.easKmh / KMH_PER_KT },
       base: { "ic/terrain-elevation-ft": ground, "ic/lat-geod-deg": start.latDeg, "ic/long-gc-deg": start.lonDeg, "ic/h-agl-ft": start.aglM * FT_PER_M, "ic/psi-true-deg": start.headingDeg },

@@ -280,6 +280,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
           break;
         case "log":
           if (/error|warn|not ported|not supported/i.test(m.line)) console.warn("[fdm]", m.line);
+          else if (m.line.startsWith("air at")) console.info("[fdm]", m.line);
           break;
         case "environment":
           thermalLayer.update(m.thermals);

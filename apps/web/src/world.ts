@@ -6,6 +6,7 @@
 import {
   fetchOpenMeteo,
   OPEN_METEO_ARCHIVE,
+  airColumnOf,
   airfieldAt,
   airfieldsAround,
   describeWeather,
@@ -114,6 +115,7 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
     windKt: w.windKt,
     ...(aloft ? { aloftFromDeg: aloft.fromDeg, aloftKt: aloft.kt } : {}),
     profile: { elevationM: w.elevationM, windFromDeg: w.windFromDeg, windKt: w.windKt, aloft: w.aloft, ...(w.boundary ? { boundary: w.boundary } : {}) },
+    air: airColumnOf(w),
     ridgeLift: true,
     thermalSky: thermals ? { seed: Number(params.get("seed") ?? 1), weather: w } : false,
   };

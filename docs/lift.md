@@ -53,6 +53,37 @@ turn backlit, and at 20:30 its disc sits on the horizon in an orange glow, with 
 19:00 the cumulus end and the clouds dissolve (half gone after 5 real minutes). From 19:30: at
 20:30 the disc on the horizon, at 21:30 an orange band under a purple sky over a dark ground.
 
+## The air's temperature, humidity and pressure
+
+JSBSim used to fly in the standard atmosphere (15 °C and 1013.25 hPa at sea level, dry) whatever
+the day. Now it gets the day's air at the glider's height, as FlightGear hands it to JSBSim
+(`FGJSBsim::copy_to_JSBsim`: temperature and dew point at the aircraft, sea-level pressure),
+from the weather's own column (`air.ts`, environment package):
+
+- **Temperature and dew point:** the 2 m values over the model's ground, then the pressure
+  levels' (925 to 600 hPa), linear in height between them; beyond them the standard lapse
+  (6.5 K/km), the dew point keeping its spread. Without levels (the reanalysis), the standard
+  lapse from 2 m: FG's own fallback from a station report.
+- **Pressure:** the surface pressure at the model's ground (now also fetched from the
+  reanalysis), then the levels' pressures; log-linear in height between them, hydrostatic
+  beyond. With no pressure at all (the offline estimate): 1013.25 hPa at sea level under the
+  day's temperatures.
+- **Into JSBSim** every step batch: its temperature bias (uniform in height) set for the
+  temperature at the glider, its sea-level pressure for the pressure at the glider (its own
+  hydrostatics through the biased column), then the dew point (JSBSim keeps the moisture as a
+  vapour fraction). At a start, before the trim (airspeed → true airspeed). The air follows the
+  weather's clock.
+- **The altimeters** (front and rear seat) are set to the day's QNH at the start, as before
+  take-off: on the runway they read the field's height; aloft, a hot day's temperature error
+  (10 Jul 2024, 28 °C at Ghimbav: 840 m shown at 854 m).
+
+The effect: on a hot afternoon the air is a few per cent thinner, the true airspeed and sink a
+few per cent higher at the same indicated speed (10 Jul 2024 at 850 m: true/indicated 1.070, a
+November day 1.038, the standard atmosphere 1.042). Checks: `packages/environment/test/air.test.ts`
+(the column, QNH, no change on a standard day) and `apps/headless/test/air.test.ts` (JSBSim's own
+temperature, pressure and dew point at the glider, standing and gliding, against the column).
+The gym and `SoaringSim` set it too.
+
 ## The glider
 
 The climb a pilot sees is the air's movement less the glider's sink, so the glider comes first.

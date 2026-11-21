@@ -21,7 +21,7 @@ import {
   type AirbrakeRoute,
   type FgControls,
 } from "@webflight/fdm-core";
-import { applyEnvironment, Environment, TerrariumTerrain, WeatherClock, type EnvironmentOutput } from "@webflight/environment";
+import { airAt, applyAir, applyEnvironment, Environment, qnhHpa, TerrariumTerrain, WeatherClock, type EnvironmentOutput } from "@webflight/environment";
 import { hitchesFromProperties, Launch, type LaunchView } from "@webflight/launch";
 import type { FromWorker, StartState, ThermalView, ToWorker, WorldConfig } from "./protocol.ts";
 
@@ -210,8 +210,11 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
   };
   f.set(P.terrainElevationAslFt, groundM * FT_PER_M);
   launch = undefined;
-  // The flight's clock starts again (the weather as at the start, applied with the first step).
+  // The flight's clock starts again, and the weather as at the start is applied now: the air's
+  // temperature and pressure at the start's height go into the trim (its airspeed → true airspeed).
   weatherClock?.restart();
+  stepWeather(0);
+  if (env) applyAir(env, f, groundM + (s.ground ? 0 : s.aglM));
   let t: { control: number; alphaDeg: number; converged: boolean };
   if (s.ground) {
     // Standing on the runway, wings held by the wing runner (FG: /controls/gear/assist-1).
@@ -234,6 +237,13 @@ async function applyStart(s: StartState): Promise<{ pitchTrim: number; alphaDeg:
     for (const [p, v] of Object.entries(controlsToFgProperties(controls, airbrake))) host.tree.set(p, v);
     host.reinit();
     if (s.ground) host.tree.set("/controls/gear/assist-1", true);
+    // The altimeter set to the day's QNH, as before take-off (with the standard setting it would
+    // read the pressure altitude: metres off on a day of high or low pressure).
+    if (env?.config.air) {
+      const qnh = qnhHpa(env.config.air, groundM), a = airAt(env.config.air, groundM);
+      for (const alt of ["altimeter", "altimeter[1]"]) host.tree.set(`/instrumentation/${alt}/setting-inhg`, qnh / 33.8639); // front and rear seat
+      post({ type: "log", line: `air at the start's ground (${groundM.toFixed(0)} m): ${a.tempC.toFixed(1)} °C, dew point ${a.dewPointC.toFixed(1)} °C, ${a.hPa.toFixed(1)} hPa${a.pressureEstimated ? " (estimated: standard at sea level)" : ""}, QNH ${qnh.toFixed(1)}` });
+    }
   }
   if (s.ground?.launch) {
     const g = groundM;

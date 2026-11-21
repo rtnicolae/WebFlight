@@ -214,7 +214,7 @@ export function surfaceLayerFactor(aglM: number, z0 = OPEN_TERRAIN_Z0_M): number
 export const OPEN_METEO = "https://api.open-meteo.com/v1/forecast";
 /** Historical weather (reanalysis): surface and 100 m only, no pressure levels. */
 export const OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive";
-const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
+const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "surface_pressure", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
 /** The forecast API serves up to 92 past days; older days come from the archive. */
 export const FORECAST_PAST_DAYS = 90;
 /** Pressure levels asked for winds and temperatures aloft (≈ 0.8, 1, 1.5, 2, 3, 4.2, 5.6 and 7.2 km). */
