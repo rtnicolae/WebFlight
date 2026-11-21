@@ -11,6 +11,7 @@ import {
   airfieldsAround,
   describeWeather,
   distanceM,
+  GridFollower,
   HOME_AIRFIELD,
   parseWhen,
   resolveRunway,
@@ -38,6 +39,8 @@ export interface Flight {
   series?: Weather[];
   /** The weather by place round the start (its hours on a grid), when fetched. */
   grid?: WeatherGrid;
+  /** That grid moving with the glider (main.ts asks it every few seconds). */
+  gridFollower?: GridFollower;
   time: Date;
   when: WhenSpec;
   environment: EnvironmentConfig;
@@ -52,8 +55,9 @@ export interface Flight {
  * are reused for an hour. At most 30 responses (~15 kB each), oldest dropped first.
  */
 /**
- * A grid's answer (~1 MB, 25 columns: too big for localStorage) in the Cache Storage: archive
- * days kept, forecasts for an hour, as the small answers.
+ * Model columns on the model's ground (a grid's 25, ~1 MB: too big for localStorage; or the few
+ * it asks for as it moves) in the Cache Storage: archive days kept, forecasts for an hour, as
+ * the small answers.
  */
 async function cachedGrid(url: string): Promise<unknown> {
   const fresh = (u: string, at: number) => u.startsWith(OPEN_METEO_ARCHIVE) || Date.now() - at < 3600_000;
@@ -78,7 +82,7 @@ async function cachedGrid(url: string): Promise<unknown> {
 }
 
 async function cachedOpenMeteo(url: string): Promise<unknown> {
-  if (url.includes("elevation=nan,")) return cachedGrid(url);
+  if (url.includes("elevation=nan")) return cachedGrid(url);
   const KEY = "webflight.wx";
   type Entry = { url: string; at: number; json: unknown };
   let store: Entry[] = [];
@@ -162,7 +166,7 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
     when,
     environment,
     ...(series?.length ? { series: series.map(windOf) } : {}),
-    ...(wgrid ? { grid: wgrid } : {}),
+    ...(wgrid ? { grid: wgrid, gridFollower: new GridFollower(wgrid, cachedOpenMeteo, windOf) } : {}),
     name: air ? `free flight${field ? ` near ${field.name}` : ""}` : field && runway ? `${field.name} · ${runway.name.split("/")[0]}` : "?",
     weatherText: describeWeather(w),
   };

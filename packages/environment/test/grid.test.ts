@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { airAt, blendWeather, estimateWeather, gridAround, openMeteoGridUrl, parseWeatherGrid, soaringFrom, ThermalSky, WeatherClock, weatherOnGrid, type Weather, type WeatherGrid } from "../src/index.ts";
+import { airAt, blendWeather, estimateWeather, GridFollower, gridAround, openMeteoGridUrl, parseWeatherGrid, soaringFrom, ThermalSky, WeatherClock, weatherOnGrid, type Weather, type WeatherGrid } from "../src/index.ts";
 
 const NOON = new Date("2026-07-15T11:00:00Z");
 const base = estimateWeather(45.65, 25.5, NOON, 530);
@@ -81,5 +81,138 @@ describe("weather by place (a grid of model columns)", () => {
     expect(mean(west)).toBeGreaterThan(mean(east) + 300);
     expect(mean(west)).toBeLessThanOrEqual(top(2400) + 1);
     expect(mean(east)).toBeGreaterThanOrEqual(top(1200) - 1);
+  });
+
+  // Open-Meteo's answer for columns asked for (a stand-in): the layer deepens eastwards, ~420 m a node.
+  const layerAt = (lon: number) => 1000 + 2000 * (lon - 25);
+  const answer = (lat: number, lon: number) => ({
+    latitude: lat,
+    longitude: lon,
+    elevation: 530,
+    utc_offset_seconds: 10800,
+    timezone: "Europe/Bucharest",
+    hourly: {
+      time: [NOON.getTime() / 1000, NOON.getTime() / 1000 + 3600],
+      temperature_2m: [28, 29],
+      dew_point_2m: [14, 14],
+      wind_speed_10m: [5, 6],
+      wind_direction_10m: [300, 300],
+      wind_gusts_10m: [8, 9],
+      cloud_cover_low: [10, 10],
+      shortwave_radiation: [800, 800],
+      boundary_layer_height: [layerAt(lon), layerAt(lon) + 100],
+    },
+  });
+  const openMeteo = (urls: string[], fail = () => false) => async (url: string): Promise<unknown> => {
+    urls.push(url);
+    if (fail()) throw new Error("HTTP 429");
+    const q = new URL(url).searchParams, la = q.get("latitude")!.split(",").map(Number), lo = q.get("longitude")!.split(",").map(Number);
+    const list = la.map((x, k) => answer(x, lo[k]!));
+    return list.length === 1 ? list[0] : list;
+  };
+  const firstGrid = async (): Promise<WeatherGrid> => {
+    const g = gridAround(45.65, 25.5);
+    return { ...parseWeatherGrid(await openMeteo([])(openMeteoGridUrl(g, "2026-07-14", "2026-07-16")), g, "forecast", 3), request: { from: "2026-07-14", to: "2026-07-16", source: "forecast", utcOffsetH: 3 } };
+  };
+
+  describe("moving with the flight", () => {
+    it("stays while the aircraft is a spacing inside, then moves on its lattice asking only for the new column", async () => {
+      const urls: string[] = [];
+      const first = await firstGrid(), f = new GridFollower(first, openMeteo(urls));
+      const { dLat, dLon } = first, mid = (k: number) => 25.5 + k * dLon;
+      expect(await f.follow(45.65 + 0.9 * dLat, mid(0.95))).toBeUndefined();
+      expect(urls).toHaveLength(0);
+      // 1.2 spacings east of the middle, 0.8 from the edge: the grid moves a column east.
+      const lat = 45.65 + 0.3 * dLat, lon = mid(1.2);
+      const before = weatherOnGrid(first, NOON)(lat, lon);
+      const g = (await f.follow(lat, lon))!;
+      expect(urls).toHaveLength(1);
+      const q = new URL(urls[0]!).searchParams;
+      expect(q.get("latitude")!.split(",")).toHaveLength(5);
+      expect(q.get("longitude")!.split(",").map(Number).every((x) => Math.abs(x - mid(3)) < 1e-4)).toBe(true);
+      expect(q.get("start_date")).toBe("2026-07-14");
+      expect(g.lat0).toBeCloseTo(first.lat0, 12);
+      expect(g.lon0).toBeCloseTo(first.lon0 + dLon, 12);
+      // The same columns where the grids overlap: the weather where the aircraft is doesn't jump.
+      for (let i = 0; i < 5; i++) for (let j = 0; j < 4; j++) expect(g.nodes[i * 5 + j]).toBe(first.nodes[i * 5 + j + 1]);
+      const after = weatherOnGrid(g, NOON)(lat, lon);
+      expect(after.boundaryLayerM).toBeCloseTo(before.boundaryLayerM, 6);
+      expect(after.tempC).toBeCloseTo(before.tempC, 6);
+      // And the new column is the place's own, not the old edge's.
+      expect(weatherOnGrid(g, NOON)(45.65, mid(3)).boundaryLayerM).toBeCloseTo(layerAt(mid(3)), 0);
+      expect(weatherOnGrid(first, NOON)(45.65, mid(3)).boundaryLayerM).toBeCloseTo(layerAt(mid(2)), 0);
+      expect(await f.follow(lat, lon)).toBeUndefined();
+    });
+
+    it("asks for nothing to go back: flying back, or a reset to the start", async () => {
+      const urls: string[] = [];
+      const first = await firstGrid(), f = new GridFollower(first, openMeteo(urls));
+      const { dLat, dLon } = first;
+      await f.follow(45.65 + 1.3 * dLat, 25.5 + 1.4 * dLon); // north-east: a row and a column (9)
+      expect(new URL(urls[0]!).searchParams.get("latitude")!.split(",")).toHaveLength(9);
+      expect(f.grid.lat0).toBeCloseTo(first.lat0 + dLat, 12);
+      // A reset to the start: at once, from the columns had.
+      const back = f.moveNow(45.65, 25.5)!;
+      expect(back.lat0).toBeCloseTo(first.lat0, 12);
+      expect(back.lon0).toBeCloseTo(first.lon0, 12);
+      expect(back.nodes.every((n, k) => n === first.nodes[k])).toBe(true);
+      // Out again, the same way: nothing asked for.
+      expect(await f.follow(45.65 + 1.3 * dLat, 25.5 + 1.4 * dLon)).toBeDefined();
+      expect(urls).toHaveLength(1);
+      // Somewhere new can't be had at once.
+      expect(f.moveNow(45.65, 25.5 + 6 * dLon)).toBeUndefined();
+    });
+
+    it("keeps its grid when the request fails, and asks again a minute later", async () => {
+      const urls: string[] = [];
+      let down = true;
+      const first = await firstGrid(), f = new GridFollower(first, openMeteo(urls, () => down));
+      const east = 25.5 + 1.5 * first.dLon;
+      await expect(f.follow(45.65, east, 0)).rejects.toThrow(/429/);
+      expect(f.grid).toBe(first);
+      expect(await f.follow(45.65, east, 30_000)).toBeUndefined();
+      expect(urls).toHaveLength(1);
+      down = false;
+      expect((await f.follow(45.65, east, 61_000))!.lon0).toBeCloseTo(first.lon0 + first.dLon, 12);
+    });
+
+    it("drops an answer that comes after a later move, and passes new columns through the map", async () => {
+      let release: () => void = () => {};
+      const urls: string[] = [];
+      const first = await firstGrid();
+      const slow = async (url: string) => {
+        await new Promise<void>((r) => (release = r));
+        return openMeteo(urls)(url);
+      };
+      const f = new GridFollower(first, slow, (w) => ({ ...w, windKt: 33 }));
+      const out = f.follow(45.65, 25.5 + 1.5 * first.dLon);
+      // A reset while it is out (the grid already round the start: no move); the answer, for
+      // where the glider was, is not applied.
+      expect(f.moveNow(45.65, 25.5)).toBeUndefined();
+      release();
+      expect(await out).toBeUndefined();
+      expect(f.grid).toBe(first);
+      // Its columns are kept, mapped: the next check moves at once.
+      const g = (await f.follow(45.65, 25.5 + 1.5 * first.dLon))!;
+      expect(urls).toHaveLength(1);
+      expect(g.nodes[4]![0]!.windKt).toBe(33);
+      expect(g.nodes[3]![0]!.windKt).toBe(first.nodes[4]![0]!.windKt);
+    });
+
+    it("leaves the thermals the grids share as they were", async () => {
+      const first = await firstGrid(), f = new GridFollower(first, openMeteo([]));
+      const w = weatherOnGrid(first, NOON)(45.65, 25.5 + 0.5 * first.dLon);
+      const sky = new ThermalSky({ seed: 3, weather: w, grid: first, groundAt: () => 530 });
+      const at = (s: ThermalSky) => s.thermalsAround(45.65, 25.5 + 0.5 * first.dLon, 4000).map((t) => ({ id: t.id, top: t.spec.heightMslFt, fps: t.spec.strengthFps }));
+      const before = at(sky);
+      expect(before.length).toBeGreaterThan(0);
+      sky.setGrid((await f.follow(45.65, 25.5 + 1.5 * first.dLon))!);
+      const after = at(sky);
+      expect(after.map((t) => t.id)).toEqual(before.map((t) => t.id));
+      after.forEach((t, k) => {
+        expect(t.top).toBeCloseTo(before[k]!.top, 6);
+        expect(t.fps).toBeCloseTo(before[k]!.fps, 6);
+      });
+    });
   });
 });

@@ -432,9 +432,20 @@ export interface WeatherGrid {
   cols: number;
   /** Each node's hours (parseOpenMeteoHours). */
   nodes: Weather[][];
+  /** How its columns were asked for: more are asked for the same way as it moves (GridFollower). */
+  request?: GridRequest;
 }
 
-/** Nodes per side, and their spacing [m]: 5 × 5 over ±33 km (beyond it, the edge's weather). */
+/** The local days, the source and its notes of a grid's request. */
+export interface GridRequest {
+  from: string;
+  to: string;
+  source: "forecast" | "archive";
+  utcOffsetH: number;
+  note?: string;
+}
+
+/** Nodes per side, and their spacing [m]: 5 × 5 over ±33 km (beyond it, the edge's weather; a GridFollower moves it along). */
 export const GRID_SIDE = 5;
 export const GRID_SPACING_M = 16_500;
 
@@ -444,25 +455,126 @@ export function gridAround(latDeg: number, lonDeg: number, side = GRID_SIDE, spa
   return { lat0: latDeg - h * dLat, lon0: lonDeg - h * dLon, dLat, dLon, rows: side, cols: side };
 }
 
-/** One request for every node of a grid (Open-Meteo takes lists of coordinates). */
-export function openMeteoGridUrl(g: Omit<WeatherGrid, "nodes">, from: string, to: string, archive = false): string {
-  const lats: string[] = [], lons: string[] = [];
-  for (let i = 0; i < g.rows; i++)
-    for (let j = 0; j < g.cols; j++) {
-      lats.push((g.lat0 + i * g.dLat).toFixed(4));
-      lons.push((g.lon0 + j * g.dLon).toFixed(4));
-    }
-  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${lats.join(",")}&longitude=${lons.join(",")}&elevation=${lats.map(() => "nan").join(",")}&hourly=${(archive ? ARCHIVE_HOURLY : HOURLY).join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
+/** A grid's nodes, row by row from the south, west to east [lat, lon]. */
+const gridPoints = (g: Omit<WeatherGrid, "nodes">): [number, number][] => {
+  const pts: [number, number][] = [];
+  for (let i = 0; i < g.rows; i++) for (let j = 0; j < g.cols; j++) pts.push([g.lat0 + i * g.dLat, g.lon0 + j * g.dLon]);
+  return pts;
+};
+
+/** One request for model columns at several points (Open-Meteo takes lists of coordinates), each on the model's own ground. */
+export function openMeteoPointsUrl(points: [number, number][], from: string, to: string, archive = false): string {
+  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${points.map((p) => p[0].toFixed(4)).join(",")}&longitude=${points.map((p) => p[1].toFixed(4)).join(",")}&elevation=${points.map(() => "nan").join(",")}&hourly=${(archive ? ARCHIVE_HOURLY : HOURLY).join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
+}
+
+/** One request for every node of a grid. */
+export const openMeteoGridUrl = (g: Omit<WeatherGrid, "nodes">, from: string, to: string, archive = false): string => openMeteoPointsUrl(gridPoints(g), from, to, archive);
+
+/** Each point's hours from Open-Meteo's answer (one response per point, in the order asked). */
+function parsePoints(json: unknown, points: [number, number][], source: "forecast" | "archive", utcOffsetH: number, note = ""): Weather[][] {
+  const list = Array.isArray(json) ? (json as OpenMeteoResponse[]) : [json as OpenMeteoResponse];
+  if (list.length !== points.length) throw new Error(`open-meteo grid: ${list.length} of ${points.length} nodes`);
+  return list.map((r, k) => parseOpenMeteoHours(r, points[k]![0], points[k]![1], source).map((w) => ({ ...w, utcOffsetH, ...(note ? { note } : {}) })));
 }
 
 /** A grid's hours from Open-Meteo's answer (one response per node, in the order asked). */
 export function parseWeatherGrid(json: unknown, g: Omit<WeatherGrid, "nodes">, source: "forecast" | "archive", utcOffsetH: number, note = ""): WeatherGrid {
-  const list = Array.isArray(json) ? (json as OpenMeteoResponse[]) : [json as OpenMeteoResponse];
-  if (list.length !== g.rows * g.cols) throw new Error(`open-meteo grid: ${list.length} of ${g.rows * g.cols} nodes`);
-  const nodes = list.map((r, k) =>
-    parseOpenMeteoHours(r, g.lat0 + Math.floor(k / g.cols) * g.dLat, g.lon0 + (k % g.cols) * g.dLon, source).map((w) => ({ ...w, utcOffsetH, ...(note ? { note } : {}) })),
-  );
-  return { ...g, nodes };
+  return { ...g, nodes: parsePoints(json, gridPoints(g), source, utcOffsetH, note) };
+}
+
+/**
+ * Weather by place along a flight (roadmap W4, kept small): when the aircraft comes within one
+ * spacing of the grid's edge, the grid moves on its own lattice to have it at its middle node
+ * again. The nodes it keeps are the same columns (the same places, asked for the same days), so
+ * the weather over the ground the two grids share, the aircraft's included, doesn't change with
+ * the move. Only the columns not had yet are asked for, in one request (a row or a column: 5);
+ * every one is kept for the flight, so flying back, or a reset to the start, asks for none.
+ */
+export class GridFollower {
+  /** The columns had so far, by their place on the first grid's lattice ("row:col"). */
+  private readonly known = new Map<string, Weather[]>();
+  private readonly lat00: number;
+  private readonly lon00: number;
+  /** The grid's south-west node on the lattice. */
+  private at: [number, number] = [0, 0];
+  private busy = false;
+  private retryMs = 0;
+  /** Counts the moves and jumps: a request that answers after a later one is not applied. */
+  private moves = 0;
+  constructor(
+    public grid: WeatherGrid,
+    private readonly fetchJson: (url: string) => Promise<unknown>,
+    /** Applied to every column asked for (the browser's ?wind= override). */
+    private readonly map: (w: Weather) => Weather = (w) => w,
+  ) {
+    this.lat00 = grid.lat0;
+    this.lon00 = grid.lon0;
+    grid.nodes.forEach((n, k) => this.known.set(`${Math.floor(k / grid.cols)}:${k % grid.cols}`, n));
+  }
+
+  /** The south-west node that puts a position at the middle one; undefined while it's ≥ one spacing inside. */
+  private wanted(latDeg: number, lonDeg: number): [number, number] | undefined {
+    const g = this.grid, fy = (latDeg - g.lat0) / g.dLat, fx = (lonDeg - g.lon0) / g.dLon;
+    if (fy >= 1 && fy <= g.rows - 2 && fx >= 1 && fx <= g.cols - 2) return undefined;
+    return [this.at[0] + Math.round(fy) - Math.floor((g.rows - 1) / 2), this.at[1] + Math.round(fx) - Math.floor((g.cols - 1) / 2)];
+  }
+
+  /** The grid with its south-west node at `at`, and the lattice places of the columns not had yet. */
+  private layout(at: [number, number]): { g: Omit<WeatherGrid, "nodes">; places: [number, number][]; missing: [number, number][] } {
+    const { dLat, dLon, rows, cols } = this.grid;
+    const places: [number, number][] = [];
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) places.push([at[0] + i, at[1] + j]);
+    const { nodes: _, ...rest } = this.grid;
+    return { g: { ...rest, lat0: this.lat00 + at[0] * dLat, lon0: this.lon00 + at[1] * dLon }, places, missing: places.filter(([i, j]) => !this.known.has(`${i}:${j}`)) };
+  }
+
+  private moveTo(at: [number, number], l: ReturnType<GridFollower["layout"]>): WeatherGrid {
+    this.at = at;
+    this.moves++;
+    this.grid = { ...l.g, nodes: l.places.map(([i, j]) => this.known.get(`${i}:${j}`)!) };
+    return this.grid;
+  }
+
+  /**
+   * The grid for a position the aircraft jumps to (a reset), from the columns already had, to
+   * apply before it is there: undefined if it needn't move, or can't yet. A request still out,
+   * for where it was, is not applied.
+   */
+  moveNow(latDeg: number, lonDeg: number): WeatherGrid | undefined {
+    this.moves++;
+    const at = this.wanted(latDeg, lonDeg);
+    if (!at) return undefined;
+    const l = this.layout(at);
+    return l.missing.length ? undefined : this.moveTo(at, l);
+  }
+
+  /**
+   * Moves the grid when the position calls for it, asking for the columns it lacks: the new grid,
+   * or undefined (no move needed, a request still out, or one answered after a later move). A
+   * failed request throws; the grid stays (its edge's weather beyond) and is asked for again a
+   * minute later.
+   */
+  async follow(latDeg: number, lonDeg: number, nowMs = Date.now()): Promise<WeatherGrid | undefined> {
+    const at = this.wanted(latDeg, lonDeg);
+    if (!at || this.busy) return undefined;
+    const l = this.layout(at);
+    if (!l.missing.length) return this.moveTo(at, l);
+    const r = this.grid.request;
+    if (!r || nowMs < this.retryMs) return undefined;
+    this.busy = true;
+    const moves = this.moves;
+    try {
+      const pts = l.missing.map(([i, j]) => [this.lat00 + i * this.grid.dLat, this.lon00 + j * this.grid.dLon] as [number, number]);
+      const cols = parsePoints(await this.fetchJson(openMeteoPointsUrl(pts, r.from, r.to, r.source === "archive")), pts, r.source, r.utcOffsetH, r.note);
+      l.missing.forEach(([i, j], k) => this.known.set(`${i}:${j}`, cols[k]!.map(this.map)));
+    } catch (e) {
+      this.retryMs = nowMs + 60_000;
+      throw e;
+    } finally {
+      this.busy = false;
+    }
+    return moves === this.moves ? this.moveTo(at, l) : undefined;
+  }
 }
 
 const vecSum = (items: { k: number; fromDeg: number; kt: number }[]) => {
@@ -564,7 +676,7 @@ export class WeatherClock {
     readonly rate = 1,
     readonly everyS = 60,
     /** Weather by place (weatherOnGrid): step() then gives the weather where the aircraft is. */
-    readonly grid?: WeatherGrid,
+    public grid?: WeatherGrid,
   ) {
     this.startMs = typeof start === "string" ? Date.parse(start) : start.getTime();
   }
@@ -730,8 +842,9 @@ export async function weatherFor(
       let grid: WeatherGrid | undefined, gridError: string | undefined;
       if (opts.grid) {
         const g = gridAround(latDeg, lonDeg);
+        const request: GridRequest = { from: ymd(new Date(d0.getTime() - 86400_000)), to: ymd(new Date(d0.getTime() + 86400_000)), source, utcOffsetH: offsetH, ...(note ? { note } : {}) };
         try {
-          grid = parseWeatherGrid(await (opts.fetchJson ?? fetchOpenMeteo)(openMeteoGridUrl(g, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), source === "archive")), g, source, offsetH, note);
+          grid = { ...parseWeatherGrid(await (opts.fetchJson ?? fetchOpenMeteo)(openMeteoGridUrl(g, request.from, request.to, source === "archive")), g, source, offsetH, note), request };
         } catch (e) {
           gridError = `Open-Meteo grid: ${e instanceof Error ? e.message : String(e)}`;
         }

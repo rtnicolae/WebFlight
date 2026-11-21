@@ -68,6 +68,8 @@ export type ToWorker =
   | { type: "launch"; action: "start" | "release" | "faster" | "slower" }
   /** The mountain-wave field round the aircraft (wave-worker.ts), replacing any before. */
   | { type: "waves"; field: import("@webflight/environment").WaveFieldData }
+  /** The weather by place moved with the glider (GridFollower), replacing the one before. */
+  | { type: "grid"; grid: import("@webflight/environment").WeatherGrid }
   /** Change the wind (other environment settings stay). */
   | { type: "wind"; fromDeg: number; kt: number }
   | { type: "reset"; start: StartState }
