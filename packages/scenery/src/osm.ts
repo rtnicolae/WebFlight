@@ -177,8 +177,11 @@ class MeshBuilder {
   tri(a: number, b: number, c: number) {
     this.i.push(a, b, c);
   }
-  /** A flat-shaded triangle (own vertices, face normal pointing away from `inside`). */
-  face(a: number[], b: number[], c: number[], col: readonly number[], mat = 2) {
+  /**
+   * A flat-shaded triangle (own vertices, face normal pointing away from `inside`). v runs up
+   * the slope from local height `v0` (a wall's: the building's foot, as the walls' v does).
+   */
+  face(a: number[], b: number[], c: number[], col: readonly number[], mat = 2, v0 = 0) {
     const ux = b[0]! - a[0]!, uy = b[1]! - a[1]!, uz = b[2]! - a[2]!;
     const vx = c[0]! - a[0]!, vy = c[1]! - a[1]!, vz = c[2]! - a[2]!;
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
@@ -190,7 +193,7 @@ class MeshBuilder {
     this.mat = mat;
     const put = (q: number[]) => {
       this.u = q[0]! * hx + q[1]! * hy;
-      this.v = q[2]! / slope;
+      this.v = (q[2]! - v0) / slope;
       return this.vertex(q[0]!, q[1]!, q[2]!, nx, ny, nz, col);
     };
     const i0 = put(a), i1 = put(b), i2 = put(c);
@@ -448,7 +451,7 @@ export function buildingMesh(polys: OsmPolygon[], frame: LocalFrame, ground: Gro
     }
     const rect = rings.length === 1 && outer.length <= 14 && tall <= 14 ? footprintRect(outer) : undefined;
     const photoRoof = o.roofColour?.(poly);
-    if (rect && rect.fill > 0.82 && rect.short <= 24 && rect.short >= 4) pitchedRoof(m, frame, rect, h1, rRoof, photoRoof);
+    if (rect && rect.fill > 0.82 && rect.short <= 24 && rect.short >= 4) pitchedRoof(m, frame, rect, h1, rRoof, photoRoof, base, wall);
     else {
       const pal = FLAT[Math.floor(rRoof() * FLAT.length)]!;
       flatRoof(m, frame, rings, h1, photoRoof ?? pal, rRoof() < 0.35 ? 4 : 3);
@@ -625,7 +628,7 @@ function flatRoof(m: MeshBuilder, frame: LocalFrame, rings: [number, number][][]
 }
 
 /** Hipped (or, one time in three, gabled) roof on a rectangle, 30–40° pitch, 0.4 m eaves. */
-function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof footprintRect>, h: number, r: () => number, photo?: readonly number[]) {
+function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof footprintRect>, h: number, r: () => number, photo: readonly number[] | undefined, base: number, wall: readonly number[]) {
   const pal = PITCHED[Math.floor(r() * PITCHED.length)]!;
   const col = photo ?? pal;
   let [c0, c1, c2, c3] = rect.corners as [[number, number], [number, number], [number, number], [number, number]];
@@ -653,9 +656,11 @@ function pitchedRoof(m: MeshBuilder, frame: LocalFrame, rect: ReturnType<typeof 
   m.face(e0, e1, t1, col); m.face(e0, t1, t0, col);
   m.face(e2, e3, t0, col); m.face(e2, t0, t1, col);
   if (gable) {
-    // Gable ends are wall.
-    const wall = WALLS[Math.floor(r() * 3)]!;
-    m.face(e3, e0, t0, wall, 1); m.face(e1, e2, t1, wall, 1);
+    // Gable ends are the building's wall, their v from its foot like the walls' (from the
+    // frame's origin they read as below ground where the house stands lower: drawn as earth).
+    r(); // (the colour draw the gables used to take: the same roofs as before)
+    const v0 = frame.up(ctr[0]!, ctr[1]!, base);
+    m.face(e3, e0, t0, wall, 1, v0); m.face(e1, e2, t1, wall, 1, v0);
   } else {
     m.face(e3, e0, t0, col); m.face(e1, e2, t1, col);
   }

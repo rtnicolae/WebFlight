@@ -173,12 +173,20 @@ void main() {
       base *= 1.0 - (brick ? 0.05 : 0.10) * detail * smoothstep(0.55, 0.95, streak);
     }
     // Plinth: a stone/render base course.
+#ifdef UNDER_GOOGLE
+    // Below our ground: under Google's tiles, whose ground lies a metre or two below ours in
+    // places (more so on their coarser distant tiles), the plinth carried down: a raised
+    // foundation, not the dark band earth made there.
+    if (v < 0.55) base = mix(base, vec3(0.42, 0.41, 0.39) * (farFrag ? 1.0 : 0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), v < -0.05 ? 1.0 : detail * 0.85);
+#else
     // Below the ground (the walls go 10 m down for slopes): earth, if coarse terrain shows it.
     if (v < -0.05) base = vec3(0.22, 0.2, 0.16);
     else if (v < 0.55 && detail > 0.0) base = mix(base, vec3(0.42, 0.41, 0.39) * (0.9 + 0.2 * vnoise(vec2(u * 3.0, v * 3.0))), detail * 0.85);
+#endif
     // Contact shadow at the foot, eave shadow under the roof (houses).
     base *= mix(1.0, 0.72 + 0.28 * smoothstep(0.0, 0.9, v), detail);
-    if (!block) base *= mix(1.0, 0.68 + 0.32 * smoothstep(0.0, 0.7, wallH - v), detail);
+    // (Gable ends, above the walls, only along the eaves.)
+    if (!block) base *= mix(1.0, 0.68 + 0.32 * smoothstep(0.0, 0.7, abs(wallH - v)), detail);
     // Facade style by seed: houses get floor bands; blocks are panels (seed < 0.6) or banded.
     bool panels = block && !brick && seed < 0.6;
     if (panels) {
@@ -312,6 +320,11 @@ void main() {
     if (fy < 0.9 && v > 1.0) { base = mix(g, v_color.rgb * 0.55, 0.7); spec *= 0.3; }
     if (min(pm.x, pm.y) < 0.05 * mix(1.0, 3.0, smoothstep(150.0, 600.0, d))) { base = vec3(0.55, 0.57, 0.6); spec = 0.0; }
   }
+  // The colours above are display values (palettes, photo, textures); with HDR the scene is
+  // linear light, and our own shaders must say so (hdr.ts): converted here (no-op in LDR).
+  // Unconverted, the final gamma lifted them pale: terracotta (150, 86, 66) came out a washed
+  // salmon (209, 163, 146) beside Google's roofs.
+  base = czm_gammaCorrect(base);
   float sun = max(dot(n, czm_lightDirectionEC), 0.0);
   // Sky light plus sun, scaled so a roof in full sun comes to ~1.1x its colour (it was ~1.4x:
   // mid-brown tiles rendered bright salmon, brighter and more saturated than the roofs in the
@@ -425,7 +438,7 @@ czm_material czm_getMaterial(czm_materialInput mi) {
  * far: a distant tile (≥ ~1.7 km): the same shader compiled without what has faded out by then
  * (facade detail, windows, textures), so it gives the same colours for a fraction of the work.
  */
-function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false, mesh: Mesh | undefined = r.mesh): Primitive | undefined {
+function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false, mesh: Mesh | undefined = r.mesh, underGoogle = false): Primitive | undefined {
   const m = mesh;
   if (!m || !m.indices.length) return undefined;
   const pos = new Float64Array(m.positions);
@@ -443,7 +456,7 @@ function primitive(r: OsmResult, shadows: boolean, tex: Textures, far = false, m
   const [lon, lat, h] = r.origin;
   return new Primitive({
     geometryInstances: new GeometryInstance({ geometry, modelMatrix: Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(lon, lat, h)) }),
-    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: lookGlsl(VS), fragmentShaderSource: lookGlsl(far ? `#define FAR\n${FS}` : FS), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
+    appearance: new MaterialAppearance({ material: material(tex), vertexShaderSource: lookGlsl(VS), fragmentShaderSource: lookGlsl(`${far ? "#define FAR\n" : ""}${underGoogle ? "#define UNDER_GOOGLE\n" : ""}${FS}`), translucent: false, closed: false, renderState: { depthTest: { enabled: true }, cull: { enabled: false } } }),
     asynchronous: false,
     compressVertices: false,
     allowPicking: false,
@@ -506,7 +519,7 @@ export class OsmLayer {
     }
     // The skyline lies beyond the shadows' reach (4 km at most, scene.ts): no shadows there.
     const near = kind === "b";
-    const p = r.trees ? (this.atlas ? treeImpostors(this.atlas, r.origin, r.trees, this.o.shadows) : undefined) : this.textures ? primitive(r, this.o.shadows && kind !== "s", this.textures, !near) : undefined;
+    const p = r.trees ? (this.atlas ? treeImpostors(this.atlas, r.origin, r.trees, this.o.shadows) : undefined) : this.textures ? primitive(r, this.o.shadows && kind !== "s", this.textures, !near, r.mesh, this.o.underGoogle) : undefined;
     if (p) this.viewer.scene.primitives.add(p);
     this.tiles.set(key, p ?? null);
     this.ready.add(key);
@@ -515,7 +528,7 @@ export class OsmLayer {
       const [lon0, lat1] = tileToLonLat(+xs, +ys, 14), [lon1, lat0] = tileToLonLat(+xs + 1, +ys + 1, 14);
       const lonM = (lon0 + lon1) / 2, latM = (lat0 + lat1) / 2;
       const quarters = r.mesh.parts.flatMap((part, i) => {
-        const dp = primitive(r, this.o.shadows, this.textures!, false, part);
+        const dp = primitive(r, this.o.shadows, this.textures!, false, part, this.o.underGoogle);
         if (!dp) return [];
         this.viewer.scene.primitives.add(dp);
         const east = i & 1, south = i & 2;
