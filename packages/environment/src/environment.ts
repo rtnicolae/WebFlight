@@ -15,7 +15,11 @@
  * rise over them is FG's ridge lift, so the waves come in as FG's ridge lift fades with height
  * (its own height factor): w = thermal + ridge + (1 − f_ridge)·wave, the slope's flow counted
  * once.
+ *
+ * With the day's air column (air.ts), the temperature, humidity and pressure at the aircraft's
+ * height go to JSBSim too (its standard atmosphere otherwise).
  */
+import { airColumnOf, jsbsimAir, type AirColumn, type JsbsimAir } from "./air.ts";
 import { RidgeLift } from "./ridge.ts";
 import type { TerrariumTerrain } from "./terrain.ts";
 import { ThermalField, ThermalSky, type ThermalFieldOptions, type ThermalSkyOptions, type WindProfile } from "./thermals.ts";
@@ -41,6 +45,8 @@ export interface EnvironmentConfig {
    * FDM flies in the wind at its height. Without it, the surface wind blows at every height.
    */
   profile?: WindProfileData;
+  /** The day's temperature, humidity and pressure by height (air.ts); without it, JSBSim's standard atmosphere. */
+  air?: AirColumn;
   ridgeLift?: boolean;
   thermals?: Omit<ThermalFieldOptions, "groundAt"> | false;
   /** Thermals everywhere, streamed around the aircraft (cross-country); replaces `thermals`. */
@@ -68,6 +74,8 @@ export interface EnvironmentOutput {
   /** The horizontal wind at the aircraft (FG: /environment/wind-from-heading-deg, wind-speed-kt). */
   windFromDeg: number;
   windKt: number;
+  /** The air at the aircraft for JSBSim, with the day's air column. */
+  air?: JsbsimAir;
 }
 
 export class Environment {
@@ -125,6 +133,7 @@ export class Environment {
       waveLiftFps: wave,
       windFromDeg: here.fromDeg,
       windKt: here.kt,
+      ...(c.air ? { air: jsbsimAir(c.air, s.altFt * FT_TO_M) } : {}),
     };
   }
 
@@ -144,6 +153,8 @@ export class Environment {
       }
       if (c.profile) c.profile = { elevationM: w.elevationM, windFromDeg: w.windFromDeg, windKt: w.windKt, aloft: w.aloft, ...(w.boundary ? { boundary: w.boundary } : {}) };
     }
+    // The air follows the weather wherever it was given (not a wind set by hand: that is wind only).
+    if (c.air) c.air = airColumnOf(w);
     if (this.thermals instanceof ThermalSky) this.thermals.setWeather(w);
   }
 

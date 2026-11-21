@@ -8,7 +8,9 @@ export type { ThermalFieldOptions, ThermalSkyOptions, ThermalSpec, Updraft, User
 export { Environment } from "./environment.ts";
 export type { AircraftState, EnvironmentConfig, EnvironmentOutput, WindProfileData } from "./environment.ts";
 export { advance, distanceM, lowPass, mulberry32 } from "./util.ts";
-export { applyEnvironment } from "./fdm.ts";
+export { applyAir, applyEnvironment } from "./fdm.ts";
+export { airAt, airColumnOf, jsbsimAir, qnhHpa } from "./air.ts";
+export type { Air, AirColumn, JsbsimAir } from "./air.ts";
 export * from "./waves.ts";
 export type { FdmLike as EnvFdmLike } from "./fdm.ts";
 export * from "./sites.ts";

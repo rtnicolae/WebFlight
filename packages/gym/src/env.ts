@@ -12,7 +12,7 @@
  * preloaded around the site and frozen, so the same seed and the same actions give
  * bit-identical observations and rewards.
  */
-import { applyEnvironment, Environment, mulberry32, WeatherClock, type TerrariumTerrain } from "@webflight/environment";
+import { airColumnOf, applyEnvironment, Environment, jsbsimAir, mulberry32, WeatherClock, type TerrariumTerrain } from "@webflight/environment";
 import { RunwayFrame } from "./common.ts";
 import type { GymSite, SitePicker } from "./sites.ts";
 import { controlsToJsbsim, Fdm, FdmError, LBS_PER_KG, P, type AircraftFiles, type AirbrakeRoute, type FdmOptions } from "@webflight/fdm-core";
@@ -87,6 +87,12 @@ export class GliderEnv {
     this.fdm = fdm;
     fdm.load(this.o.aircraft);
     for (const [i, kg] of Object.entries(this.o.loadoutKg)) fdm.set(P.pointmassWeightLbs(Number(i)), kg * LBS_PER_KG);
+    // The day's air at the field (temperature, humidity, pressure: air.ts) before RunIC.
+    const air = airColumnOf(site.weather);
+    const groundAir = jsbsimAir(air, this.siteGroundM);
+    fdm.set("atmosphere/delta-T", groundAir.deltaTR);
+    fdm.set("atmosphere/P-sl-psf", groundAir.pSlPsf);
+    fdm.set("atmosphere/dew-point-R", groundAir.dewPointR);
     fdm.runIc();
     const terrain = this.o.terrain;
     const fallback = this.siteGroundM;
@@ -103,6 +109,7 @@ export class GliderEnv {
           windKt: w.windKt,
           ...(aloft ? { aloftFromDeg: aloft.fromDeg, aloftKt: aloft.kt } : {}),
           profile: { elevationM: w.elevationM, windFromDeg: w.windFromDeg, windKt: w.windKt, aloft: w.aloft, ...(w.boundary ? { boundary: w.boundary } : {}) },
+          air,
           ridgeLift: !!terrain,
           thermalSky: this.o.thermals !== false && terrain ? { seed: seed >>> 0, weather: w } : false,
         },

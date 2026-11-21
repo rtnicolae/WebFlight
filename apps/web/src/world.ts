@@ -6,6 +6,7 @@
 import {
   fetchOpenMeteo,
   OPEN_METEO_ARCHIVE,
+  airColumnOf,
   airfieldAt,
   airfieldsAround,
   describeWeather,
@@ -18,6 +19,7 @@ import {
   type EnvironmentConfig,
   type Runway,
   type Weather,
+  type WeatherGrid,
   type WhenSpec,
 } from "@webflight/environment";
 import { fetchRunwayLines } from "@webflight/scenery";
@@ -34,6 +36,8 @@ export interface Flight {
   weather: Weather;
   /** The weather's hours round the flight (interpolated as it goes on), when fetched. */
   series?: Weather[];
+  /** The weather by place round the start (its hours on a grid), when fetched. */
+  grid?: WeatherGrid;
   time: Date;
   when: WhenSpec;
   environment: EnvironmentConfig;
@@ -47,7 +51,34 @@ export interface Flight {
  * and the free API limits requests per day. Historical days never change (kept); forecasts
  * are reused for an hour. At most 30 responses (~15 kB each), oldest dropped first.
  */
+/**
+ * A grid's answer (~1 MB, 25 columns: too big for localStorage) in the Cache Storage: archive
+ * days kept, forecasts for an hour, as the small answers.
+ */
+async function cachedGrid(url: string): Promise<unknown> {
+  const fresh = (u: string, at: number) => u.startsWith(OPEN_METEO_ARCHIVE) || Date.now() - at < 3600_000;
+  let cache: Cache | undefined;
+  try {
+    cache = await caches.open("webflight-wx");
+    const hit = await cache.match(url);
+    if (hit && fresh(url, Number(hit.headers.get("x-at")))) return await hit.json();
+  } catch {}
+  const json = await fetchOpenMeteo(url);
+  if (cache) {
+    const c = cache;
+    void (async () => {
+      for (const k of await c.keys()) {
+        const r = await c.match(k);
+        if (!r || !fresh(k.url, Number(r.headers.get("x-at")))) await c.delete(k);
+      }
+      await c.put(url, new Response(JSON.stringify(json), { headers: { "content-type": "application/json", "x-at": String(Date.now()) } }));
+    })().catch(() => {});
+  }
+  return json;
+}
+
 async function cachedOpenMeteo(url: string): Promise<unknown> {
+  if (url.includes("elevation=nan,")) return cachedGrid(url);
   const KEY = "webflight.wx";
   type Entry = { url: string; at: number; json: unknown };
   let store: Entry[] = [];
@@ -89,8 +120,9 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
   const air = params.has("lat") && params.has("lon");
   const lat = air ? Number(params.get("lat")) : field?.latDeg ?? HOME_AIRFIELD.latDeg;
   const lon = air ? Number(params.get("lon")) : field?.lonDeg ?? HOME_AIRFIELD.lonDeg;
-  const [{ weather, time, series }, osmLines] = await Promise.all([
-    weatherFor(lat, lon, when, field?.elevM ?? 0, new Date(), { fetchJson: cachedOpenMeteo }),
+  // The weather by place too (a grid round the start; ?wxgrid=0: the start's everywhere).
+  const [{ weather, time, series, grid, gridError }, osmLines] = await Promise.all([
+    weatherFor(lat, lon, when, field?.elevM ?? 0, new Date(), { fetchJson: cachedOpenMeteo, grid: params.get("wxgrid") !== "0" }),
     field ? withTimeout(openFreeMapTiles().then((u) => (u ? fetchRunwayLines(u, field.latDeg, field.lonDeg) : [])), 8000, []) : Promise.resolve([]),
   ]);
   // Wind: the weather's, or ?wind=from@kt for every level.
@@ -98,6 +130,8 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
   const windOf = (x: Weather): Weather =>
     m ? { ...x, windFromDeg: Number(m[1]), windKt: Number(m[2]), gustKt: Number(m[2]), aloft: x.aloft.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })), ...(x.boundary ? { boundary: x.boundary.map((l) => ({ ...l, fromDeg: Number(m[1]), kt: Number(m[2]) })) } : {}) } : x;
   const w: Weather = windOf(weather);
+  if (gridError) console.warn(`${gridError}: the weather at the start everywhere`);
+  const wgrid = grid ? { ...grid, nodes: grid.nodes.map((n) => n.map(windOf)) } : undefined;
   let runway: Runway | undefined;
   if (field) {
     const rws = field.runways.map((r) => resolveRunway(field, r, osmLines));
@@ -114,8 +148,9 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
     windKt: w.windKt,
     ...(aloft ? { aloftFromDeg: aloft.fromDeg, aloftKt: aloft.kt } : {}),
     profile: { elevationM: w.elevationM, windFromDeg: w.windFromDeg, windKt: w.windKt, aloft: w.aloft, ...(w.boundary ? { boundary: w.boundary } : {}) },
+    air: airColumnOf(w),
     ridgeLift: true,
-    thermalSky: thermals ? { seed: Number(params.get("seed") ?? 1), weather: w } : false,
+    thermalSky: thermals ? { seed: Number(params.get("seed") ?? 1), weather: w, ...(wgrid ? { grid: wgrid } : {}) } : false,
   };
   return {
     field,
@@ -127,6 +162,7 @@ export async function resolveFlight(params: URLSearchParams): Promise<Flight> {
     when,
     environment,
     ...(series?.length ? { series: series.map(windOf) } : {}),
+    ...(wgrid ? { grid: wgrid } : {}),
     name: air ? `free flight${field ? ` near ${field.name}` : ""}` : field && runway ? `${field.name} · ${runway.name.split("/")[0]}` : "?",
     weatherText: describeWeather(w),
   };

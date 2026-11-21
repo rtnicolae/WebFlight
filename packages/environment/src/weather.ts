@@ -17,6 +17,7 @@
  *  - thermal spacing ≈ 1.5 zi, diameter ≈ 0.25 zi
  * A Weather value is plain data, so a recorded day replays exactly (gym, bug reports).
  */
+import { airAt } from "./air.ts";
 import { sunPosition } from "./sun.ts";
 import type { SoundingLevel } from "./waves.ts";
 
@@ -214,7 +215,7 @@ export function surfaceLayerFactor(aglM: number, z0 = OPEN_TERRAIN_Z0_M): number
 export const OPEN_METEO = "https://api.open-meteo.com/v1/forecast";
 /** Historical weather (reanalysis): surface and 100 m only, no pressure levels. */
 export const OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive";
-const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
+const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "surface_pressure", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
 /** The forecast API serves up to 92 past days; older days come from the archive. */
 export const FORECAST_PAST_DAYS = 90;
 /** Pressure levels asked for winds and temperatures aloft (≈ 0.8, 1, 1.5, 2, 3, 4.2, 5.6 and 7.2 km). */
@@ -416,6 +417,137 @@ export function weatherAt(series: readonly Weather[], when: Date): Weather {
 }
 
 /**
+ * Weather that varies over the area (roadmap W2, kept small): Open-Meteo's columns on a grid
+ * round the start, hour by hour. Each column stands on the forecast model's own smooth ground
+ * (elevation=nan: no downscaling to a 90 m height model, which put one node on a peak and the
+ * next in a valley), so neighbours agree and can be blended.
+ */
+export interface WeatherGrid {
+  /** The south-west node and the spacing [deg]; nodes row by row from the south, west to east. */
+  lat0: number;
+  lon0: number;
+  dLat: number;
+  dLon: number;
+  rows: number;
+  cols: number;
+  /** Each node's hours (parseOpenMeteoHours). */
+  nodes: Weather[][];
+}
+
+/** Nodes per side, and their spacing [m]: 5 × 5 over ±33 km (beyond it, the edge's weather). */
+export const GRID_SIDE = 5;
+export const GRID_SPACING_M = 16_500;
+
+/** A grid's nodes round a point (without the weather). */
+export function gridAround(latDeg: number, lonDeg: number, side = GRID_SIDE, spacingM = GRID_SPACING_M): Omit<WeatherGrid, "nodes"> {
+  const dLat = spacingM / 111_195, dLon = spacingM / (111_195 * Math.cos((latDeg * Math.PI) / 180)), h = (side - 1) / 2;
+  return { lat0: latDeg - h * dLat, lon0: lonDeg - h * dLon, dLat, dLon, rows: side, cols: side };
+}
+
+/** One request for every node of a grid (Open-Meteo takes lists of coordinates). */
+export function openMeteoGridUrl(g: Omit<WeatherGrid, "nodes">, from: string, to: string, archive = false): string {
+  const lats: string[] = [], lons: string[] = [];
+  for (let i = 0; i < g.rows; i++)
+    for (let j = 0; j < g.cols; j++) {
+      lats.push((g.lat0 + i * g.dLat).toFixed(4));
+      lons.push((g.lon0 + j * g.dLon).toFixed(4));
+    }
+  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${lats.join(",")}&longitude=${lons.join(",")}&elevation=${lats.map(() => "nan").join(",")}&hourly=${(archive ? ARCHIVE_HOURLY : HOURLY).join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
+}
+
+/** A grid's hours from Open-Meteo's answer (one response per node, in the order asked). */
+export function parseWeatherGrid(json: unknown, g: Omit<WeatherGrid, "nodes">, source: "forecast" | "archive", utcOffsetH: number, note = ""): WeatherGrid {
+  const list = Array.isArray(json) ? (json as OpenMeteoResponse[]) : [json as OpenMeteoResponse];
+  if (list.length !== g.rows * g.cols) throw new Error(`open-meteo grid: ${list.length} of ${g.rows * g.cols} nodes`);
+  const nodes = list.map((r, k) =>
+    parseOpenMeteoHours(r, g.lat0 + Math.floor(k / g.cols) * g.dLat, g.lon0 + (k % g.cols) * g.dLon, source).map((w) => ({ ...w, utcOffsetH, ...(note ? { note } : {}) })),
+  );
+  return { ...g, nodes };
+}
+
+const vecSum = (items: { k: number; fromDeg: number; kt: number }[]) => {
+  let u = 0, v = 0;
+  for (const i of items) {
+    const [a, b] = toUV(i.fromDeg, i.kt);
+    u += i.k * a;
+    v += i.k * b;
+  }
+  return fromUV(u, v);
+};
+
+/**
+ * Columns blended (weights summing to 1) by physical height: the 2 m values and the surface
+ * pressure are each column's air at the blended ground (air.ts), the convective layer's top
+ * blended above sea level, winds as vectors, levels by pressure, near-ground winds by height
+ * above the ground.
+ */
+export function blendWeather(items: { w: Weather; k: number }[]): Weather {
+  const live = items.filter((i) => i.k > 1e-9);
+  if (live.length === 1) return live[0]!.w;
+  const near = live.reduce((a, b) => (b.k > a.k ? b : a)).w;
+  const sum = (f: (w: Weather) => number) => live.reduce((s, i) => s + i.k * f(i.w), 0);
+  const g = sum((w) => w.elevationM);
+  const at2m = live.map((i) => ({ k: i.k, a: airAt(i.w, g + 2) }));
+  const all = <T>(f: (w: Weather) => T | undefined) => live.every((i) => f(i.w) !== undefined);
+  // Levels: by pressure (or position, for the reanalysis's one), from the columns that have them.
+  const keyOf = (l: WindLevel, n: number) => (l.hPa !== undefined ? `p${l.hPa}` : `i${n}`);
+  const byKey = new Map<string, { k: number; l: WindLevel }[]>();
+  for (const i of live) i.w.aloft.forEach((l, n) => byKey.set(keyOf(l, n), [...(byKey.get(keyOf(l, n)) ?? []), { k: i.k, l }]));
+  const aloft: WindLevel[] = [];
+  for (const ls of byKey.values()) {
+    const kk = ls.reduce((s, x) => s + x.k, 0), m = (f: (l: WindLevel) => number) => ls.reduce((s, x) => s + (x.k / kk) * f(x.l), 0);
+    const w = vecSum(ls.map((x) => ({ k: x.k / kk, fromDeg: x.l.fromDeg, kt: x.l.kt })));
+    const l0 = ls[0]!.l, everyT = ls.every((x) => x.l.tempC !== undefined), everyD = ls.every((x) => x.l.dewPointC !== undefined);
+    const lvl: WindLevel = { altM: m((l) => l.altM), fromDeg: w.fromDeg, kt: w.kt, ...(l0.hPa !== undefined ? { hPa: l0.hPa } : {}), ...(everyT ? { tempC: m((l) => l.tempC!) } : {}), ...(everyD ? { dewPointC: m((l) => l.dewPointC!) } : {}) };
+    if (lvl.altM > g + 10) aloft.push(lvl);
+  }
+  aloft.sort((a, b) => a.altM - b.altM);
+  const bh = new Map<number, { k: number; fromDeg: number; kt: number }[]>();
+  for (const i of live) for (const b of i.w.boundary ?? []) bh.set(b.aglM, [...(bh.get(b.aglM) ?? []), { k: i.k, fromDeg: b.fromDeg, kt: b.kt }]);
+  const boundary = [...bh.entries()].filter(([, xs]) => xs.length === live.length).map(([aglM, xs]) => ({ aglM, ...vecSum(xs) })).sort((a, b) => a.aglM - b.aglM);
+  const surf = vecSum(live.map((i) => ({ k: i.k, fromDeg: i.w.windFromDeg, kt: i.w.windKt })));
+  return {
+    source: near.source,
+    timeUtc: near.timeUtc,
+    utcOffsetH: near.utcOffsetH,
+    ...(near.note ? { note: near.note } : {}),
+    elevationM: g,
+    tempC: at2m.reduce((s, x) => s + x.k * x.a.tempC, 0),
+    dewPointC: at2m.reduce((s, x) => s + x.k * x.a.dewPointC, 0),
+    windFromDeg: surf.fromDeg,
+    windKt: surf.kt,
+    gustKt: sum((w) => w.gustKt),
+    aloft: aloft.length ? aloft : near.aloft,
+    ...(boundary.length ? { boundary } : {}),
+    lowCloud: sum((w) => w.lowCloud),
+    ...(all((w) => w.highCloud) ? { highCloud: sum((w) => w.highCloud!) } : {}),
+    shortwaveWm2: sum((w) => w.shortwaveWm2),
+    boundaryLayerM: Math.max(0, sum((w) => w.elevationM + w.boundaryLayerM) - g),
+    ...(all((w) => w.surfacePressureHpa) ? { surfacePressureHpa: Math.exp(live.reduce((s, i) => s + i.k * Math.log(airAt(i.w, g).hPa), 0)) } : {}),
+    ...(all((w) => w.visibilityM) ? { visibilityM: 1 / sum((w) => 1 / w.visibilityM!) } : {}),
+  };
+}
+
+/**
+ * The grid's weather at a moment, as a function of the place: its nodes at that moment
+ * (weatherAt), blended bilinearly from the four round a point; beyond the grid, its edge's.
+ */
+export function weatherOnGrid(g: WeatherGrid, time: Date): (latDeg: number, lonDeg: number) => Weather {
+  const now = g.nodes.map((s) => weatherAt(s, time));
+  return (latDeg, lonDeg) => {
+    const fy = Math.min(g.rows - 1, Math.max(0, (latDeg - g.lat0) / g.dLat)), fx = Math.min(g.cols - 1, Math.max(0, (lonDeg - g.lon0) / g.dLon));
+    const i = Math.min(g.rows - 2, Math.floor(fy)), j = Math.min(g.cols - 2, Math.floor(fx)), ty = fy - i, tx = fx - j;
+    const n = (r: number, c: number) => now[r * g.cols + c]!;
+    return blendWeather([
+      { w: n(i, j), k: (1 - tx) * (1 - ty) },
+      { w: n(i, j + 1), k: tx * (1 - ty) },
+      { w: n(i + 1, j), k: (1 - tx) * ty },
+      { w: n(i + 1, j + 1), k: tx * ty },
+    ]);
+  };
+}
+
+/**
  * Weather over time for a flight: its clock is the start's time plus the simulated time since
  * (it stands still when the simulation does). step() says, every `everyS` simulated seconds, what
  * the weather is now (weatherAt between the series' hours), for Environment.setWeather. One
@@ -431,6 +563,8 @@ export class WeatherClock {
     start: Date | string,
     readonly rate = 1,
     readonly everyS = 60,
+    /** Weather by place (weatherOnGrid): step() then gives the weather where the aircraft is. */
+    readonly grid?: WeatherGrid,
   ) {
     this.startMs = typeof start === "string" ? Date.parse(start) : start.getTime();
   }
@@ -438,11 +572,15 @@ export class WeatherClock {
   get now(): Date {
     return new Date(this.startMs + this.elapsedS * this.rate * 1000);
   }
-  /** Advance by `dt` simulated seconds; the weather to apply, when it is time (the first call: at once). */
-  step(dt: number): Weather | undefined {
+  /**
+   * Advance by `dt` simulated seconds; the weather to apply, when it is time (the first call: at
+   * once). With a grid and a place, the weather there.
+   */
+  step(dt: number, at?: { latDeg: number; lonDeg: number }): Weather | undefined {
     this.elapsedS += dt;
-    if (!this.series.length || this.elapsedS - this.appliedS < Math.max(1, this.everyS / this.rate)) return undefined;
+    if ((!this.series.length && !this.grid) || this.elapsedS - this.appliedS < Math.max(1, this.everyS / this.rate)) return undefined;
     this.appliedS = this.elapsedS;
+    if (this.grid && at) return weatherOnGrid(this.grid, this.now)(at.latDeg, at.lonDeg);
     return weatherAt(this.series, this.now);
   }
   /** Back to the start (a reset of the flight). */
@@ -535,9 +673,13 @@ export async function weatherFor(
   when: WhenSpec,
   elevationM = 0,
   now = new Date(),
-  /** fetchJson: replace the fetch (e.g. with a cache); it should throw with a reason on failure. */
-  opts: { fetchJson?: (url: string) => Promise<unknown> } = {},
-): Promise<{ weather: Weather; time: Date; series?: Weather[] }> {
+  /**
+   * fetchJson: replace the fetch (e.g. with a cache); it should throw with a reason on failure.
+   * grid: also the weather by place round the point (WeatherGrid); the weather returned is then
+   * the grid's there.
+   */
+  opts: { fetchJson?: (url: string) => Promise<unknown>; grid?: boolean } = {},
+): Promise<{ weather: Weather; time: Date; series?: Weather[]; grid?: WeatherGrid; gridError?: string }> {
   // The local date isn't known before the offset is: ask for the day either side as well.
   const guessH = Math.round(lonDeg / 15);
   const localDay = when.kind === "local" && when.date ? when.date : ymd(new Date(now.getTime() + guessH * 3600_000));
@@ -584,8 +726,18 @@ export async function weatherFor(
       const fix = (w: Weather): Weather => ({ ...w, utcOffsetH: offsetH, ...(note ? { note } : {}) });
       // The three days asked for, hour by hour: the weather as the flight goes on (weatherAt).
       const series = parseOpenMeteoHours(json, latDeg, lonDeg, source).map(fix);
+      // By place: the same days and source on a grid round the point (one request).
+      let grid: WeatherGrid | undefined, gridError: string | undefined;
+      if (opts.grid) {
+        const g = gridAround(latDeg, lonDeg);
+        try {
+          grid = parseWeatherGrid(await (opts.fetchJson ?? fetchOpenMeteo)(openMeteoGridUrl(g, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), source === "archive")), g, source, offsetH, note);
+        } catch (e) {
+          gridError = `Open-Meteo grid: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
       // The weather at the start itself (between its hours), as the flight goes on from it.
-      return { weather: weatherAt(series, time), time, series };
+      return { weather: grid ? weatherOnGrid(grid, time)(latDeg, lonDeg) : weatherAt(series, time), time, series, ...(grid ? { grid } : {}), ...(gridError ? { gridError } : {}) };
     } catch (e) {
       note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
     }

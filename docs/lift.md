@@ -53,6 +53,61 @@ turn backlit, and at 20:30 its disc sits on the horizon in an orange glow, with 
 19:00 the cumulus end and the clouds dissolve (half gone after 5 real minutes). From 19:30: at
 20:30 the disc on the horizon, at 21:30 an orange band under a purple sky over a dark ground.
 
+## Weather by place
+
+The weather used to be one column's, the start's, everywhere. Now the browser also fetches
+Open-Meteo's columns on a 5 × 5 grid round the start, 16.5 km apart (±33 km; one request for
+the same days and model as the start's), each on the forecast model's own smooth ground
+(`elevation=nan`: without downscaling to a 90 m height model, one node landed on a peak and the
+next in a valley). `weatherOnGrid` blends the four columns round a point bilinearly, by physical
+height (`blendWeather`): each column's 2 m air and surface pressure at the blended ground
+(`air.ts`), the convective layer's top above sea level, winds as vectors, levels by pressure.
+
+- **The flight model** takes the weather where the glider is (`WeatherClock.step` with its
+  position, every simulated minute): wind by height, temperature, humidity and pressure.
+- **Thermals:** every sky cell, near (the flight model's) and far (the page's, to 160 km), takes
+  the convective layer over its centre: strength, spacing and width, cloud base, cumulus or
+  blue. On 10 Jul 2024 at 13:00 near Ghimbav: thermal tops from 2,170 to 2,645 m (the
+  mountains to the south 2,520 m on average, the basin 2,300 m), against one 2,157 m with the
+  start's column. Same frame rate.
+- **Not by place yet:** the wind the thermal columns lean in (the glider's weather's, one wind
+  table for all cells), the haze, cirrus and light (the glider's), and the gym and headless
+  flights (the start's column). Beyond the grid, its edge's weather. `?wxgrid=0`: the start's
+  column everywhere. The grid's answer (~1 MB) is cached in the browser's Cache Storage
+  (archive days kept, forecasts an hour): 25 columns count as 25 of Open-Meteo's free calls (×
+  ~6 for the number of variables).
+
+## The air's temperature, humidity and pressure
+
+JSBSim used to fly in the standard atmosphere (15 °C and 1013.25 hPa at sea level, dry) whatever
+the day. Now it gets the day's air at the glider's height, as FlightGear hands it to JSBSim
+(`FGJSBsim::copy_to_JSBsim`: temperature and dew point at the aircraft, sea-level pressure),
+from the weather's own column (`air.ts`, environment package):
+
+- **Temperature and dew point:** the 2 m values over the model's ground, then the pressure
+  levels' (925 to 600 hPa), linear in height between them; beyond them the standard lapse
+  (6.5 K/km), the dew point keeping its spread. Without levels (the reanalysis), the standard
+  lapse from 2 m: FG's own fallback from a station report.
+- **Pressure:** the surface pressure at the model's ground (now also fetched from the
+  reanalysis), then the levels' pressures; log-linear in height between them, hydrostatic
+  beyond. With no pressure at all (the offline estimate): 1013.25 hPa at sea level under the
+  day's temperatures.
+- **Into JSBSim** every step batch: its temperature bias (uniform in height) set for the
+  temperature at the glider, its sea-level pressure for the pressure at the glider (its own
+  hydrostatics through the biased column), then the dew point (JSBSim keeps the moisture as a
+  vapour fraction). At a start, before the trim (airspeed → true airspeed). The air follows the
+  weather's clock.
+- **The altimeters** (front and rear seat) are set to the day's QNH at the start, as before
+  take-off: on the runway they read the field's height; aloft, a hot day's temperature error
+  (10 Jul 2024, 28 °C at Ghimbav: 840 m shown at 854 m).
+
+The effect: on a hot afternoon the air is a few per cent thinner, the true airspeed and sink a
+few per cent higher at the same indicated speed (10 Jul 2024 at 850 m: true/indicated 1.070, a
+November day 1.038, the standard atmosphere 1.042). Checks: `packages/environment/test/air.test.ts`
+(the column, QNH, no change on a standard day) and `apps/headless/test/air.test.ts` (JSBSim's own
+temperature, pressure and dew point at the glider, standing and gliding, against the column).
+The gym and `SoaringSim` set it too.
+
 ## The glider
 
 The climb a pilot sees is the air's movement less the glider's sink, so the glider comes first.

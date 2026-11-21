@@ -20,7 +20,14 @@ export interface WorldConfig {
    * The weather through the flight: its hours (weatherAt interpolates) and the start's time;
    * the worker follows it with the simulation's clock.
    */
-  weather?: { series: import("@webflight/environment").Weather[]; startUtc: string; /** Weather time per simulated second (1; ?wxrate= to watch a day go by). */ rate?: number };
+  weather?: {
+    series: import("@webflight/environment").Weather[];
+    startUtc: string;
+    /** Weather time per simulated second (1; ?wxrate= to watch a day go by). */
+    rate?: number;
+    /** The weather by place: the clock gives the weather where the glider is. */
+    grid?: import("@webflight/environment").WeatherGrid;
+  };
 }
 
 /** One thermal as drawn by the renderer. */
