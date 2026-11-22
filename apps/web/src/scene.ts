@@ -18,7 +18,7 @@ import type { ThermalView } from "./protocol.ts";
 import { CloudLayer, type CloudSpec } from "./clouds.ts";
 import { DrawnClouds } from "./cloud-follow.ts";
 import type { Thermal } from "@webflight/environment";
-import { VOLUME_RANGE_M, VolumetricClouds } from "./vclouds.ts";
+import { type DeckTarget, VOLUME_RANGE_M, VolumetricClouds } from "./vclouds.ts";
 import type { Atmosphere } from "./atmosphere.ts";
 
 const M_PER_DEG_LAT = 111_132;
@@ -421,6 +421,15 @@ export class ThermalLayer {
     this.refresh();
   }
   private fading: Set<string> | undefined;
+
+  /** The weather's cloud decks, [low, mid] (vclouds.ts; only with the volumes). */
+  setDecks(decks: (DeckTarget | undefined)[]): void {
+    this.volumes?.setDecks(decks, !this.gradual);
+  }
+  /** Where the decks are drawn, for their shade on the ground (google3d.ts). */
+  deckShade(): ReturnType<VolumetricClouds["deckShade"]> | undefined {
+    return this.volumes?.deckShade();
+  }
 
   /**
    * How much of the cumulus is drawn, 0–1: it follows `cumulus` over CUMULUS_FADE_S, so when

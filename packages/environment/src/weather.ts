@@ -64,8 +64,10 @@ export interface Weather {
   aloft: WindLevel[];
   /** Winds near the ground above the 10 m one (80, 120, 180 m; 100 m in the reanalysis). */
   boundary?: BoundaryWind[];
-  /** Low cloud cover [0–1]. */
+  /** Low cloud cover [0–1] (ICON: from the ground to 800 hPa). */
   lowCloud: number;
+  /** Mid cloud cover [0–1] (800 to 400 hPa; only drawn: decks.ts). */
+  midCloud?: number;
   /** High cloud cover [0–1] (cirrus; only drawn, the simulation doesn't use it). */
   highCloud?: number;
   /** Global shortwave radiation at the ground [W/m²]. */
@@ -215,7 +217,7 @@ export function surfaceLayerFactor(aglM: number, z0 = OPEN_TERRAIN_Z0_M): number
 export const OPEN_METEO = "https://api.open-meteo.com/v1/forecast";
 /** Historical weather (reanalysis): surface and 100 m only, no pressure levels. */
 export const OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive";
-const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "surface_pressure", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
+const ARCHIVE_HOURLY = ["temperature_2m", "dew_point_2m", "surface_pressure", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "wind_speed_100m", "wind_direction_100m", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high", "shortwave_radiation", "boundary_layer_height"];
 /** The forecast API serves up to 92 past days; older days come from the archive. */
 export const FORECAST_PAST_DAYS = 90;
 /** Pressure levels asked for winds and temperatures aloft (≈ 0.8, 1, 1.5, 2, 3, 4.2, 5.6 and 7.2 km). */
@@ -233,6 +235,7 @@ const HOURLY = [
   "surface_pressure",
   "visibility",
   "cloud_cover_low",
+  "cloud_cover_mid",
   "cloud_cover_high",
   "shortwave_radiation",
   "boundary_layer_height",
@@ -320,6 +323,7 @@ function parseHour(json: OpenMeteoResponse, best: number, latDeg: number, lonDeg
     aloft: aloft.length ? aloft : est.aloft,
     ...(boundary.length ? { boundary } : {}),
     lowCloud: (v("cloud_cover_low") ?? est.lowCloud * 100) / 100,
+    ...(v("cloud_cover_mid") !== undefined ? { midCloud: v("cloud_cover_mid")! / 100 } : {}),
     ...(v("cloud_cover_high") !== undefined ? { highCloud: v("cloud_cover_high")! / 100 } : {}),
     shortwaveWm2: sw,
     boundaryLayerM: v("boundary_layer_height") ?? estimateBoundaryLayer(sw),
@@ -395,8 +399,8 @@ export function weatherAt(series: readonly Weather[], when: Date): Weather {
   const surf = lerpWind({ fromDeg: a.windFromDeg, kt: a.windKt }, { fromDeg: b.windFromDeg, kt: b.windKt }, f);
   const [sa, sb, sf] = at(-1800_000);
   const vis = a.visibilityM !== undefined && b.visibilityM !== undefined ? 1 / L(1 / a.visibilityM, 1 / b.visibilityM) : near.visibilityM;
-  const high = opt(a.highCloud, b.highCloud), ps = opt(a.surfacePressureHpa, b.surfacePressureHpa);
-  const { highCloud: _h, surfacePressureHpa: _p, visibilityM: _v, boundary: _b, ...rest } = near;
+  const high = opt(a.highCloud, b.highCloud), mid = opt(a.midCloud, b.midCloud), ps = opt(a.surfacePressureHpa, b.surfacePressureHpa);
+  const { highCloud: _h, midCloud: _m, surfacePressureHpa: _p, visibilityM: _v, boundary: _b, ...rest } = near;
   return {
     ...rest,
     timeUtc: new Date(t).toISOString(),
@@ -408,6 +412,7 @@ export function weatherAt(series: readonly Weather[], when: Date): Weather {
     aloft,
     ...(boundary ? { boundary } : {}),
     lowCloud: L(a.lowCloud, b.lowCloud),
+    ...(mid !== undefined ? { midCloud: mid } : {}),
     ...(high !== undefined ? { highCloud: high } : {}),
     shortwaveWm2: sa.shortwaveWm2 + sf * (sb.shortwaveWm2 - sa.shortwaveWm2),
     boundaryLayerM: L(a.boundaryLayerM, b.boundaryLayerM),
@@ -632,6 +637,7 @@ export function blendWeather(items: { w: Weather; k: number }[]): Weather {
     aloft: aloft.length ? aloft : near.aloft,
     ...(boundary.length ? { boundary } : {}),
     lowCloud: sum((w) => w.lowCloud),
+    ...(all((w) => w.midCloud) ? { midCloud: sum((w) => w.midCloud!) } : {}),
     ...(all((w) => w.highCloud) ? { highCloud: sum((w) => w.highCloud!) } : {}),
     shortwaveWm2: sum((w) => w.shortwaveWm2),
     boundaryLayerM: Math.max(0, sum((w) => w.elevationM + w.boundaryLayerM) - g),

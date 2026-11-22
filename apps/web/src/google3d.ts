@@ -40,10 +40,11 @@
  * Google's terms (via Cesium's Terms for Google): display only, attributions shown unchanged,
  * no caching beyond what Google allows, nothing derived from the content.
  */
-import { Cartesian2, Cartesian3, Cartographic, createGooglePhotorealistic3DTileset, CustomShader, RequestScheduler, DynamicAtmosphereLightingType, Ellipsoid, Math as CesiumMath, Matrix4, ShadowMode, TextureMagnificationFilter, TextureMinificationFilter, TextureUniform, UniformType, type Cesium3DTileset, type Viewer } from "cesium";
+import { Cartesian2, Cartesian3, Cartesian4, Cartographic, createGooglePhotorealistic3DTileset, CustomShader, RequestScheduler, DynamicAtmosphereLightingType, Ellipsoid, Math as CesiumMath, Matrix4, ShadowMode, TextureMagnificationFilter, TextureMinificationFilter, TextureUniform, UniformType, type Cesium3DTileset, type Viewer } from "cesium";
 import type { CloudSpec } from "./clouds.ts";
 import * as CesiumAll from "cesium";
 import { cloudGeometry } from "./vclouds.ts";
+import { cloudNoiseAsync } from "./cloud-noise.ts";
 import { DETAIL_GLSL, detailSettings, detailTexturePixels, followCameraOnGround } from "./ground-detail.ts";
 import { LOOK } from "./lighting.ts";
 import { RUNWAY_GLSL, runwayUniforms } from "./runway-paint.ts";
@@ -180,6 +181,15 @@ export class Google3D {
         u_shadowCentre: { type: UniformType.VEC2, value: new Cartesian2() },
         u_shadowSize: { type: UniformType.FLOAT, value: SHADOW_M },
         u_shadowK: { type: UniformType.FLOAT, value: 0 },
+        // The cloud decks' shade (vclouds.ts, setDeckShade).
+        u_deckMap: { type: UniformType.SAMPLER_2D, value: white() },
+        u_deck0: { type: UniformType.VEC4, value: new Cartesian4() },
+        u_deck1: { type: UniformType.VEC4, value: new Cartesian4() },
+        u_deckP0: { type: UniformType.VEC4, value: new Cartesian4() },
+        u_deckP1: { type: UniformType.VEC4, value: new Cartesian4() },
+        u_deckH: { type: UniformType.FLOAT, value: 0 },
+        u_deckN: { type: UniformType.FLOAT, value: 0 },
+        u_deckK: { type: UniformType.FLOAT, value: 0 },
         // Runways painted on the tiles (runway-paint.ts).
         ...runwayUniforms(),
       },
@@ -214,6 +224,37 @@ vec3 wfGrade(vec3 s) {
   hsb.z *= 1.0 - 0.45 * water * u_grade;
   return czm_HSBToRGB(hsb);
 }
+// Under the cloud decks (vclouds.ts): the sun's light through each where its ray crosses it, from
+// the same holes as drawn (vclouds.ts deckField, deckCoverOf, deckSpan, deckSun: kept alike), the
+// direct and the forward-scattered light together (two-stream).
+float wfEqualize(float s) {
+  if (s < 0.25) return s * s / 0.375;
+  if (s < 0.75) return (s - 0.125) / 0.75;
+  return 1.0 - (1.0 - s) * (1.0 - s) / 0.375;
+}
+float wfDeckLight(vec3 relW, vec3 upW, vec3 e, vec3 nn) {
+  vec3 sunW = normalize(czm_inverseViewRotation * czm_lightDirectionEC);
+  float sunUp = max(dot(sunW, upW), 0.05);
+  vec2 sxy = vec2(dot(sunW, e), dot(sunW, nn)) / sunUp, en = vec2(dot(relW, e), dot(relW, nn));
+  float h = u_deckH + dot(relW, upW), all = 1.0;
+  for (int k = 0; k < 2; k++) {
+    vec4 D = k == 0 ? u_deck0 : u_deck1, P = k == 0 ? u_deckP0 : u_deckP1;
+    float mid = 0.5 * (D.x + D.y);
+    if (D.z < 0.005 || mid <= h) continue;
+    vec2 xy = P.xy + en + sxy * (mid - h);
+    float cov = 1.0;
+    if (D.z <= 0.995) {
+      // (Mip levels for a 150 m footprint, as deckSun's.)
+      vec2 a = textureLod(u_deckMap, xy / 32000.0, 1.263).rg;
+      vec2 b = textureLod(u_deckMap, mat2(0.8, 0.6, -0.6, 0.8) * xy / 9100.0 + 0.37, 3.077).gr;
+      cov = smoothstep(1.0 - D.z, 1.0 - D.z + 0.5, mix(wfEqualize(0.75 * a.x + 0.25 * b.x), wfEqualize(0.75 * a.y + 0.25 * b.y), D.w));
+    }
+    // Its depth there is H·cov; at its mean density, three quarters of the extinction
+    // (decks.ts deckTransmission).
+    all /= 1.0 + 0.1125 * P.z * 0.75 * (D.y - D.x) * cov / (0.5 + 0.75 * sunUp);
+  }
+  return all;
+}
 void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   vec3 c = material.diffuse;
   if (u_grade > 0.0) c = czm_srgbToLinear(wfGrade(czm_linearToSrgb(c)));
@@ -234,13 +275,17 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     // The grain works on display values; the material is linear.
     c *= pow(mix(1.0, wfFactor(czm_linearToSrgb(c), w, d), level), 2.2);
   }
-  // Under a cloud: the cloud shadow map, in metres east/north of the camera.
-  if (u_shadowK > 0.0) {
+  // Under a cloud: the cloud shadow map, in metres east/north of the camera; under a deck, its
+  // shade (where both, the darker).
+  if (u_shadowK > 0.0 || u_deckN > 0.5) {
     vec3 relW = czm_inverseViewRotation * rel;
     vec3 e = normalize(vec3(-upW.y, upW.x, 0.0));
     vec3 nn = cross(upW, e);
     vec2 uv = (vec2(dot(relW, e), dot(relW, nn)) - u_shadowCentre) / u_shadowSize + 0.5;
-    if (uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0) c *= 1.0 - u_shadowK * texture(u_cloudShadow, uv).r;
+    float shade = 0.0;
+    if (u_shadowK > 0.0 && uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0) shade = u_shadowK * texture(u_cloudShadow, uv).r;
+    if (u_deckN > 0.5) shade = max(shade, u_deckK * (1.0 - wfDeckLight(relW, upW, e, nn)));
+    c *= 1.0 - shade;
   }
   material.diffuse = c * u_photoLight;
 }`,
@@ -250,7 +295,12 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     followCameraOnGround(viewer.scene, (e, n) => {
       shader.setUniform("wfCam", new Cartesian2(e, n));
       g3?.followShadow();
+      g3?.followDecks();
     });
+    // The decks' holes: the clouds' noise (cloud-noise.ts), shared with vclouds.ts.
+    void cloudNoiseAsync().then((noise) =>
+      shader.setUniform("u_deckMap", new TextureUniform({ typedArray: noise.deck, width: noise.deckSize, height: noise.deckSize, repeat: true, minificationFilter: TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR })),
+    );
     if (opts.texBase)
       void detailTexturePixels(opts.texBase)
         .then(({ data, size }) =>
@@ -300,6 +350,8 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     if (!shader) return;
     // Under a cumulus the sunlit ground gets about a third of the light (the sky's): 0.65.
     const k = 0.65 * Math.min(1, Math.max(0, (sun.elevationDeg - 2) / 10));
+    // Under a deck, the share of the photo's light it can take: the same.
+    this.deckK = k;
     if (!clouds.length || k <= 0) {
       shader.setUniform("u_shadowK", 0);
       this.shadowAt = undefined;
@@ -354,6 +406,30 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     shader.setUniform("u_cloudShadow", new TextureUniform({ typedArray: buf, width: SHADOW_PX, height: SHADOW_PX, repeat: false, minificationFilter: TextureMinificationFilter.LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
     shader.setUniform("u_shadowK", k);
     this.followShadow();
+  }
+
+  private deckK = 0;
+  private deckSource: (() => { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } | undefined) | undefined;
+  /** Where the cloud decks are (vclouds.ts deckShade): their shade on the tiles. */
+  setDeckShade(source: (() => { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } | undefined) | undefined): void {
+    this.deckSource = source;
+  }
+
+  /** Each frame: the decks' shade on the tiles. */
+  followDecks(): void {
+    const shader = this.tileset.customShader as CustomShader | undefined, d = this.deckSource?.();
+    if (!shader) return;
+    if (!d || d.n === 0 || this.deckK <= 0) {
+      shader.setUniform("u_deckN", 0);
+      return;
+    }
+    shader.setUniform("u_deck0", Cartesian4.clone(d.decks[0]!));
+    shader.setUniform("u_deck1", Cartesian4.clone(d.decks[1]!));
+    shader.setUniform("u_deckP0", Cartesian4.clone(d.at[0]!));
+    shader.setUniform("u_deckP1", Cartesian4.clone(d.at[1]!));
+    shader.setUniform("u_deckH", d.camH);
+    shader.setUniform("u_deckN", d.n);
+    shader.setUniform("u_deckK", this.deckK);
   }
 
   /** Each frame: where the shadow map's centre is, in metres east/north of the camera. */

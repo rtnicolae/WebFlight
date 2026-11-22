@@ -183,8 +183,10 @@ Still open:
   the twilight sky added for starts below 5°) and the sun a thermal's place was scored with
   (each sky cell keeps the sun of the hour it came alive).
 - **Cumulus thermals' profile** above mid-height is ours (see the table).
-- **Overcast days are drawn clear:** when the model's low cloud cover is high (stratus, as on
-  many November days) there are no cumulus, but no cloud deck is drawn either.
+- **Cloud decks are drawn only:** stratus to altostratus (decks.ts, from the model's low and mid
+  cover, its humidity profile and its radiation; see the visual plan) shade the ground and the
+  cumulus in the picture, but the lift doesn't read them: the day's radiation, which the thermals
+  are made from, already carries their dimming.
 
 ## Tests
 
