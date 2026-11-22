@@ -16,7 +16,8 @@ import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
-import { distanceM, soaringFrom, sounding, sunPosition, type WaveFieldData, type Weather, type WeatherGrid } from "@webflight/environment";
+import { clearSkyGhi, cloudDecks, deckDepthScale, distanceM, soaringFrom, sounding, sunPosition, windAt, type WaveFieldData, type Weather, type WeatherGrid } from "@webflight/environment";
+import type { DeckTarget } from "./vclouds.ts";
 import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
@@ -186,6 +187,33 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   }
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined, atmosphere);
   if (google3d) life.onClose(() => google3d.setCloudShadows([], sun));
+  /**
+   * The cloud decks where the glider is (decks.ts): stratus to altostratus from the model's low
+   * and mid cover, at the heights its humidity profile gives; drawn only, drifting with the wind
+   * at their height. Fog: the haze has the visibility in the lowest layer (atmosphere.ts), so the
+   * deck starts on its top. Extinction at full density: stratocumulus ~0.05 /m (in-cloud
+   * visibility ~100 m), altostratus less, all scaled so the decks pass the weather's share of
+   * the clear-sky light (its radiation: decks.ts deckDepthScale). ?decks=0: none.
+   */
+  const decksOf = (w: Weather): (DeckTarget | undefined)[] => {
+    if (params.get("decks") === "0") return [undefined, undefined];
+    const s = soaringFrom(w), ds = cloudDecks(w, { cumulus: s.cumulus && s.wStarMs >= 0.5 });
+    const out = (["low", "mid"] as const).map((band) => {
+      const d = ds.find((x) => x.band === band);
+      if (!d) return undefined;
+      const base = d.fog ? Math.max(d.baseM, airOf(w).hazeTopM) : d.baseM;
+      if (d.topM - base < 100) return undefined;
+      const wind = windAt(w, (base + d.topM) / 2), to = ((wind.fromDeg + 180) * Math.PI) / 180, ms = wind.kt * (1852 / 3600);
+      return { baseM: base, topM: d.topM, cover: d.cover, field: band === "low" || d.joined ? 0 : 1, extinction: band === "low" ? 0.05 : 0.03, windE: ms * Math.sin(to), windN: ms * Math.cos(to) };
+    });
+    const live = out.filter((d): d is DeckTarget => !!d);
+    const k = deckDepthScale(live.map((d) => ({ cover: d.cover, tau: d.extinction * 0.75 * (d.topM - d.baseM) })), w.shortwaveWm2 / Math.max(1, clearSkyGhi(sun.elevationDeg)), sun.elevationDeg);
+    for (const d of live) d.extinction *= k;
+    return out;
+  };
+  thermalLayer.setDecks(decksOf(F.weather));
+  google3d?.setDeckShade(() => thermalLayer.deckShade());
+  if (google3d) life.onClose(() => google3d.setDeckShade(undefined));
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
   const imageryMode = await imageryReady;
@@ -337,6 +365,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     // The haze and the cirrus of the hour; the tints of the sun's height (dusk, night) on the
     // ground: Google's tiles (their light and haze), the globe and its imagery.
     atmosphere?.setAir(airOf(w));
+    thermalLayer.setDecks(decksOf(w));
     setLook(sun.elevationDeg);
     tintGround(viewer);
     google3d?.relight();

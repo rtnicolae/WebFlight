@@ -23,6 +23,12 @@
  *
  * Drawn at half resolution, then blended over the scene at full resolution with a small
  * depth-aware filter. Farther clouds take fewer steps and no detail.
+ *
+ * Cloud decks (setDecks; decks.ts makes them from the weather): stratus to altostratus, up to two
+ * layers over the whole sky, marched in the same pass. Each has holes where a uniform 2D field is
+ * below 1 − cover, and patches like lenses. Each shades what is under it (the cumulus, the far
+ * clouds, the other deck, and, through deckShade, Google's tiles) with the same holes. Layers are
+ * put together front to back by where the ray first meets each.
  */
 import * as Cesium from "cesium";
 import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Intersect, PixelDatatype, PostProcessStage, PostProcessStageComposite, type Viewer } from "cesium";
@@ -31,6 +37,7 @@ import { LOOK } from "./lighting.ts";
 import { temporal } from "./temporal.ts";
 import { AERIAL_GLSL, SCENE_DIST_GLSL, type Atmosphere } from "./atmosphere.ts";
 import { cloudNoiseAsync } from "./cloud-noise.ts";
+import { DISSOLVE_S, FOLLOW_S, GROW_S, RISE_MS } from "./cloud-follow.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const C = Cesium as unknown as Record<string, any>;
@@ -134,6 +141,99 @@ uniform vec4 u_farP;          // earth radius at the centre [m], cloud base [m a
 
 float remap(float v, float a, float b, float c, float d) { return c + (v - a) / (b - a) * (d - c); }
 
+// Cloud decks (decks.ts): stratus to altostratus, layers over the whole sky with holes where their
+// cover leaves them; up to two (the low band's and the mid band's). Fixed to the ground, drifting
+// with the wind at their height: each in its own frame (east, north [m]).
+uniform vec4 u_deck[2];       // base, top [m above sea level], cover 0–1, which field (0 A … 1 B)
+uniform vec4 u_deckP[2];      // the camera in the deck's frame: east, north [m]; extinction [1/m]; 0
+uniform vec3 u_deckH;         // the camera's height above sea level [m], the earth's radius there [m], step scale
+uniform int u_decks;
+uniform sampler2D u_deckMap;  // R, G: two independent fields, uniform in [0, 1] (cloud-noise.ts)
+
+// 0.75 a + 0.25 b of two uniform values back to uniform: the sum's distribution function.
+float equalize(float s) {
+  if (s < 0.25) return s * s / 0.375;
+  if (s < 0.75) return (s - 0.125) / 0.75;
+  return 1.0 - (1.0 - s) * (1.0 - s) / 0.375;
+}
+// The decks' map has mipmaps (a deck tens of kilometres off would sparkle), but inside the march
+// the hardware's derivatives are undefined (blocky, jagged edges): the level is set from the
+// footprint [m] of a pixel there, on a tile tileM across (512 texels).
+float deckLod(float footM, float tileM) { return log2(max(1.0, footM * 512.0 / tileM)); }
+// Deck k's field at xy: a 32 km tile, and a turned 9.1 km one over it against repetition.
+float deckField(int k, vec2 xy, float footM) {
+  vec2 a = textureLod(u_deckMap, xy / 32000.0, deckLod(footM, 32000.0)).rg;
+  vec2 b = textureLod(u_deckMap, mat2(0.8, 0.6, -0.6, 0.8) * xy / 9100.0 + 0.37, deckLod(footM, 9100.0)).gr;
+  return mix(equalize(0.75 * a.x + 0.25 * b.x), equalize(0.75 * a.y + 0.25 * b.y), u_deck[k].w);
+}
+// How deep in deck k a place is (n: the field there): 0 in its holes, where the field is below
+// 1 − cover (so a share "cover" of the sky is cloud), rising towards the middle of its patches
+// over the next half of it (a thin, scattered deck never gets its full depth).
+float deckCoverOf(int k, float n) {
+  float c = u_deck[k].z;
+  if (c > 0.995) return 1.0;
+  if (c < 0.005) return 0.0;
+  return smoothstep(1.0 - c, 1.0 - c + 0.5, n);
+}
+// Its base and top there: each patch a lens, flat below and domed above, thinning to nothing at
+// its edge (stratocumulus elements are; upright walls looked like curtains).
+vec2 deckSpan(int k, float cov) {
+  float B = u_deck[k].x, H = u_deck[k].y - B;
+  return vec2(B + H * 0.25 * (1.0 - cov), B + H * (0.25 + 0.75 * cov));
+}
+// Density of deck k at xy and h [m above sea level], 0–1, t [m] from the camera, a pixel footM
+// across there: solid inside; its edges, base and top lumpy (Perlin–Worley, ~2.5 km across,
+// flatter than wide; smoothed out far off, where it would sparkle). Its cover there and span.
+float deckDensity(int k, vec2 xy, float h, float t, float footM, out float cov, out vec2 span) {
+  cov = 0.0;
+  span = vec2(0.0);
+  float B = u_deck[k].x, H0 = u_deck[k].y - B;
+  if (h < B - 0.15 * H0 || h > B + 1.25 * H0) return 0.0;
+  float n = u_deck[k].z > 0.995 ? 1.0 : deckField(k, xy, footM);
+  // (In a hole even with the lumps: no noise to fetch.)
+  if (n + 0.06 < 1.0 - u_deck[k].z) return 0.0;
+  vec4 sn = texture(u_shape, vec3(xy / 2500.0, h / 1200.0));
+  float wf = sn.g * 0.625 + sn.b * 0.25 + sn.a * 0.125;
+  float lump = (remap(sn.r, wf - 1.0, 1.0, 0.0, 1.0) - 0.5) * (1.0 - smoothstep(15000.0, 50000.0, t));
+  cov = deckCoverOf(k, n + lump * 0.12);
+  if (cov <= 0.0) return 0.0;
+  span = deckSpan(k, cov);
+  float hn = (h - span.x) / max(span.y - span.x, 1.0);
+  // The base a little billowed, the top more; thin edges soft (and the base over a few steps:
+  // within one, the dither left ripples).
+  return smoothstep(0.0, 0.25, hn + lump * 0.25) * smoothstep(1.0, 0.7, hn - lump * 0.5) * (0.75 + 0.5 * lump) * smoothstep(0.0, 0.3, cov);
+}
+// The sun's light left at height h [m above sea level], en [m] east/north of the camera, after
+// the decks above it (but skip), each a slab as thick as it is where the sun's ray crosses it at
+// its mean density (0.75): x the direct beam, exp(−τ/μ); y all of it, the forward-scattered
+// light too (two-stream, as decks.ts deckTransmission: 1 / (1 + ¾(1 − g)τ / (½ + ¾μ)), g = 0.85).
+vec2 deckSun(vec2 en, float h, vec3 sun, int skip) {
+  if (u_decks == 0) return vec2(1.0);
+  float sunUp = max(dot(sun, u_up), 0.05);
+  vec2 sxy = vec2(dot(sun, u_E), dot(sun, u_N)) / sunUp;
+  float od = 0.0, all = 1.0;
+  for (int k = 0; k < 2; k++) {
+    if (k >= u_decks || k == skip) continue;
+    float mid = 0.5 * (u_deck[k].x + u_deck[k].y);
+    if (mid <= h || u_deck[k].z < 0.005) continue;
+    float cov = deckCoverOf(k, deckField(k, u_deckP[k].xy + en + sxy * (mid - h), 150.0));
+    vec2 sp = deckSpan(k, cov);
+    float tau = u_deckP[k].z * 0.75 * max(0.0, sp.y - max(sp.x, h));
+    od += tau / sunUp;
+    all /= 1.0 + 0.1125 * tau / (0.5 + 0.75 * sunUp);
+  }
+  return vec2(exp(-od), max(all, exp(-od)));
+}
+// Both roots of qa t² + b t + c = 0 (qa ≥ 0, may be 0: a vertical ray), the smaller first;
+// (1e9, -1e9) when there are none.
+vec2 roots(float qa, float b, float c) {
+  float disc = b * b - 4.0 * qa * c;
+  if (disc <= 0.0) return vec2(1e9, -1e9);
+  float q = -0.5 * (b + (b >= 0.0 ? 1.0 : -1.0) * sqrt(disc));
+  float r1 = qa > 1e-12 ? q / qa : (q < 0.0 ? 1e12 : -1e12), r2 = c / q;
+  return vec2(min(r1, r2), max(r1, r2));
+}
+
 vec4 g_b[${TOWERS}];
 void towers(int i) {
   for (int k = 0; k < ${TOWERS}; k++) g_b[k] = texelFetch(u_towers, ivec2(k, i), 0);
@@ -209,7 +309,9 @@ vec2 farDensity(vec3 v, float hgt) {
 // to second order: h(t) = a·t² + b·t + c. Lit as the volumes are: a march towards the sun for
 // their self-shadow (the sunlit side bright, the far side and the base in shade), three
 // scattering octaves, the powder term and the sky's light from above, darker below.
+float g_farT = -1.0;
 vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sun, vec3 sunCol, float ph0, float ph1, float ph2, float jit) {
+  g_farT = -1.0;
   if (u_farP.w < 0.5 || tMax <= tMin) return vec4(0.0);
   vec3 F = u_farC.xyz;
   float R0 = u_farP.x, B = u_farP.y, top = B + u_farP.z * 1.3;
@@ -242,6 +344,7 @@ vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sun, vec3 sunCol, float ph
       vec2 dh = farDensity(v, hgt);
       if (dh.x > 0.0) {
         float dens = dh.x, hn = dh.y;
+        if (g_farT < 0.0) g_farT = t;
         // Towards the sun, from where the ray met this cloud: the march's steps here are hundreds
         // of metres, and a sample that deep inside would have the whole cloud between it and the
         // sun (the volumes are lit at their surface). 4 steps, growing.
@@ -254,7 +357,9 @@ vec4 farClouds(vec3 dir, float tMin, float tMax, vec3 sun, vec3 sunCol, float ph
         }
         od *= sigma * 0.35;
         float powder = mix(0.55, 1.0, 1.0 - exp(-dens * 6.0));
-        vec3 S = sunCol * (exp(-od) * ph0 * powder + 0.6 * exp(-0.3 * od) * ph1 + 0.4 * exp(-0.1 * od) * ph2);
+        // (Under a deck, its shade: the first octave the direct beam's, the others all the light's.)
+        vec2 ds = deckSun(vec2(dot(dir, u_E), dot(dir, u_N)) * t, B + hgt, sun, -1);
+        vec3 S = sunCol * (ds.x * exp(-od) * ph0 * powder + ds.y * (0.6 * exp(-0.3 * od) * ph1 + 0.4 * exp(-0.1 * od) * ph2));
         S += mix(u_ambBase, u_ambTop, smoothstep(0.0, 0.85, hn)) * u_light.z;
         float tr = exp(-u_light.x * dens * dt); // as dense as the volumes
         vec3 c = S;
@@ -280,14 +385,11 @@ float phase2(float c, float e) {
   return mix(hg(c, 0.8 * e), hg(c, -0.25 * e), 0.25) * 4.0 * 3.14159265;
 }
 
-void main() {
-  if ((u_n == 0 && u_farP.w < 0.5) || u_ready < 0.5) { out_FragColor = vec4(0.0); return; }
-  float sceneT = wfSceneDist(depthTexture, v_textureCoordinates);
-  vec3 dirEC = normalize(wfEyeRay(v_textureCoordinates));
-  vec3 dir = normalize(czm_inverseViewRotation * dirEC);
-  vec3 sun = czm_lightDirectionWC;
-  float cosT = dot(dir, sun);
-  float ph0 = phase2(cosT, 1.0), ph1 = phase2(cosT, 0.5), ph2 = phase2(cosT, 0.25);
+// The cumulus along the ray (the volumes, then the far field behind what they leave):
+// premultiplied colour and alpha; tFirst where they were first met (1e9: not).
+vec4 cumulus(float sceneT, vec3 dir, vec3 sun, float ph0, float ph1, float ph2, out float tFirst) {
+  tFirst = 1e9;
+  if (u_n == 0 && u_farP.w < 0.5) return vec4(0.0);
 
   // The clouds this ray passes through, nearest first (up to SLOTS), each by where the ray is
   // inside its upright cylinder (radius: its towers' reach) between base and top. Bounding
@@ -328,7 +430,11 @@ void main() {
   }
   vec3 sunColFar = czm_lightColor * u_light.y;
   float jitF = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 5.588238 * u_frame, vec2(0.06711056, 0.00583715))));
-  if (hits == 0) { out_FragColor = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sun, sunColFar, ph0, ph1, ph2, jitF); return; }
+  if (hits == 0) {
+    vec4 f = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sun, sunColFar, ph0, ph1, ph2, jitF);
+    if (g_farT >= 0.0) tFirst = g_farT;
+    return f;
+  }
 
   float sigma = u_light.x;
   vec3 lin = vec3(0.0);
@@ -345,6 +451,8 @@ void main() {
     float R = u_c[i].w, H = u_d[i].x;
     float a0 = t0s[h], a1 = t1s[h];
     towers(i);
+    // Under a deck, its shade (at the cloud's middle).
+    vec2 dsI = deckSun(vec2(dot(u_c[i].xyz, u_E), dot(u_c[i].xyz, u_N)), u_deckH.x + dot(u_c[i].xyz, u_up) + H * 0.5, sun, -1);
     // Fewer steps and no detail far away (a cloud 30 km off is a few dozen pixels). The detail
     // fades out with each sample's distance: switched off where the ray entered the cloud's
     // cylinder beyond 20 km, a cloud about that far was cut into upright bands (the middle
@@ -366,7 +474,7 @@ void main() {
       float powder = mix(0.55, 1.0, 1.0 - exp(-dens * 6.0));
       // (Weights and attenuations tuned so the shaded side stays a light grey, as the many
       // scatterings inside a real cumulus keep it.)
-      vec3 S = sunCol * (exp(-od) * ph0 * powder + 0.6 * exp(-0.3 * od) * ph1 + 0.4 * exp(-0.1 * od) * ph2);
+      vec3 S = sunCol * (dsI.x * exp(-od) * ph0 * powder + dsI.y * (0.6 * exp(-0.3 * od) * ph1 + 0.4 * exp(-0.1 * od) * ph2));
       float hn = clamp(dot(q, u_up) / H, 0.0, 1.0);
       S += mix(u_ambBase, u_ambTop, smoothstep(0.0, 0.85, hn)) * u_light.z;
       float tr = exp(-sigma * dens * dt);
@@ -378,7 +486,12 @@ void main() {
   }
   // Nothing of them here (the ray only crossed their bounds): the far field alone. (It returned
   // nothing: far clouds behind a near cloud's bounds were cut out along upright edges.)
-  if (firstT < 0.0) { out_FragColor = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sun, sunColFar, ph0, ph1, ph2, jitF); return; }
+  if (firstT < 0.0) {
+    vec4 f = farClouds(dir, ${(VOLUME_RANGE_M - 5000).toFixed(1)}, min(sceneT, ${FAR_RANGE_M.toFixed(1)}), sun, sunColFar, ph0, ph1, ph2, jitF);
+    if (g_farT >= 0.0) tFirst = g_farT;
+    return f;
+  }
+  tFirst = firstT;
   float a = 1.0 - T;
   vec3 col = lin;
   if (u_ap0.y > 0.5) {
@@ -399,7 +512,133 @@ void main() {
     col += (1.0 - a) * far.rgb;
     a += (1.0 - a) * far.a;
   }
-  out_FragColor = vec4(col, a);
+  return vec4(col, a);
+}
+
+// Where the ray enters deck k's slab (its lumps' reach included), 1e9 if it doesn't.
+float deckEntry(int k, float hc, float s, float qa) {
+  if (u_deck[k].z < 0.005) return 1e9;
+  float H0 = u_deck[k].y - u_deck[k].x;
+  float B = u_deck[k].x - 0.15 * H0, Tp = u_deck[k].y + 0.3 * H0;
+  if (hc >= B && hc <= Tp) return 0.0;
+  // Above it: where it comes down through its top (both roots ahead, or none); below it: where
+  // it goes up through its base (the one root ahead).
+  vec2 r = hc > Tp ? roots(qa, s, hc - Tp) : roots(qa, s, hc - B);
+  if (r.y < r.x) return 1e9;
+  float t = hc > Tp ? r.x : r.y;
+  return t >= 0.0 ? t : 1e9;
+}
+
+// Deck k along the ray up to tMax: premultiplied colour (the air in front already over it) and
+// alpha; tFirst where it was first met (1e9: not). Height above sea level along the ray with the
+// earth's curvature to second order, h(t) = hc + s·t + qa·t²; inside the slab between its base
+// and top. Lit as the far clouds are: the sun through the deck above the sample (and the decks
+// above it), three scattering octaves, the powder term, the sky's light dimmed by the cloud
+// above (diffuse transmission, two-stream: 1 / (1 + 0.75 (1 − g) τ), g = 0.85).
+vec4 deckMarch(int k, vec3 dir, float tMax, vec3 sun, vec3 sunCol, float ph0, float ph1, float ph2, float jit, out float tFirst) {
+  tFirst = 1e9;
+  if (u_deck[k].z < 0.005) return vec4(0.0);
+  // (The lumps reach a little below the base and a quarter of the depth above the top.)
+  float H0 = u_deck[k].y - u_deck[k].x, B = u_deck[k].x - 0.15 * H0, Tp = u_deck[k].y + 0.3 * H0, sig = u_deckP[k].z;
+  float hc = u_deckH.x, s = dot(dir, u_up), qa = (1.0 - s * s) / (2.0 * u_deckH.y);
+  vec2 rT = roots(qa, s, hc - Tp), rB = roots(qa, s, hc - B);
+  if (rT.y < rT.x) return vec4(0.0);
+  float lo = max(0.0, rT.x), hi = min(min(tMax, 300000.0), rT.y);
+  if (hi <= lo) return vec4(0.0);
+  vec2 dEN = vec2(dot(dir, u_E), dot(dir, u_N));
+  float sunUp = max(dot(sun, u_up), 0.05);
+  // A pixel's footprint on the deck per metre along the ray (wider where the ray grazes it).
+  float pix = (czm_frustumPlanes.x - czm_frustumPlanes.y) / (czm_currentFrustum.x * czm_viewport.w) / max(abs(s), 0.15);
+  vec3 col = vec3(0.0);
+  float T = 1.0;
+  // The light from the decks above and the air in front: taken where the ray first meets the
+  // deck, for the whole ray (per sample they cost a fifth of the frame and hardly change).
+  vec2 ds = vec2(1.0);
+  vec4 ap = vec4(0.0, 0.0, 0.0, 1.0);
+  float apK = 0.0, hz = 0.0;
+  for (int part = 0; part < 2; part++) {
+    // Above the base: before its first root, after its second.
+    float a0 = part == 0 ? lo : max(lo, rB.y);
+    float a1 = part == 0 ? (rB.y >= rB.x ? min(hi, rB.x) : hi) : hi;
+    if (part == 1 && rB.y < rB.x) break;
+    if (a1 <= a0) continue;
+    // Steps a sixteenth of its depth (20–100 m) near by, growing with the distance: long steps
+    // with the dither between pixels left a striped pattern.
+    float dt0 = clamp((Tp - B) / 16.0, 20.0, 100.0) * u_deckH.z;
+    float t = a0 + dt0 * (1.0 + a0 / 6000.0) * jit;
+    for (int it = 0; it < 64; it++) {
+      if (t >= a1 || T < 0.02) break;
+      float dt = dt0 * (1.0 + t / 6000.0);
+      float h = hc + s * t + qa * t * t;
+      vec2 en = dEN * t;
+      float cov;
+      vec2 span;
+      float dens = deckDensity(k, u_deckP[k].xy + en, h, t, t * pix, cov, span);
+      if (dens > 0.0) {
+        if (tFirst > 1e8) {
+          tFirst = t;
+          ds = deckSun(en, h, sun, k);
+          if (u_ap0.y > 0.5) {
+            ap = aerial(v_textureCoordinates, t / 1000.0);
+            apK = apScale(t);
+          } else hz = clamp(smoothstep(u_fade.x, u_fade.y * 3.0, t) * 1.2, 0.0, 1.0);
+        }
+        // The rest of the deck above, towards the sun and straight up; from the step's start
+        // when that was higher (a ray coming down is lit where it entered: in the ~11 m the
+        // direct light falls by e, where a step's first sample landed set the brightness, and
+        // the dither between pixels drew contour rings).
+        float tp = t - dt, above = sig * 0.75 * max(0.0, span.y - max(h, hc + s * tp + qa * tp * tp));
+        float od = above / sunUp;
+        float powder = mix(0.55, 1.0, 1.0 - exp(-dens * 6.0));
+        vec3 S = sunCol * (ds.x * exp(-od) * ph0 * powder + ds.y * (0.6 * exp(-0.3 * od) * ph1 + 0.4 * exp(-0.1 * od) * ph2));
+        float hn = clamp((h - span.x) / max(span.y - span.x, 1.0), 0.0, 1.0);
+        S += mix(u_ambBase, u_ambTop, 0.5 + 0.5 * hn) * u_light.z / (1.0 + 0.1125 * above / 0.875);
+        float tr = exp(-sig * dens * dt);
+        vec3 c = u_ap0.y > 0.5 ? S * ap.a + ap.rgb * apK : mix(S, u_haze, hz);
+        col += T * c * (1.0 - tr);
+        T *= tr;
+      }
+      t += dt;
+    }
+  }
+  return vec4(col, 1.0 - T);
+}
+
+void main() {
+  if ((u_n == 0 && u_farP.w < 0.5 && u_decks == 0) || u_ready < 0.5) { out_FragColor = vec4(0.0); return; }
+  float sceneT = wfSceneDist(depthTexture, v_textureCoordinates);
+  vec3 dirEC = normalize(wfEyeRay(v_textureCoordinates));
+  vec3 dir = normalize(czm_inverseViewRotation * dirEC);
+  vec3 sun = czm_lightDirectionWC;
+  float cosT = dot(dir, sun);
+  float ph0 = phase2(cosT, 1.0), ph1 = phase2(cosT, 0.5), ph2 = phase2(cosT, 0.25);
+  float tc;
+  vec4 L0 = cumulus(sceneT, dir, sun, ph0, ph1, ph2, tc);
+  if (u_decks == 0) { out_FragColor = L0; return; }
+  float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 1.31 + 5.588238 * u_frame, vec2(0.06711056, 0.00583715))));
+  vec3 sunCol = czm_lightColor * u_light.y;
+  // The nearer deck first (where the ray enters its slab); the other not behind an opaque one.
+  float t1 = 1e9, t2 = 1e9;
+  vec4 L1 = vec4(0.0), L2 = vec4(0.0);
+  float hc = u_deckH.x, s = dot(dir, u_up), qa = (1.0 - s * s) / (2.0 * u_deckH.y);
+  float e0 = deckEntry(0, hc, s, qa), e1 = u_decks > 1 ? deckEntry(1, hc, s, qa) : 1e9;
+  if (e0 <= e1) {
+    L1 = deckMarch(0, dir, sceneT, sun, sunCol, ph0, ph1, ph2, jit, t1);
+    if (e1 < 1e8 && !(L1.a > 0.98 && t1 < e1)) L2 = deckMarch(1, dir, sceneT, sun, sunCol, ph0, ph1, ph2, jit, t2);
+  } else {
+    L2 = deckMarch(1, dir, sceneT, sun, sunCol, ph0, ph1, ph2, jit, t2);
+    if (e0 < 1e8 && !(L2.a > 0.98 && t2 < e0)) L1 = deckMarch(0, dir, sceneT, sun, sunCol, ph0, ph1, ph2, jit, t1);
+  }
+  // Front to back by where each was first met.
+  vec4 L[3] = vec4[3](L0, L1, L2);
+  float tt[3] = float[3](tc, t1, t2);
+  for (int i = 0; i < 2; i++)
+    for (int j = 0; j < 2 - i; j++)
+      if (tt[j] > tt[j + 1]) { vec4 l = L[j]; L[j] = L[j + 1]; L[j + 1] = l; float x = tt[j]; tt[j] = tt[j + 1]; tt[j + 1] = x; }
+  vec4 o = L[0];
+  o += (1.0 - o.a) * L[1];
+  o += (1.0 - o.a) * L[2];
+  out_FragColor = o;
 }
 `;
 
@@ -441,6 +680,34 @@ interface Cloud {
   geo: CloudGeometry;
 }
 
+/** A cloud deck to draw (decks.ts, from the weather where the glider is). */
+export interface DeckTarget {
+  /** Base and top [m above sea level]; the share of the sky it covers. */
+  baseM: number;
+  topM: number;
+  cover: number;
+  /** Which of the two holes patterns: 0 or 1 (a deck joined to the one below takes its). */
+  field: number;
+  /** Extinction [1/m] at full density. */
+  extinction: number;
+  /** The wind at its height, towards east and north [m/s]: it drifts with it. */
+  windE: number;
+  windN: number;
+}
+
+/** A deck as drawn: reached gradually from its target, as the cumulus are (cloud-follow.ts). */
+interface DeckSlot {
+  base: number;
+  top: number;
+  cover: number;
+  field: number;
+  sigma: number;
+  /** How far it has drifted [m east, north]. */
+  driftE: number;
+  driftN: number;
+  target?: DeckTarget;
+}
+
 export class VolumetricClouds {
   private clouds: Cloud[] = [];
   private readonly c = Array.from({ length: MAX }, () => new Cartesian4());
@@ -450,7 +717,7 @@ export class VolumetricClouds {
   private readonly east = new Cartesian3();
   private readonly north = new Cartesian3();
   private readonly towerData = new Float32Array(TOWERS * 4 * MAX);
-  private readonly tex: { towers: unknown; far: unknown; shape?: unknown; detail?: unknown };
+  private readonly tex: { towers: unknown; far: unknown; shape?: unknown; detail?: unknown; deck?: unknown };
   private readonly ambTop: Cartesian3;
   private readonly ambBase: Cartesian3;
   private ambVersion = -1;
@@ -466,6 +733,16 @@ export class VolumetricClouds {
   private readonly farP = new Cartesian4();
   /** Far clouds drawn from the map (for checks). */
   farCount = 0;
+  /** The decks as drawn: the low band's and the mid band's. */
+  readonly decks: DeckSlot[] = [0, 1].map(() => ({ base: 0, top: 0, cover: 0, field: 0, sigma: 0.05, driftE: 0, driftN: 0 }));
+  private readonly deckU = [new Cartesian4(), new Cartesian4()];
+  private readonly deckP = [new Cartesian4(), new Cartesian4()];
+  /** ?deckstep= scales the decks' march steps (tuning). */
+  private readonly deckH = new Cartesian3(0, 0, Number(new URLSearchParams(location.search).get("deckstep") ?? 1.4));
+  private nDecks = 0;
+  /** The decks' frame: a ground point (set with the first decks) and its east and north. */
+  private deckO?: { at: Cartesian3; e: Cartesian3; n: Cartesian3 };
+  private deckT = 0;
 
   constructor(
     private readonly viewer: Viewer,
@@ -528,6 +805,19 @@ export class VolumetricClouds {
         });
       this.tex.shape = make(noise.shape, noise.shapeSize);
       this.tex.detail = make(noise.detail, noise.detailSize);
+      const deck = new C.Texture({
+        context,
+        width: noise.deckSize,
+        height: noise.deckSize,
+        pixelFormat: C.PixelFormat.RGBA,
+        pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE,
+        source: { arrayBufferView: noise.deck },
+        flipY: false,
+        sampler: new C.Sampler({ wrapS: C.TextureWrap.REPEAT, wrapT: C.TextureWrap.REPEAT, minificationFilter: C.TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }),
+      });
+      // (Mipmapped: a deck tens of kilometres off would sparkle.)
+      deck.generateMipmap();
+      this.tex.deck = deck;
     });
     const hasAp = !!atmosphere;
     const march = new PostProcessStage({
@@ -561,6 +851,11 @@ export class VolumetricClouds {
         u_farN: () => self.farN,
         u_farUp: () => self.farUp,
         u_farP: () => self.farP,
+        u_deck: () => self.deckU,
+        u_deckP: () => self.deckP,
+        u_deckH: () => self.deckH,
+        u_decks: () => self.nDecks,
+        u_deckMap: () => self.tex.deck ?? self.tex.towers,
       },
     });
     const blend = new PostProcessStage({ fragmentShader: BLEND_FS, pixelDatatype, uniforms: { u_clouds: march.name } });
@@ -630,6 +925,81 @@ export class VolumetricClouds {
     this.farC.w = half;
   }
 
+  /**
+   * The weather's cloud decks: [low, mid] (undefined: none in that band). Drawn reaching them
+   * gradually (snap: at once, while loading).
+   */
+  setDecks(targets: (DeckTarget | undefined)[], snap: boolean): void {
+    if (!this.deckO) {
+      const ell = this.viewer.scene.globe.ellipsoid, c = this.viewer.camera.positionCartographic;
+      const at = Cartesian3.fromRadians(c.longitude, c.latitude, 0, ell), up = ell.geodeticSurfaceNormal(at, new Cartesian3());
+      const e = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, up, new Cartesian3()), new Cartesian3());
+      this.deckO = { at, e, n: Cartesian3.cross(up, e, new Cartesian3()) };
+    }
+    this.decks.forEach((d, k) => {
+      const t = targets[k];
+      if (t) d.target = t;
+      else if (d.target) d.target = { ...d.target, cover: 0 };
+      if (snap && t) Object.assign(d, { base: t.baseM, top: t.topM, cover: t.cover, field: t.field, sigma: t.extinction });
+      if (snap && !t) d.cover = 0;
+    });
+  }
+
+  /** The decks a frame on: towards their targets, drifted with their wind. */
+  private stepDecks(cam: Cartesian3): void {
+    const now = performance.now(), dt = Math.min(1, Math.max(0, (now - this.deckT) / 1000));
+    this.deckT = now;
+    const ease = 1 - Math.exp(-dt / FOLLOW_S), o = this.deckO;
+    let n = 0;
+    this.decks.forEach((d, k) => {
+      const t = d.target;
+      if (!t || !o) return;
+      const step = (v: number, to: number, cap: number) => v + Math.max(-cap, Math.min(cap, (to - v) * ease));
+      // A deck coming in starts at its target's heights (only its cover grows).
+      if (d.cover <= 0) {
+        d.base = t.baseM;
+        d.top = t.topM;
+        d.field = t.field;
+      }
+      d.base = step(d.base, t.baseM, RISE_MS * dt);
+      d.top = step(d.top, Math.max(t.topM, d.base + 50), RISE_MS * dt);
+      d.cover = t.cover > d.cover ? Math.min(t.cover, d.cover + dt / GROW_S) : Math.max(t.cover, d.cover - dt / DISSOLVE_S);
+      d.field += Math.max(-dt / 60, Math.min(dt / 60, t.field - d.field));
+      d.sigma += (t.extinction - d.sigma) * ease;
+      d.driftE += t.windE * dt;
+      d.driftN += t.windN * dt;
+      const rel = Cartesian3.subtract(cam, o.at, new Cartesian3());
+      this.deckU[k]!.x = d.base;
+      this.deckU[k]!.y = d.top;
+      this.deckU[k]!.z = d.cover;
+      this.deckU[k]!.w = d.field;
+      this.deckP[k]!.x = Cartesian3.dot(rel, o.e) - d.driftE;
+      this.deckP[k]!.y = Cartesian3.dot(rel, o.n) - d.driftN;
+      this.deckP[k]!.z = d.sigma;
+      if (d.cover > 0.002) n = k + 1;
+    });
+    this.nDecks = n;
+    const c = this.viewer.camera.positionCartographic;
+    this.deckH.x = c.height;
+    this.deckH.y = Cartesian3.magnitude(cam) - c.height;
+    // The air under the decks above the camera is lit through them: each takes its cover's
+    // share of a typical patch's light (three quarters of its depth, two-stream as in deckSun,
+    // the light from all over the sky: μ ≈ 0.5; decks.ts deckTransmission). The haze there with
+    // it (atmosphere.ts).
+    let haze = 1;
+    for (const d of this.decks) {
+      if (d.cover <= 0.002 || d.base <= c.height) continue;
+      const tau = d.sigma * 0.75 * 0.75 * (d.top - d.base);
+      haze *= 1 - d.cover * (1 - 1 / (1 + (0.1125 * tau) / 0.875));
+    }
+    if (this.atmosphere) this.atmosphere.hazeLight = haze;
+  }
+
+  /** The decks as the ground's shade needs them (google3d.ts): as this shader has them. */
+  deckShade(): { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } {
+    return { decks: this.deckU, at: this.deckP, camH: this.deckH.x, n: this.nDecks };
+  }
+
   set(specs: CloudSpec[]): void {
     this.clouds = specs.filter((s) => s.size > 0 && s.opacity > 0).map((spec) => ({ spec, base: Cartesian3.fromDegrees(spec.lonDeg, spec.latDeg, spec.baseM), geo: cloudGeometry(spec) }));
   }
@@ -657,6 +1027,7 @@ export class VolumetricClouds {
     }
     const camera = this.viewer.camera, cam = camera.positionWC;
     Cartesian3.normalize(cam, this.up);
+    this.stepDecks(cam);
     // Only those in view (the ones behind cost a sphere test per pixel for nothing).
     const cull = camera.frustum.computeCullingVolume(cam, camera.directionWC, camera.upWC);
     const bs = new BoundingSphere();

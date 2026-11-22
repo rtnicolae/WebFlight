@@ -2,4 +2,4 @@
 import { cloudNoise } from "./cloud-noise.ts";
 
 const n = cloudNoise();
-(self as unknown as Worker).postMessage(n, [n.shape.buffer, n.detail.buffer]);
+(self as unknown as Worker).postMessage(n, [n.shape.buffer, n.detail.buffer, n.deck.buffer]);

@@ -3,7 +3,11 @@
  * Volumetric Cloudscapes of Horizon: Zero Dawn" (2015) / Nubis:
  *  - shape (64³, RGBA): R Perlin–Worley (billowy Perlin, its low values cut by Worley cells:
  *    round, cauliflower lumps), G B A inverted Worley fBm at 4, 8 and 16 cells across;
- *  - detail (32³, RGB): inverted Worley fBm at 2, 4 and 8 cells across (wisps, eroded edges).
+ *  - detail (32³, RGB): inverted Worley fBm at 2, 4 and 8 cells across (wisps, eroded edges);
+ *  - deck (512², RG): two independent 2D fields for the cloud decks' holes (vclouds.ts), each
+ *    Perlin fBm (patches, 4 to 32 cells across) with inverted Worley cells (16 and 32 across:
+ *    the cells of stratocumulus), equalized to be uniform in [0, 1] (so the part of it above
+ *    1 − c is a share c of the area: the deck's cover).
  * Made once per page in a worker (cloud-noise-worker.ts: ~1.6 s on the M1 Pro, during the
  * loading screen), as bytes; cloudNoiseAsync() hands them over.
  */
@@ -73,6 +77,25 @@ export interface CloudNoise {
   shapeSize: number;
   detail: Uint8Array;
   detailSize: number;
+  deck: Uint8Array;
+  deckSize: number;
+}
+
+/** A 2D field for the decks, tileable, as ranks: uniform in [0, 1) (byte values). */
+function deckField(n: number, seed: number): Uint8Array {
+  const v = new Float32Array(n * n);
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n; x++) {
+      const u = (x + 0.5) / n, w = (y + 0.5) / n;
+      // (Perlin's z fixed: a slice of the tileable 3D noise is a tileable 2D one.)
+      const p = perlinFbm(u, w, 0.37, 4, seed, 4);
+      const c = worley(u, w, 0.61, 16, seed + 5) * 0.65 + worley(u, w, 0.29, 32, seed + 9) * 0.35;
+      v[x + n * y] = p * 0.5 + c * 0.5;
+    }
+  const order = Array.from(v.keys()).sort((a, b) => v[a]! - v[b]!);
+  const out = new Uint8Array(n * n);
+  order.forEach((i, r) => (out[i] = Math.floor((r / order.length) * 256)));
+  return out;
 }
 
 let cached: CloudNoise | undefined;
@@ -107,7 +130,14 @@ export function cloudNoise(): CloudNoise {
         detail[i + 2] = byte(worleyFbm(u, v, w, 8, 67));
         detail[i + 3] = 255;
       }
-  cached = { shape, shapeSize: S, detail, detailSize: D };
+  const N = 512, a = deckField(N, 71), b = deckField(N, 89);
+  const deck = new Uint8Array(N * N * 4);
+  for (let i = 0; i < N * N; i++) {
+    deck[4 * i] = a[i]!;
+    deck[4 * i + 1] = b[i]!;
+    deck[4 * i + 3] = 255;
+  }
+  cached = { shape, shapeSize: S, detail, detailSize: D, deck, deckSize: N };
   return cached;
 }
 

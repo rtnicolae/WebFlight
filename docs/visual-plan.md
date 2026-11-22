@@ -138,6 +138,29 @@ Still open: the clouds' half-resolution edges (now jittered and averaged, but no
 - **Loading and jumps:** while loading, and after a camera jump of more than 3 km (a reset elsewhere), the sky is drawn as it is.
 - **Cost:** about 3 ms a second for ~12,900 clouds.
 
+**Cloud decks, 22 Nov 2026:** overcast and broken days are no longer drawn clear. Stratus to altostratus come from the weather where the glider is (`decks.ts` in the environment package; drawn by `vclouds.ts`).
+- **How much sky:** the model's low cover (ground to 800 hPa) and mid cover (800 to 400 hPa, now fetched: `cloud_cover_mid`).
+- **Where:** where the humidity profile is above Sundqvist's critical humidity, the threshold Open-Meteo uses for its own pressure-level cloud. Sub-grid cloud sits at the band's most humid layer. A cumulus day's sub-grid low cloud stays the cumulus.
+- **How thick:** solved so the decks pass the weather's own share of clear-sky radiation (Haurwitz). On 12 Nov 14:00 the model's 70 % low and 94 % mid cover passed 67 % of the light, so the decks are thin and the sun glows through. A solid humid run let through 5 % and the day looked like night.
+- **Look:**
+  - Holes from a tiling 2D field (`cloud-noise.ts`), uniform so the cloud covers exactly the share given.
+  - Each patch a lens, flat below and domed above, thinning to nothing at its edge; base and top billowed with the cumulus' Perlin–Worley noise.
+  - Lit like the far cumulus: the sun through the deck above the sample, from where the ray entered.
+  - A deck through 800 hPa shares its holes with the one above (maximum overlap); separate decks are independent.
+- **Light under them:** the cumulus, the far clouds and Google's tiles take the sun through the same holes (two-stream transmission), so sunlit patches fall where the holes are. The haze under the decks is dimmed by their mean transmission.
+- **Gradual:** cover, heights and depth ease towards the weather's (20 s, 3 m/s, 90 s to grow, 120 s to go), and decks drift with the wind at their height.
+- **Checked** in Brave on 5 Nov 2026 12:00 (70 % at 1.15–1.69 km and 77 % at 7 km) from 250 m above ground and from above the deck, 12 Nov 14:00 (overcast) and 10 Jul 2024 13:00 (cumulus, unchanged).
+- **Fixed on the way:**
+  - Grey curtains and jagged edges: the deck map's mip level is now set by hand, since the hardware's derivatives are undefined inside the march.
+  - Contour rings: samples are lit from where the ray entered.
+  - Stripes: steps now 1/16 of the deck's depth near by, growing with distance.
+- **Cost:** 85 → 75 fps under a deck (about 1.6 ms), with the nearer deck marched first and the other skipped behind an opaque one. Nothing on days without decks. `?decks=0` turns them off; `?deckstep=` scales the steps.
+- **Not yet:**
+  - The glider model and OSM buildings keep their sunlight under a deck.
+  - Decks are the glider's weather everywhere, not by place.
+  - No rain or snow.
+  - Cumulus are drawn over a deck below the camera.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.

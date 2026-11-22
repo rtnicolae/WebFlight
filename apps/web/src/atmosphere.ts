@@ -338,6 +338,7 @@ uniform float u_debug;
 uniform vec2 u_tanHalf;
 uniform vec4 u_cirrus;   // cover 0–1, height [km], fibre direction [rad from east], drift [km]
 uniform vec3 u_camEN;    // camera east/north of the flight's start [km]; brightness
+uniform float u_hazeLight; // the light left for the air under the cloud decks (vclouds.ts)
 in vec2 v_textureCoordinates;
 
 vec2 skyUv(vec3 d, float r) {
@@ -423,7 +424,7 @@ void main() {
     c.rgb = c.rgb * clamp(1.0 - skyLum * 40.0, 0.0, 1.0) + col;
   } else {
     vec4 ap = aerial(uv, dist / 1000.0);
-    c.rgb = c.rgb * ap.a + ap.rgb * u_scale.y;
+    c.rgb = c.rgb * ap.a + ap.rgb * u_scale.y * u_hazeLight;
   }
   out_FragColor = c;
 }`;
@@ -477,6 +478,8 @@ export class Atmosphere {
   private baseScale: { sky: number; ap: number } = { sky: SKY_SCALE, ap: AP_SCALE };
   /** Sky and haze scale into scene units (with the twilight adaptation). */
   readonly scale: Cesium.Cartesian2;
+  /** The light left for the air under the cloud decks, 0–1 (vclouds.ts sets it each frame). */
+  hazeLight = 1;
   private ambientCache: { top: number[]; horizon: number[] } | undefined;
   /** The cirrus layer (see COMPOSITE_FS) and where the camera is in it. */
   private readonly cirrus = new Cesium.Cartesian4();
@@ -542,6 +545,7 @@ export class Atmosphere {
         u_tanHalf: () => u.tanHalf,
         u_cirrus: () => this.cirrus,
         u_camEN: () => this.camEN,
+        u_hazeLight: () => this.hazeLight,
       },
     });
     this.saved = { sky: scene.skyAtmosphere?.show ?? false, sun: scene.sun?.show ?? false, fog: scene.fog.renderable };
