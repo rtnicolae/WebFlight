@@ -76,7 +76,7 @@ height (`blendWeather`): each column's 2 m air and surface pressure at the blend
   re-centring). The columns it keeps are the same places asked for the same days, so the weather
   over the ground both grids cover, the glider's included, doesn't change with the move; only
   cells that had the old edge's weather do (far thermals 26.0–26.2° E on that day: mean top
-  2,548 → 2,456 m). Every column fetched is kept for the flight: flying back, or a reset to the
+  2,548 → 2,456 m), and their clouds follow gradually (`cloud-follow.ts`). Every column fetched is kept for the flight: flying back, or a reset to the
   start (the grid moved back before the reset reaches the flight model), asks for none. A failed
   request keeps the grid (its edge's weather beyond) and is retried a minute later. Checked in
   the browser: a glider put 20 km east fetched 5 columns, and its weather across the swap went

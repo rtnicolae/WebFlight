@@ -245,6 +245,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   let localSnap: ArrayBuffer | undefined;
   let paused = false;
   let fdmHz = 0;
+  /** The flight model's simulated time [s] (its stats, every second). */
+  let simS = 0;
   const input = new PilotInput({
     reset: () =>
       void startState(F, params).then((start) => {
@@ -286,6 +288,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
           break;
         case "stats":
           fdmHz = m.stepsPerSecond;
+          simS = m.simTime;
           break;
         case "log":
           if (/error|warn|not ported|not supported/i.test(m.line)) console.warn("[fdm]", m.line);
@@ -359,9 +362,14 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
       const a = w.aloft[0];
       wind = { groundFromDeg: w.windFromDeg, groundKt: w.windKt, aloftFromDeg: a?.fromDeg ?? w.windFromDeg, aloftKt: a?.kt ?? w.windKt };
     });
+    // Their thermals' cycles on the flight's clock, as the flight model's (they kept going while
+    // paused, and drifted from its thermals' cycles: the cloud handed between them changed).
+    let farSimS = simS;
     const tickFar = () => {
-      farSky.update(3, { ...gliderAt, altFt: 0 }, wind);
-      outerSky.update(3, { ...gliderAt, altFt: 0 }, wind);
+      const dt = Math.min(10, Math.max(0, simS - farSimS));
+      farSimS = simS;
+      farSky.update(dt, { ...gliderAt, altFt: 0 }, wind);
+      outerSky.update(dt, { ...gliderAt, altFt: 0 }, wind);
       const [cx, cy] = skyCellOf(gliderAt.latDeg, gliderAt.lonDeg);
       const beyond = outerSky.thermals.filter((t) => {
         const [x, y] = t.id.split(":").map(Number) as [number, number];
@@ -566,6 +574,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   if (water) water.loading = false;
   if (life.isClosed) return;
   status.hidden = true;
+  // From here clouds change only gradually (scene.ts ThermalLayer.follow).
+  thermalLayer.gradual = true;
   send({ type: "pause", paused });
 }
 

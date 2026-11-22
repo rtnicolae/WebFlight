@@ -120,6 +120,23 @@ Still open: the clouds' half-resolution edges (now jittered and averaged, but no
 
 **Glider, 19 Nov 2026 (phase 5, E3):** the gelcoat and the canopy mirror the sky our atmosphere draws (its zenith and horizon, read back every 10 s: the same blue, the same sunset) instead of fixed colours. The canopy glass, seen from outside (more than ~3 m away), is smoked and mirrors the sky with Fresnel (from 7% face-on to most of it at a glancing view): before, with the model's 15% tint and a true 4% reflection, it was an empty frame. From the cockpit it stays as clear as before.
 
+**Clouds change gradually, 22 Nov 2026:** clouds no longer jump or pop in and out (`cloud-follow.ts`, used by `scene.ts` ThermalLayer). A probe logged every drawn cloud twice a second during a 5-minute flight east from Ghimbav (10 Jul 2024, 14:00, ~600 clouds within 45 km).
+- **Before:** 231 clouds appeared at full size in one frame, and 461 stepped 40–70 m.
+  - Pop-ins: FG's thermals restart part-way through their cycle. The cloud handed from the page's far sky to the flight model's (about 18 km out) also comes with its cycle elsewhere.
+  - Steps: every weather update re-leans the columns.
+- **Now:** zero events in the same flight, and zero in a stress test that hops the glider 20 km east in 1 km steps (handoffs and a weather-grid move).
+- **What is drawn follows the thermals:**
+  - Place, base and width ease in with a 20 s time constant.
+  - New clouds grow in over about 1.5 minutes.
+  - A thermal first met dying gets no cloud.
+  - Clouds dropped from the lists dissolve over 2 minutes.
+  - When the two skies place a thermal more than 300 m apart (up to ~2 km: other terrain detail and sun when each first had the cell), the drawn cloud dissolves in place while the other grows in.
+- **Unchanged:** the thermals and their lift. Their own cycle (grow over 3 minutes, die over 5) is within these rates.
+- **Volumes and far map:** the split is settled when the far map is redrawn (every 3 s). A cloud crossing 45 km used to leave the volumes at once and join the map up to 3 s later.
+- **Far skies:** they now age on the flight's clock, not the wall clock, so they no longer keep cycling while paused.
+- **Loading and jumps:** while loading, and after a camera jump of more than 3 km (a reset elsewhere), the sky is drawn as it is.
+- **Cost:** about 3 ms a second for ~12,900 clouds.
+
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.
 - Mountains in the middle distance.
