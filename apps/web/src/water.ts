@@ -532,12 +532,36 @@ export class Water {
         // OSM's rivers only in the near tiles: in the far ones (zoom 11, ~54 m a pixel) a 40 m
         // river is under a pixel, drawn a pixel wide and levelled from coarse answers, so it
         // showed as dark dashes along the horizon (Google's photo has those rivers anyway).
-        this.osmUrl && z >= 13 ? riverMask(fill(this.osmUrl), z, tileLat(y + 0.5, z)).catch(() => undefined) : Promise.resolve(undefined),
+        this.osmUrl && z >= 13 ? this.majorRivers(z, x, y).then((major) => riverMask(fill(this.osmUrl!), z, tileLat(y + 0.5, z), major)).catch(() => undefined) : Promise.resolve(undefined),
       ]);
       if (!this.tiles.has(key) || (!jrc && !rivers)) return;
       const t = this.build(z, x, y, jrc, rivers);
       if (t) this.tiles.set(key, t);
     })().catch(() => {});
+  }
+
+  private readonly major = new Map<string, Promise<Set<string>>>();
+  /**
+   * The rivers OpenFreeMap keeps at zoom 8 round a tile (by name): its long ones (OpenMapTiles
+   * ranks them by length), here the Olt, not the Bârsa or the Ghimbășel.
+   */
+  private majorRivers(z: number, x: number, y: number): Promise<Set<string>> {
+    const s = 2 ** (z - 8), key = `${Math.floor(x / s)}/${Math.floor(y / s)}`;
+    let p = this.major.get(key);
+    if (!p) {
+      const url = this.osmUrl!.replace("{z}", "8").replace("{x}", String(Math.floor(x / s))).replace("{y}", String(Math.floor(y / s)));
+      p = fetch(url)
+        .then(async (r) => {
+          const out = new Set<string>();
+          if (!r.ok) return out;
+          for (const l of decodeMvt(new Uint8Array(await r.arrayBuffer())))
+            if (l.name === "waterway") for (const f of l.features) if (f.properties["class"] === "river" && typeof f.properties["name"] === "string") out.add(f.properties["name"]);
+          return out;
+        })
+        .catch(() => new Set<string>());
+      this.major.set(key, p);
+    }
+    return p;
   }
 
   private build(z: number, x: number, y: number, rgba: Uint8ClampedArray | undefined, rivers: Uint8Array | undefined): Tile | undefined {
@@ -868,9 +892,12 @@ export class Water {
  * Rivers and canals from an OpenMapTiles tile's waterway lines, drawn into a 256² mask at
  * their width (OSM gives none in these tiles: rivers 40 m, canals 15 m; streams left out),
  * soft-edged, 230 where water. JRC Global Surface Water misses most rivers narrower than about
- * 60 m (the Olt at Feldioara: nothing); OSM's river *areas* cover whole gravel beds.
+ * 60 m (the Olt at Feldioara: nothing); OSM's river *areas* cover whole gravel beds. Rivers only
+ * the major ones (Water.majorRivers): OSM calls a brook a few metres wide a river too (the
+ * Ghimbășel), and drawn 40 m wide, levelled from Google's tiles draped over the roofs round
+ * it, it flooded the town.
  */
-async function riverMask(url: string, z: number, latDeg: number): Promise<Uint8Array | undefined> {
+async function riverMask(url: string, z: number, latDeg: number, major: Set<string>): Promise<Uint8Array | undefined> {
   const r = await fetch(url);
   if (!r.ok) return undefined;
   const layers = decodeMvt(new Uint8Array(await r.arrayBuffer()));
@@ -885,6 +912,7 @@ async function riverMask(url: string, z: number, latDeg: number): Promise<Uint8A
     for (const f of l.features) {
       const w = { river: 40, canal: 15 }[String(f.properties["class"])];
       if (!w || f.properties["intermittent"] === 1) continue;
+      if (f.properties["class"] === "river" && !major.has(String(f.properties["name"]))) continue;
       g.lineWidth = Math.max(1, w / mPerPx);
       g.beginPath();
       for (const line of f.geometry) line.forEach(([px, py], i) => (i ? g.lineTo(px! * k, py! * k) : g.moveTo(px! * k, py! * k)));
