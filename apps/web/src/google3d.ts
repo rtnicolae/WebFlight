@@ -48,7 +48,8 @@ import { cloudNoiseAsync } from "./cloud-noise.ts";
 import { DETAIL_GLSL, detailSettings, detailTexturePixels, followCameraOnGround } from "./ground-detail.ts";
 import { LOOK } from "./lighting.ts";
 import { RUNWAY_GLSL, runwayUniforms } from "./runway-paint.ts";
-import { CLOUD_SHADE, cloudShadeRamp, SUN_THROUGH_GLSL } from "./sun-through.ts";
+import { CLOUD_SHADE, cloudShadeRamp, placeScaleByte, SUN_THROUGH_GLSL } from "./sun-through.ts";
+import type { DeckShade } from "./vclouds.ts";
 
 type GroundFn = (latDeg: number, lonDeg: number) => number | undefined;
 
@@ -188,6 +189,8 @@ export class Google3D {
         wfcDeckP0: { type: UniformType.VEC4, value: new Cartesian4() },
         wfcDeckP1: { type: UniformType.VEC4, value: new Cartesian4() },
         wfcDeckH: { type: UniformType.VEC4, value: new Cartesian4() },
+        wfcPlace: { type: UniformType.SAMPLER_2D, value: new TextureUniform({ typedArray: new Uint8Array([255, 255, placeScaleByte(1), 255]), width: 1, height: 1, repeat: false }) },
+        wfcPlaceP: { type: UniformType.VEC4, value: new Cartesian4(0.5, 0.5, 0, 0) },
         // Runways painted on the tiles (runway-paint.ts).
         ...runwayUniforms(),
       },
@@ -375,12 +378,14 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
    * The clouds' shade as the shaders take it (sun-through.ts SUN_THROUGH_DECLS: wfcShadowP,
    * wfcDeck0…, without the textures, shadeTextures): the tiles', and our buildings' and water's.
    */
-  readonly shade = { shadowP: new Cartesian4(), deck0: new Cartesian4(), deck1: new Cartesian4(), deckP0: new Cartesian4(), deckP1: new Cartesian4(), deckH: new Cartesian4() };
+  readonly shade = { shadowP: new Cartesian4(), deck0: new Cartesian4(), deck1: new Cartesian4(), deckP0: new Cartesian4(), deckP1: new Cartesian4(), deckH: new Cartesian4(), placeP: new Cartesian4(0.5, 0.5, 0, 0) };
+  /** The decks by place as last taken (vclouds.ts u_place), at most once a second. */
+  private place: { data: Uint8Array; cols: number; rows: number; version: number; at: number } | undefined;
   private ramp = 0;
   private shadowVersion = 0;
   private texVersion = -1;
   private deckData: { data: Uint8Array; size: number } | undefined;
-  private textures: { shadow: { copyFrom(o: unknown): void; destroy(): void }; deck: { destroy(): void } | undefined } | undefined;
+  private textures: { shadow: { copyFrom(o: unknown): void; destroy(): void }; deck: { destroy(): void } | undefined; place?: { tex: { copyFrom(o: unknown): void }; cols: number; rows: number; version: number } } | undefined;
 
   /** The decks' field (cloud-noise.ts), for shadeTextures. */
   deckNoise(data: Uint8Array, size: number): void {
@@ -393,9 +398,9 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
    * (undefined until it is made). Shared: a Cesium Material destroys a texture it is given when
    * it gets another, so each is given once.
    */
-  shadeTextures(): { shadow: unknown; deck: unknown | undefined } {
+  shadeTextures(): { shadow: unknown; deck: unknown | undefined; place: unknown | undefined } {
     const C = CesiumAll as unknown as Record<string, any>, context = (this.viewer.scene as unknown as { context: unknown }).context;
-    const t = (this.textures ??= {
+    const t: NonNullable<typeof this.textures> = (this.textures ??= {
       shadow: new C.Texture({ context, width: SHADOW_PX, height: SHADOW_PX, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, source: { arrayBufferView: this.shadowBuf }, flipY: false, sampler: new C.Sampler({ wrapS: C.TextureWrap.CLAMP_TO_EDGE, wrapT: C.TextureWrap.CLAMP_TO_EDGE, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }) }),
       deck: undefined,
     });
@@ -408,12 +413,23 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
       d.generateMipmap();
       t.deck = d;
     }
-    return { shadow: t.shadow, deck: t.deck };
+    // The decks by place: a new texture when the map's size changes (the old one left to whoever
+    // holds it: a building material destroys it when given this one).
+    const p = this.place;
+    if (p && (!t.place || t.place.version !== p.version)) {
+      if (!t.place || t.place.cols !== p.cols || t.place.rows !== p.rows)
+        t.place = { tex: new C.Texture({ context, width: p.cols, height: p.rows, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, source: { arrayBufferView: p.data }, flipY: false, sampler: new C.Sampler({ wrapS: C.TextureWrap.CLAMP_TO_EDGE, wrapT: C.TextureWrap.CLAMP_TO_EDGE, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }) }), cols: p.cols, rows: p.rows, version: p.version };
+      else {
+        t.place.tex.copyFrom({ source: { width: p.cols, height: p.rows, arrayBufferView: p.data } });
+        t.place.version = p.version;
+      }
+    }
+    return { shadow: t.shadow, deck: t.deck, place: t.place?.tex };
   }
 
-  private deckSource: (() => { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } | undefined) | undefined;
+  private deckSource: (() => DeckShade | undefined) | undefined;
   /** Where the cloud decks are (vclouds.ts deckShade): their shade on the tiles. */
-  setDeckShade(source: (() => { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } | undefined) | undefined): void {
+  setDeckShade(source: (() => DeckShade | undefined) | undefined): void {
     this.deckSource = source;
   }
 
@@ -430,6 +446,15 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
       Cartesian4.clone(d.at[1]!, sh.deckP1);
       sh.deckH.x = d.camH;
       sh.deckH.y = d.n;
+      // The decks by place: where the camera is on the map every frame; its values (changing
+      // slowly) at most once a second.
+      Cartesian4.clone(d.placeP, sh.placeP);
+      shader.setUniform("wfcPlaceP", Cartesian4.clone(sh.placeP));
+      const now = performance.now(), p = this.place;
+      if (!p || (p.version !== d.placeVersion && now - p.at > 1000)) {
+        this.place = { data: Uint8Array.from(d.place), cols: d.placeCols, rows: d.placeRows, version: d.placeVersion, at: now };
+        shader.setUniform("wfcPlace", new TextureUniform({ typedArray: this.place.data, width: d.placeCols, height: d.placeRows, repeat: false, minificationFilter: TextureMinificationFilter.LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
+      }
       shader.setUniform("wfcDeck0", Cartesian4.clone(sh.deck0));
       shader.setUniform("wfcDeck1", Cartesian4.clone(sh.deck1));
       shader.setUniform("wfcDeckP0", Cartesian4.clone(sh.deckP0));

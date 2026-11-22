@@ -37,7 +37,7 @@ import { LOOK } from "./lighting.ts";
 import { temporal } from "./temporal.ts";
 import { AERIAL_GLSL, SCENE_DIST_GLSL, type Atmosphere } from "./atmosphere.ts";
 import { cloudNoiseAsync } from "./cloud-noise.ts";
-import { cumulusShade, DeckField, deckLight, type TowerCloud } from "./sun-through.ts";
+import { cumulusShade, DeckField, deckLight, PLACE_SCALE_MAX, PLACE_SCALE_MIN, placeScaleByte, type TowerCloud } from "./sun-through.ts";
 import { DISSOLVE_S, FOLLOW_S, GROW_S, RISE_MS } from "./cloud-follow.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -150,6 +150,10 @@ uniform vec4 u_deckP[2];      // the camera in the deck's frame: east, north [m]
 uniform vec3 u_deckH;         // the camera's height above sea level [m], the earth's radius there [m], step scale
 uniform int u_decks;
 uniform sampler2D u_deckMap;  // R, G: two independent fields, uniform in [0, 1] (cloud-noise.ts)
+// The decks by place (the weather grid's nodes, one texel each, DeckPlaces): R, G the low and mid
+// deck's cover there, B how deep they are there (a factor on the extinction, log-coded); A unused.
+uniform sampler2D u_place;
+uniform vec4 u_placeP;        // its uv at the camera, and per metre east/north
 
 // 0.75 a + 0.25 b of two uniform values back to uniform: the sum's distribution function.
 float equalize(float s) {
@@ -167,11 +171,17 @@ float deckField(int k, vec2 xy, float footM) {
   vec2 b = textureLod(u_deckMap, mat2(0.8, 0.6, -0.6, 0.8) * xy / 9100.0 + 0.37, deckLod(footM, 9100.0)).gr;
   return mix(equalize(0.75 * a.x + 0.25 * b.x), equalize(0.75 * a.y + 0.25 * b.y), u_deck[k].w);
 }
-// How deep in deck k a place is (n: the field there): 0 in its holes, where the field is below
-// 1 − cover (so a share "cover" of the sky is cloud), rising towards the middle of its patches
-// over the next half of it (a thin, scattered deck never gets its full depth).
-float deckCoverOf(int k, float n) {
-  float c = u_deck[k].z;
+// The decks where en [m east/north of the camera] is: the low and mid deck's cover there, and the
+// factor on their extinction (decks.ts deckDepthScale's: each place's decks pass its own share of
+// the clear-sky light).
+vec3 deckPlace(vec2 en) {
+  vec4 p = textureLod(u_place, u_placeP.xy + en * u_placeP.zw, 0.0);
+  return vec3(p.rg, exp(${Math.log(PLACE_SCALE_MIN).toFixed(6)} + p.b * ${Math.log(PLACE_SCALE_MAX / PLACE_SCALE_MIN).toFixed(6)}));
+}
+// How deep in a deck of cover c a place is (n: the field there): 0 in its holes, where the field
+// is below 1 − cover (so a share "cover" of the sky is cloud), rising towards the middle of its
+// patches over the next half of it (a thin, scattered deck never gets its full depth).
+float deckCoverOf(float c, float n) {
   if (c > 0.995) return 1.0;
   if (c < 0.005) return 0.0;
   return smoothstep(1.0 - c, 1.0 - c + 0.5, n);
@@ -182,21 +192,22 @@ vec2 deckSpan(int k, float cov) {
   float B = u_deck[k].x, H = u_deck[k].y - B;
   return vec2(B + H * 0.25 * (1.0 - cov), B + H * (0.25 + 0.75 * cov));
 }
-// Density of deck k at xy and h [m above sea level], 0–1, t [m] from the camera, a pixel footM
-// across there: solid inside; its edges, base and top lumpy (Perlin–Worley, ~2.5 km across,
-// flatter than wide; smoothed out far off, where it would sparkle). Its cover there and span.
-float deckDensity(int k, vec2 xy, float h, float t, float footM, out float cov, out vec2 span) {
+// Density of deck k (of cover c there) at xy and h [m above sea level], 0–1, t [m] from the
+// camera, a pixel footM across there: solid inside; its edges, base and top lumpy (Perlin–Worley,
+// ~2.5 km across, flatter than wide; smoothed out far off, where it would sparkle). Its cover
+// there and span.
+float deckDensity(int k, float c, vec2 xy, float h, float t, float footM, out float cov, out vec2 span) {
   cov = 0.0;
   span = vec2(0.0);
   float B = u_deck[k].x, H0 = u_deck[k].y - B;
-  if (h < B - 0.15 * H0 || h > B + 1.25 * H0) return 0.0;
-  float n = u_deck[k].z > 0.995 ? 1.0 : deckField(k, xy, footM);
+  if (h < B - 0.15 * H0 || h > B + 1.25 * H0 || c < 0.005) return 0.0;
+  float n = c > 0.995 ? 1.0 : deckField(k, xy, footM);
   // (In a hole even with the lumps: no noise to fetch.)
-  if (n + 0.06 < 1.0 - u_deck[k].z) return 0.0;
+  if (n + 0.06 < 1.0 - c) return 0.0;
   vec4 sn = texture(u_shape, vec3(xy / 2500.0, h / 1200.0));
   float wf = sn.g * 0.625 + sn.b * 0.25 + sn.a * 0.125;
   float lump = (remap(sn.r, wf - 1.0, 1.0, 0.0, 1.0) - 0.5) * (1.0 - smoothstep(15000.0, 50000.0, t));
-  cov = deckCoverOf(k, n + lump * 0.12);
+  cov = deckCoverOf(c, n + lump * 0.12);
   if (cov <= 0.0) return 0.0;
   span = deckSpan(k, cov);
   float hn = (h - span.x) / max(span.y - span.x, 1.0);
@@ -217,9 +228,12 @@ vec2 deckSun(vec2 en, float h, vec3 sun, int skip) {
     if (k >= u_decks || k == skip) continue;
     float mid = 0.5 * (u_deck[k].x + u_deck[k].y);
     if (mid <= h || u_deck[k].z < 0.005) continue;
-    float cov = deckCoverOf(k, deckField(k, u_deckP[k].xy + en + sxy * (mid - h), 150.0));
+    // Where the sun's ray crosses it: its cover and depth there.
+    vec2 at = en + sxy * (mid - h);
+    vec3 pl = deckPlace(at);
+    float cov = deckCoverOf(k == 0 ? pl.x : pl.y, deckField(k, u_deckP[k].xy + at, 150.0));
     vec2 sp = deckSpan(k, cov);
-    float tau = u_deckP[k].z * 0.75 * max(0.0, sp.y - max(sp.x, h));
+    float tau = u_deckP[k].z * pl.z * 0.75 * max(0.0, sp.y - max(sp.x, h));
     od += tau / sunUp;
     all /= 1.0 + 0.1125 * tau / (0.5 + 0.75 * sunUp);
   }
@@ -555,6 +569,8 @@ vec4 deckMarch(int k, vec3 dir, float tMax, vec3 sun, vec3 sunCol, float ph0, fl
   // The light from the decks above and the air in front: taken where the ray first meets the
   // deck, for the whole ray (per sample they cost a fifth of the frame and hardly change).
   vec2 ds = vec2(1.0);
+  vec3 pl = vec3(0.0);
+  float tPl = -1e9;
   vec4 ap = vec4(0.0, 0.0, 0.0, 1.0);
   float apK = 0.0, hz = 0.0;
   for (int part = 0; part < 2; part++) {
@@ -574,7 +590,14 @@ vec4 deckMarch(int k, vec3 dir, float tMax, vec3 sun, vec3 sunCol, float ph0, fl
       vec2 en = dEN * t;
       float cov;
       vec2 span;
-      float dens = deckDensity(k, u_deckP[k].xy + en, h, t, t * pix, cov, span);
+      // The deck where the sample is: its cover there, and its extinction (sig) there (read again
+      // every kilometre along the ray: the map's nodes are 16 km apart).
+      if (t - tPl > 1000.0) {
+        pl = deckPlace(en);
+        tPl = t;
+      }
+      sig = u_deckP[k].z * pl.z;
+      float dens = deckDensity(k, k == 0 ? pl.x : pl.y, u_deckP[k].xy + en, h, t, t * pix, cov, span);
       if (dens > 0.0) {
         if (tFirst > 1e8) {
           tFirst = t;
@@ -694,6 +717,50 @@ export interface DeckTarget {
   /** The wind at its height, towards east and north [m/s]: it drifts with it. */
   windE: number;
   windN: number;
+}
+
+/**
+ * The decks by place: at each node of the weather grid (WeatherGrid's layout: row by row from the
+ * south, west to east) the low and mid deck's cover there (0: none) and the factor on their
+ * extinction that passes that place's share of the clear-sky light (decks.ts deckDepthScale).
+ * Their heights are the glider's (DeckTarget). Beyond the grid, its edge's.
+ */
+export interface DeckPlaces {
+  lat0: number;
+  lon0: number;
+  dLat: number;
+  dLon: number;
+  rows: number;
+  cols: number;
+  low: Float32Array;
+  mid: Float32Array;
+  scale: Float32Array;
+}
+
+/** A map's values at a place (bilinear between its nodes, its edge's beyond): low, mid cover, scale. */
+export function placeAt(p: DeckPlaces, latDeg: number, lonDeg: number): [number, number, number] {
+  const x = Math.min(p.cols - 1, Math.max(0, (lonDeg - p.lon0) / p.dLon)), y = Math.min(p.rows - 1, Math.max(0, (latDeg - p.lat0) / p.dLat));
+  const j0 = Math.floor(x), i0 = Math.floor(y), j1 = Math.min(p.cols - 1, j0 + 1), i1 = Math.min(p.rows - 1, i0 + 1), fx = x - j0, fy = y - i0;
+  const v = (a: Float32Array) => (a[i0 * p.cols + j0]! * (1 - fx) + a[i0 * p.cols + j1]! * fx) * (1 - fy) + (a[i1 * p.cols + j0]! * (1 - fx) + a[i1 * p.cols + j1]! * fx) * fy;
+  return [v(p.low), v(p.mid), v(p.scale)];
+}
+
+const samePlaces = (a: DeckPlaces, b: DeckPlaces) => a.lat0 === b.lat0 && a.lon0 === b.lon0 && a.dLat === b.dLat && a.dLon === b.dLon && a.rows === b.rows && a.cols === b.cols;
+
+/** The decks as drawn, for their shade elsewhere (google3d.ts, sun-through.ts): as the shader has them. */
+export interface DeckShade {
+  /** Per deck: base, top, cover (its most anywhere), field mix. */
+  decks: Cartesian4[];
+  /** Per deck: the camera in its frame (east, north), its extinction before the place's factor. */
+  at: Cartesian4[];
+  camH: number;
+  n: number;
+  /** The decks by place (u_place's texels, RGBA bytes) and the camera on their map (u_placeP). */
+  place: Uint8Array;
+  placeCols: number;
+  placeRows: number;
+  placeVersion: number;
+  placeP: Cartesian4;
 }
 
 /** A deck as drawn: reached gradually from its target, as the cumulus are (cloud-follow.ts). */
@@ -855,6 +922,8 @@ export class VolumetricClouds {
         u_farUp: () => self.farUp,
         u_farP: () => self.farP,
         u_deck: () => self.deckU,
+        u_place: () => self.placeTexture(),
+        u_placeP: () => self.placeP,
         u_deckP: () => self.deckP,
         u_deckH: () => self.deckH,
         u_decks: () => self.nDecks,
@@ -932,7 +1001,25 @@ export class VolumetricClouds {
    * The weather's cloud decks: [low, mid] (undefined: none in that band). Drawn reaching them
    * gradually (snap: at once, while loading).
    */
-  setDecks(targets: (DeckTarget | undefined)[], snap: boolean): void {
+  setDecks(targets: (DeckTarget | undefined)[], snap: boolean, places?: DeckPlaces): void {
+    if (places) {
+      const cur = this.place;
+      this.placeTarget = places;
+      const copy = (p: DeckPlaces): DeckPlaces => ({ ...p, low: Float32Array.from(p.low), mid: Float32Array.from(p.mid), scale: Float32Array.from(p.scale) });
+      if (snap || !cur) this.place = copy(places);
+      else if (!samePlaces(cur, places)) {
+        // The grid moved (or changed): as drawn so far, where its nodes are now; on from there.
+        const re = copy(places);
+        for (let i = 0; i < re.rows; i++)
+          for (let j = 0; j < re.cols; j++) {
+            const [lo, mi, sc] = placeAt(cur, re.lat0 + i * re.dLat, re.lon0 + j * re.dLon), k = i * re.cols + j;
+            re.low[k] = lo;
+            re.mid[k] = mi;
+            re.scale[k] = sc;
+          }
+        this.place = re;
+      }
+    }
     if (!this.deckO) {
       const ell = this.viewer.scene.globe.ellipsoid, c = this.viewer.camera.positionCartographic;
       const at = Cartesian3.fromRadians(c.longitude, c.latitude, 0, ell), up = ell.geodeticSurfaceNormal(at, new Cartesian3());
@@ -982,6 +1069,7 @@ export class VolumetricClouds {
       if (d.cover > 0.002) n = k + 1;
     });
     this.nDecks = n;
+    this.stepPlaces(dt);
     const c = this.viewer.camera.positionCartographic;
     this.deckH.x = c.height;
     this.deckH.y = Cartesian3.magnitude(cam) - c.height;
@@ -990,11 +1078,13 @@ export class VolumetricClouds {
     // the light from all over the sky: μ ≈ 0.5; decks.ts deckTransmission). The haze there with
     // it (atmosphere.ts).
     let haze = 1;
-    for (const d of this.decks) {
-      if (d.cover <= 0.002 || d.base <= c.height) continue;
-      const tau = d.sigma * 0.75 * 0.75 * (d.top - d.base);
-      haze *= 1 - d.cover * (1 - 1 / (1 + (0.1125 * tau) / 0.875));
-    }
+    const here = this.place ? placeAt(this.place, (c.latitude * 180) / Math.PI, (c.longitude * 180) / Math.PI) : [1, 1, 1];
+    this.decks.forEach((d, k) => {
+      const cover = Math.min(d.cover, here[k]!);
+      if (cover <= 0.002 || d.base <= c.height) return;
+      const tau = d.sigma * here[2]! * 0.75 * 0.75 * (d.top - d.base);
+      haze *= 1 - cover * (1 - 1 / (1 + (0.1125 * tau) / 0.875));
+    });
     if (this.atmosphere) this.atmosphere.hazeLight = haze;
   }
 
@@ -1035,8 +1125,69 @@ export class VolumetricClouds {
   }
 
   /** The decks as the ground's shade needs them (google3d.ts): as this shader has them. */
-  deckShade(): { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } {
-    return { decks: this.deckU, at: this.deckP, camH: this.deckH.x, n: this.nDecks };
+  deckShade(): DeckShade {
+    return { decks: this.deckU, at: this.deckP, camH: this.deckH.x, n: this.nDecks, place: this.placeData, placeCols: this.placeDims[0], placeRows: this.placeDims[1], placeVersion: this.placeVersion, placeP: this.placeP };
+  }
+
+  private placeTarget: DeckPlaces | undefined;
+  /** The decks by place as drawn: towards placeTarget at the decks' own rates. */
+  private place: DeckPlaces | undefined;
+  /** As the shader takes it (u_place): RGBA bytes, a texel a node. */
+  private placeData = new Uint8Array([255, 255, placeScaleByte(1), 255]);
+  private placeDims: [number, number] = [1, 1];
+  private placeVersion = 0;
+  private placeTex: { copyFrom(o: unknown): void; destroy(): void } | undefined;
+  private placeTexDims: [number, number] = [0, 0];
+  private readonly placeP = new Cartesian4(0.5, 0.5, 0, 0);
+
+  /** u_place (until a map is set, one texel: the decks everywhere as their slots say). */
+  private placeTexture(): unknown {
+    if (!this.placeTex) {
+      const context = (this.viewer.scene as unknown as { context: unknown }).context;
+      this.placeTex = new C.Texture({ context, width: 1, height: 1, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, source: { arrayBufferView: this.placeData }, flipY: false, sampler: new C.Sampler({ wrapS: C.TextureWrap.CLAMP_TO_EDGE, wrapT: C.TextureWrap.CLAMP_TO_EDGE, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }) });
+      this.placeTexDims = [1, 1];
+    }
+    return this.placeTex;
+  }
+
+  /** The decks by place a frame on, and where the camera is on their map. */
+  private stepPlaces(dt: number): void {
+    const p = this.place, t = this.placeTarget;
+    if (!p || !t) return;
+    const ease = 1 - Math.exp(-dt / FOLLOW_S);
+    const towards = (v: number, to: number) => (to > v ? Math.min(to, v + dt / GROW_S) : Math.max(to, v - dt / DISSOLVE_S));
+    const n = p.rows * p.cols;
+    if (this.placeData.length !== n * 4) this.placeData = new Uint8Array(n * 4);
+    const d = this.placeData;
+    let changed = this.placeDims[0] !== p.cols || this.placeDims[1] !== p.rows;
+    for (let k = 0; k < n; k++) {
+      p.low[k] = towards(p.low[k]!, t.low[k]!);
+      p.mid[k] = towards(p.mid[k]!, t.mid[k]!);
+      p.scale[k] = p.scale[k]! + (t.scale[k]! - p.scale[k]!) * ease;
+      const r = Math.round(255 * p.low[k]!), g = Math.round(255 * p.mid[k]!), b = placeScaleByte(p.scale[k]!);
+      if (d[4 * k] !== r || d[4 * k + 1] !== g || d[4 * k + 2] !== b) changed = true;
+      d[4 * k] = r;
+      d[4 * k + 1] = g;
+      d[4 * k + 2] = b;
+      d[4 * k + 3] = 255;
+    }
+    this.placeDims = [p.cols, p.rows];
+    if (changed) {
+      this.placeVersion++;
+      if (this.placeTexDims[0] !== p.cols || this.placeTexDims[1] !== p.rows) {
+        this.placeTex?.destroy();
+        const context = (this.viewer.scene as unknown as { context: unknown }).context;
+        this.placeTex = new C.Texture({ context, width: p.cols, height: p.rows, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, source: { arrayBufferView: d }, flipY: false, sampler: new C.Sampler({ wrapS: C.TextureWrap.CLAMP_TO_EDGE, wrapT: C.TextureWrap.CLAMP_TO_EDGE, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }) });
+        this.placeTexDims = [p.cols, p.rows];
+      } else this.placeTex!.copyFrom({ source: { width: p.cols, height: p.rows, arrayBufferView: d } });
+    }
+    // The camera on the map: uv of the node grid (texel centres at the nodes), per metre.
+    const c = this.viewer.camera.positionCartographic, lat = (c.latitude * 180) / Math.PI, lon = (c.longitude * 180) / Math.PI;
+    const kx = 111_320 * Math.cos(c.latitude), ky = 110_540, dx = p.dLon * kx, dy = p.dLat * ky;
+    this.placeP.x = ((lon - p.lon0) / p.dLon + 0.5) / p.cols;
+    this.placeP.y = ((lat - p.lat0) / p.dLat + 0.5) / p.rows;
+    this.placeP.z = 1 / (dx * p.cols);
+    this.placeP.w = 1 / (dy * p.rows);
   }
 
   set(specs: CloudSpec[]): void {

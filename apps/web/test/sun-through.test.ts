@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cloudShadeRamp, cumulusShade, DeckField, deckLight, equalize, type DeckState, type TowerCloud } from "../src/sun-through.ts";
+import { cloudShadeRamp, cumulusShade, DeckField, deckLight, deckPlace, equalize, placeScaleByte, placeScaleOf, type DeckState, type TowerCloud } from "../src/sun-through.ts";
 
 const el = (deg: number, azDeg = 180) => {
   const a = (azDeg * Math.PI) / 180, e = (deg * Math.PI) / 180;
@@ -61,14 +61,39 @@ describe("the sun through the decks", () => {
     expect(deckLight(f, d, { e: 0, n: 0, u: 1000 }, sun)).toBe(1);
   });
 
+  /** A map of the decks by place, cols × rows texels: [low, mid, scale] each. */
+  const map = (cols: number, rows: number, texels: [number, number, number][]) => ({
+    place: Uint8Array.from(texels.flatMap(([l, m, s]) => [Math.round(l * 255), Math.round(m * 255), placeScaleByte(s), 255])),
+    placeCols: cols,
+    placeRows: rows,
+  });
+
   it("lets the sun through the holes of a broken deck", () => {
     // The field all 0 (a hole everywhere at 60 % cover: the smoothstep starts at 0.4).
     const f = new DeckField(flat(0), 16);
-    const d: DeckState = { decks: [{ x: 1500, y: 2000, z: 0.6, w: 0 }], at: [{ x: 0, y: 0, z: 0.05 }], camH: 800, n: 1 };
+    const d: DeckState = { decks: [{ x: 1500, y: 2000, z: 0.6, w: 0 }], at: [{ x: 0, y: 0, z: 0.05 }], camH: 800, n: 1, ...map(1, 1, [[0.6, 0, 1]]), placeP: { x: 0.5, y: 0.5, z: 0, w: 0 } };
     expect(deckLight(f, d, { e: 0, n: 0, u: 0 }, el(30))).toBe(1);
     expect(equalize(0)).toBe(0);
     expect(equalize(0.5)).toBeCloseTo(0.5, 6);
     expect(equalize(1)).toBe(1);
+  });
+
+  it("takes each place's cover and depth from the map, as the GPU (linear, its edge beyond)", () => {
+    // Two nodes 10 km apart west to east: overcast and twice as deep at the west one, clear at
+    // the east one. The camera at the west node.
+    const m = map(2, 1, [[1, 0, 2], [0, 0, 1]]), placeP = { x: 0.25, y: 0.5, z: 1 / 20000, w: 1 / 10000 };
+    const d: DeckState = { decks: [{ x: 1500, y: 2000, z: 1, w: 0 }], at: [{ x: 0, y: 0, z: 0.01 }], camH: 800, n: 1, ...m, placeP };
+    expect(deckPlace(d, 0, 0)[0]).toBeCloseTo(1, 6);
+    expect(deckPlace(d, 0, 0)[2]).toBeCloseTo(placeScaleOf(placeScaleByte(2)), 6);
+    expect(deckPlace(d, 5000, 0)[0]).toBeCloseTo(0.5, 6);
+    expect(deckPlace(d, -30000, 0)[0]).toBeCloseTo(1, 6);
+    expect(deckPlace(d, 30000, 0)[0]).toBeCloseTo(0, 6);
+    // Straight up (the sun at the zenith): the deck as deep as twice its extinction says.
+    const tau = 0.01 * placeScaleOf(placeScaleByte(2)) * 0.75 * 500;
+    expect(deckLight(new DeckField(flat(128), 16), d, { e: 0, n: 0, u: 0 }, { e: 0, n: 0, u: 1 })).toBeCloseTo(1 / (1 + (0.1125 * tau) / 1.25), 6);
+    expect(deckLight(new DeckField(flat(128), 16), d, { e: 10000, n: 0, u: 0 }, { e: 0, n: 0, u: 1 })).toBe(1);
+    // The byte code keeps the factor within a few per cent over its range.
+    for (const s of [0.02, 0.1, 0.5, 1, 3, 5]) expect(placeScaleOf(placeScaleByte(s)) / s).toBeCloseTo(1, 1);
   });
 
   it("takes the clouds' share of the light by the sun's height, as on the ground", () => {

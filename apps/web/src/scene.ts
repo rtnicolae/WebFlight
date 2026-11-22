@@ -18,7 +18,7 @@ import type { ThermalView } from "./protocol.ts";
 import { CloudLayer, type CloudSpec } from "./clouds.ts";
 import { DrawnClouds } from "./cloud-follow.ts";
 import type { Thermal } from "@webflight/environment";
-import { type DeckTarget, VOLUME_RANGE_M, VolumetricClouds } from "./vclouds.ts";
+import { type DeckPlaces, type DeckTarget, VOLUME_RANGE_M, VolumetricClouds } from "./vclouds.ts";
 import type { Atmosphere } from "./atmosphere.ts";
 
 const M_PER_DEG_LAT = 111_132;
@@ -425,9 +425,9 @@ export class ThermalLayer {
   }
   private fading: Set<string> | undefined;
 
-  /** The weather's cloud decks, [low, mid] (vclouds.ts; only with the volumes). */
-  setDecks(decks: (DeckTarget | undefined)[]): void {
-    this.volumes?.setDecks(decks, !this.gradual);
+  /** The weather's cloud decks, [low, mid], and by place (vclouds.ts; only with the volumes). */
+  setDecks(decks: (DeckTarget | undefined)[], places?: DeckPlaces): void {
+    this.volumes?.setDecks(decks, !this.gradual, places);
   }
   /** The sun's light at a point through the clouds as drawn (vclouds.ts sunAt); without the volumes, none in the way. */
   sunAt(p: Cartesian3, sunWC: Cartesian3): { cumulus: number; deck: number } {
