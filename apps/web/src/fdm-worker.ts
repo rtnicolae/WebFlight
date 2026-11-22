@@ -399,6 +399,11 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           else launch.winch?.slower();
         }
         break;
+      case "grid":
+        // Applied with the next minute's weather: where the glider is, both grids give the same.
+        if (weatherClock) weatherClock.grid = msg.grid;
+        env?.setGrid(msg.grid);
+        break;
       case "waves":
         pendingWaves = msg.field;
         if (env) env.waves = msg.field;

@@ -16,7 +16,7 @@ import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
-import { distanceM, soaringFrom, sounding, sunPosition, type WaveFieldData, type Weather } from "@webflight/environment";
+import { distanceM, soaringFrom, sounding, sunPosition, type WaveFieldData, type Weather, type WeatherGrid } from "@webflight/environment";
 import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
@@ -235,6 +235,9 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
 
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });
   const send = (m: ToWorker) => worker.postMessage(m);
+  /** The weather by place moved with the glider: the flight model's, and the far skies'. */
+  const gridHooks: ((g: WeatherGrid) => void)[] = [(g) => send({ type: "grid", grid: g })];
+  const gridMoved = (g: WeatherGrid) => gridHooks.forEach((f) => f(g));
   life.onClose(() => worker.terminate());
   let reader: SnapshotReader | undefined;
   let layout: SnapshotLayout | undefined;
@@ -242,8 +245,16 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   let localSnap: ArrayBuffer | undefined;
   let paused = false;
   let fdmHz = 0;
+  /** The flight model's simulated time [s] (its stats, every second). */
+  let simS = 0;
   const input = new PilotInput({
-    reset: () => void startState(F, params).then((start) => send({ type: "reset", start })),
+    reset: () =>
+      void startState(F, params).then((start) => {
+        // The grid back round the start first (its columns are had): the start's own weather.
+        const g = F.gridFollower?.moveNow(start.latDeg, start.lonDeg);
+        if (g) gridMoved(g);
+        send({ type: "reset", start });
+      }),
     toggleView: () => cam.toggle(),
     togglePause: () => send({ type: "pause", paused: (paused = !paused) }),
     toggleHelp: () => hud.toggleHelp(),
@@ -277,6 +288,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
           break;
         case "stats":
           fdmHz = m.stepsPerSecond;
+          simS = m.simTime;
           break;
         case "log":
           if (/error|warn|not ported|not supported/i.test(m.line)) console.warn("[fdm]", m.line);
@@ -340,6 +352,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     let wind = { groundFromDeg: e.windFromDeg, groundKt: e.windKt, aloftFromDeg: e.aloftFromDeg ?? e.windFromDeg, aloftKt: e.aloftKt ?? e.windKt };
     // Visual only, thousands of thermals: every 5 simulated minutes is enough.
     let farWx = Date.parse(F.weather.timeUtc);
+    gridHooks.push((g) => (farSky.setGrid(g), outerSky.setGrid(g)));
     weatherHooks.push((w) => {
       const t = Date.parse(w.timeUtc);
       if (Math.abs(t - farWx) < 5 * 60_000) return;
@@ -349,9 +362,14 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
       const a = w.aloft[0];
       wind = { groundFromDeg: w.windFromDeg, groundKt: w.windKt, aloftFromDeg: a?.fromDeg ?? w.windFromDeg, aloftKt: a?.kt ?? w.windKt };
     });
+    // Their thermals' cycles on the flight's clock, as the flight model's (they kept going while
+    // paused, and drifted from its thermals' cycles: the cloud handed between them changed).
+    let farSimS = simS;
     const tickFar = () => {
-      farSky.update(3, { ...gliderAt, altFt: 0 }, wind);
-      outerSky.update(3, { ...gliderAt, altFt: 0 }, wind);
+      const dt = Math.min(10, Math.max(0, simS - farSimS));
+      farSimS = simS;
+      farSky.update(dt, { ...gliderAt, altFt: 0 }, wind);
+      outerSky.update(dt, { ...gliderAt, altFt: 0 }, wind);
       const [cx, cy] = skyCellOf(gliderAt.latDeg, gliderAt.lonDeg);
       const beyond = outerSky.thermals.filter((t) => {
         const [x, y] = t.id.split(":").map(Number) as [number, number];
@@ -361,6 +379,22 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     };
     tickFar();
     setInterval(tickFar, 3000);
+  }
+  // The weather by place moves on with the glider (GridFollower, ~5 columns asked for once it is
+  // within 16.5 km of the grid's edge), checked as often as the waves below.
+  const follower = F.gridFollower;
+  if (follower) {
+    const timer = setInterval(() => {
+      follower.follow(gliderAt.latDeg, gliderAt.lonDeg).then(
+        (g) => {
+          if (!g) return;
+          gridMoved(g);
+          console.info(`weather grid moved: centre ${(g.lat0 + ((g.rows - 1) / 2) * g.dLat).toFixed(3)}, ${(g.lon0 + ((g.cols - 1) / 2) * g.dLon).toFixed(3)}`);
+        },
+        (e: unknown) => console.warn(`weather grid: ${e instanceof Error ? e.message : String(e)} (its edge's weather beyond it)`),
+      );
+    }, 5000);
+    life.onClose(() => clearInterval(timer));
   }
   // Mountain waves (waves.ts) for the day's pressure levels: built off the main thread round the
   // glider, again when it is 20 km from the last centre; the flight model adds them to the air.
@@ -540,6 +574,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   if (water) water.loading = false;
   if (life.isClosed) return;
   status.hidden = true;
+  // From here clouds change only gradually (scene.ts ThermalLayer.follow).
+  thermalLayer.gradual = true;
   send({ type: "pause", paused });
 }
 

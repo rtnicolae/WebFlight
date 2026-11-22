@@ -24,7 +24,7 @@ import { RidgeLift } from "./ridge.ts";
 import type { TerrariumTerrain } from "./terrain.ts";
 import { ThermalField, ThermalSky, type ThermalFieldOptions, type ThermalSkyOptions, type WindProfile } from "./thermals.ts";
 import { waveAt, type WaveFieldData } from "./waves.ts";
-import { surfaceLayerFactor, windAt, type Weather } from "./weather.ts";
+import { surfaceLayerFactor, windAt, type Weather, type WeatherGrid } from "./weather.ts";
 
 /** The parts of the weather that make the wind profile. */
 export type WindProfileData = Pick<Weather, "elevationM" | "windFromDeg" | "windKt" | "aloft" | "boundary">;
@@ -156,6 +156,11 @@ export class Environment {
     // The air follows the weather wherever it was given (not a wind set by hand: that is wind only).
     if (c.air) c.air = airColumnOf(w);
     if (this.thermals instanceof ThermalSky) this.thermals.setWeather(w);
+  }
+
+  /** The weather by place moved with the flight (GridFollower): the thermal sky's from it. */
+  setGrid(g: WeatherGrid): void {
+    if (this.thermals instanceof ThermalSky) this.thermals.setGrid(g);
   }
 
   /** The wind at a height [m] over a ground height [m]. */

@@ -70,12 +70,24 @@ height (`blendWeather`): each column's 2 m air and surface pressure at the blend
   blue. On 10 Jul 2024 at 13:00 near Ghimbav: thermal tops from 2,170 to 2,645 m (the
   mountains to the south 2,520 m on average, the basin 2,300 m), against one 2,157 m with the
   start's column. Same frame rate.
+- **Along the flight** (`GridFollower`): once the glider is within one spacing (16.5 km) of the
+  grid's edge, the grid moves on its own lattice to have it at the middle node again, and asks
+  for only the columns it lacks (a row or column: 5; checked every 5 s, as the mountain waves'
+  re-centring). The columns it keeps are the same places asked for the same days, so the weather
+  over the ground both grids cover, the glider's included, doesn't change with the move; only
+  cells that had the old edge's weather do (far thermals 26.0–26.2° E on that day: mean top
+  2,548 → 2,456 m), and their clouds follow gradually (`cloud-follow.ts`). Every column fetched is kept for the flight: flying back, or a reset to the
+  start (the grid moved back before the reset reaches the flight model), asks for none. A failed
+  request keeps the grid (its edge's weather beyond) and is retried a minute later. Checked in
+  the browser: a glider put 20 km east fetched 5 columns, and its weather across the swap went
+  on 1,884 → 1,885 m layer, 28.58 → 28.58 °C (the trend of its motion); after a reset the
+  start's weather minute for minute as on the first run.
 - **Not by place yet:** the wind the thermal columns lean in (the glider's weather's, one wind
   table for all cells), the haze, cirrus and light (the glider's), and the gym and headless
-  flights (the start's column). Beyond the grid, its edge's weather. `?wxgrid=0`: the start's
-  column everywhere. The grid's answer (~1 MB) is cached in the browser's Cache Storage
-  (archive days kept, forecasts an hour): 25 columns count as 25 of Open-Meteo's free calls (×
-  ~6 for the number of variables).
+  flights (the start's column). `?wxgrid=0`: the start's column everywhere. Columns are cached in
+  the browser's Cache Storage (archive days kept, forecasts an hour); each counts as one of
+  Open-Meteo's free calls (× ~6 for the number of variables): ~150 for the first grid, ~30 a
+  move (one every ~16 km flown away from the start).
 
 ## The air's temperature, humidity and pressure
 

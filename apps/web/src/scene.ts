@@ -16,6 +16,7 @@ import { LOOK } from "./lighting.ts";
 import type { TerrariumTerrain } from "@webflight/environment";
 import type { ThermalView } from "./protocol.ts";
 import { CloudLayer, type CloudSpec } from "./clouds.ts";
+import { DrawnClouds } from "./cloud-follow.ts";
 import type { Thermal } from "@webflight/environment";
 import { VOLUME_RANGE_M, VolumetricClouds } from "./vclouds.ts";
 import type { Atmosphere } from "./atmosphere.ts";
@@ -354,6 +355,16 @@ export class ThermalLayer {
   private readonly columns = new Map<string, Entity>();
   private near: ThermalView[] = [];
   private far: ThermalView[] = [];
+  /** What is drawn: the thermals' clouds, reached gradually (cloud-follow.ts). */
+  private readonly drawn = new DrawnClouds();
+  private drawnT = 0;
+  private drawnCam: Cartesian3 | undefined;
+  /**
+   * Off (the default): clouds are drawn as their thermals' at once, the sky being made (loading,
+   * the menu's preview). The flight turns it on when it starts; a jump of the camera (a reset
+   * elsewhere) draws the new sky at once too.
+   */
+  gradual = false;
 
   constructor(
     private readonly viewer: Viewer,
@@ -435,27 +446,35 @@ export class ThermalLayer {
   }
   /** The far map is drawn again when the far clouds change (every 3 s) or the cumulus fades. */
   private farDirty = true;
+  /** The clouds in the far map as last drawn (the rest are volumes). */
+  private farIds = new Set<string>();
 
   private refresh(): void {
     const ids = new Set(this.near.map((t) => t.id));
     const k = this.cumulusShown();
     const fading = this.cumulus ? undefined : this.fading;
     const all = k > 0 ? [...this.near, ...this.far.filter((t) => !ids.has(t.id))].filter((t) => !fading || fading.has(t.id)) : [];
-    const specs: CloudSpec[] = all.flatMap(cloudsOver).map((c) => (k < 1 ? { ...c, opacity: c.opacity * k } : c));
     const cam = this.viewer.camera.positionWC, p = new Cartesian3();
+    const specs: CloudSpec[] = this.follow(all, cam).map((c) => (k < 1 ? { ...c, opacity: c.opacity * k } : c));
     const near: CloudSpec[] = [], far: CloudSpec[] = [];
+    // (Rasterised again only when the far clouds change or the cumulus is fading: it was redone
+    // with every update of the near thermals, ~20 ms a second.) Which clouds are volumes and which
+    // the far map is settled then too: a cloud crossing the volumes' range in between stays where
+    // it is drawn (it used to leave the volumes at once and join the map up to 3 s later: gone).
+    const redoFar = !!this.volumes && (this.farDirty || (k > 0 && k < 1));
     for (const c of specs) {
-      const d = Cartesian3.distance(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, p), cam);
-      if (d <= VOLUME_M) near.push(c);
+      const d = this.volumes && !redoFar ? 0 : Cartesian3.distance(Cartesian3.fromDegrees(c.lonDeg, c.latDeg, c.baseM, undefined, p), cam);
+      if (this.volumes && !redoFar ? !this.farIds.has(c.id) : d <= VOLUME_M) near.push(c);
       // Out there a cloud is a few pixels in the haze: a fifth of the puffs.
       else if (this.volumes || d <= SPRITE_FADE_M + c.radiusM * 2) far.push({ ...c, lod: 0.2 });
     }
     if (this.volumes) {
       this.volumes.set(near);
       // Beyond, the volumes' far map: sprites under the atmosphere's sky are painted over by it.
-      // (Rasterised again only when the far clouds change or the cumulus is fading: it was redone
-      // with every update of the near thermals, ~20 ms a second.)
-      if (this.farDirty || (k > 0 && k < 1)) this.volumes.setFar(far);
+      if (redoFar) {
+        this.volumes.setFar(far);
+        this.farIds = new Set(far.map((c) => c.id));
+      }
       this.farDirty = false;
     } else {
       // Sprites only as far as they show (they fade out by 70 km): the whole far field (to 160 km)
@@ -463,6 +482,19 @@ export class ThermalLayer {
       this.sprites?.set([...near, ...far]);
     }
     this.shadows?.(specs);
+  }
+
+  /** The clouds to draw now: each thermal's, reached gradually from what was drawn. */
+  private follow(all: ThermalView[], cam: Cartesian3): CloudSpec[] {
+    const now = performance.now(), dt = this.drawnT ? Math.min(30, (now - this.drawnT) / 1000) : 0;
+    this.drawnT = now;
+    const snap = !this.gradual || !this.drawnCam || Cartesian3.distance(cam, this.drawnCam) > 3000;
+    this.drawnCam = Cartesian3.clone(cam, this.drawnCam);
+    return this.drawn.update(
+      all.flatMap((t) => cloudsOver(t).map((c) => ({ c, dying: t.phase === "dying" || t.phase === "dead" }))),
+      dt,
+      snap,
+    );
   }
 }
 

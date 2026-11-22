@@ -662,6 +662,17 @@ export class ThermalSky {
     }
   }
 
+  /**
+   * The weather by place moved with the flight (GridFollower): each cell's convective layer from
+   * the new grid. Over the ground the two grids share it is the same, so only cells that had the
+   * old grid's edge weather change.
+   */
+  setGrid(g: WeatherGrid): void {
+    if (!this.o.grid || !this.o.weather) return;
+    this.o.grid = g;
+    this.setWeather(this.o.weather);
+  }
+
   /** Candidate j of a cell (its own random stream), or undefined while its terrain is loading. */
   private candidate(cell: SkyCell, cx: number, cy: number, j: number): Candidate | undefined {
     const o = this.o, ground = o.groundAt;
