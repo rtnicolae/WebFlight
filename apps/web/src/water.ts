@@ -27,6 +27,7 @@
 import * as Cesium from "cesium";
 import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Cartographic, Credit, Intersect, Matrix4, PostProcessStage, Transforms, type Viewer } from "cesium";
 import type { Google3D } from "./google3d.ts";
+import { CLOUD_SHADE, SUN_THROUGH_DECLS, SUN_THROUGH_GLSL } from "./sun-through.ts";
 import { decodeMvt } from "@webflight/scenery";
 import { SCENE_DIST_GLSL, SKY_LOOKUP_GLSL, type Atmosphere } from "./atmosphere.ts";
 
@@ -108,6 +109,7 @@ uniform vec4 u_wind;     // direction to (x east, y north), strength 0–1, time
 uniform vec3 u_body;     // the water's own colour, relative to the sky's light
 uniform float u_glint;   // the sun's glint strength
 uniform float u_hor[16]; // the terrain's horizon round this water: elevation [rad] every 22.5° from north
+${SUN_THROUGH_DECLS}${SUN_THROUGH_GLSL}
 ${RIPPLES_GLSL}
 void main() {
   // Only where the satellites have seen water (a little dilated, made on the CPU); the
@@ -143,7 +145,10 @@ void main() {
   // sometimes water (low occurrence: the margins), as in MSFS.
   // (Subtle: with the grade on top a strong tint made teal blotches like Google's photo.)
   vec3 bodyCol = mix(u_body, vec3(0.08, 0.16, 0.15), 0.45 * (1.0 - smoothstep(0.15, 0.7, occ)));
-  vec3 body = bodyCol * dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
+  // In a cloud's shade (sun-through.ts): the light into the water as on the ground round it, the
+  // sun's glint as much as gets through (the sky it mirrors is the same).
+  float sunThrough = wfSunThrough(czm_inverseViewRotation * v_posEC);
+  vec3 body = bodyCol * dot(skyUp, vec3(0.2126, 0.7152, 0.0722)) * (1.0 - ${CLOUD_SHADE.toFixed(2)} * (1.0 - sunThrough));
   vec3 col = mix(body, sky, F);
   // The sun's glint: GGX. Where the ripples are too small to draw (far, grazing) they become
   // roughness. The glitter comes from the ripple normals themselves (a hashed grid of sparkles
@@ -157,7 +162,7 @@ void main() {
     float dd = NH * NH * (a2 - 1.0) + 1.0;
     float D = a2 / (3.14159265 * dd * dd);
     float Fs = 0.02 + 0.98 * pow(1.0 - max(dot(H, V), 0.0), 5.0);
-    col += min(czm_lightColorHdr * D * Fs / (4.0 * NV + 1e-3) * u_glint, vec3(15.0));
+    col += min(czm_lightColorHdr * D * Fs / (4.0 * NV + 1e-3) * u_glint * sunThrough, vec3(15.0));
   }
 #ifdef WATER_DEBUG
   col = vec3(4.0, 0.0, 0.0);
@@ -775,7 +780,13 @@ export class Water {
 
   /** One tile's uniforms (all of them, in one place). */
   private uniforms(t: Tile, wind: Cartesian4): Record<string, () => unknown> {
-    return { ...this.sky, u_origin: () => t.origin, u_tile: () => new Cartesian4(t.size.x, t.size.y, 0, 0), u_level: () => t.levelTex, u_occ: () => t.occ, u_cut: () => t.cut, u_wind: () => wind, u_normals: () => this.normals ?? this.blank(), u_body: () => this.body, u_glint: () => this.glint, u_hor: () => t.horizon };
+    return { ...this.sky, u_origin: () => t.origin, u_tile: () => new Cartesian4(t.size.x, t.size.y, 0, 0), u_level: () => t.levelTex, u_occ: () => t.occ, u_cut: () => t.cut, u_wind: () => wind, u_normals: () => this.normals ?? this.blank(), u_body: () => this.body, u_glint: () => this.glint, u_hor: () => t.horizon, ...this.shadeUniforms() };
+  }
+
+  /** The clouds' shade (google3d.ts shade: as on the ground round the water). */
+  private shadeUniforms(): Record<string, () => unknown> {
+    const sh = this.google3d.shade, tex = () => this.google3d.shadeTextures();
+    return { wfcShadow: () => tex().shadow, wfcDeckMap: () => tex().deck ?? this.blank(), wfcShadowP: () => sh.shadowP, wfcDeck0: () => sh.deck0, wfcDeck1: () => sh.deck1, wfcDeckP0: () => sh.deckP0, wfcDeckP1: () => sh.deckP1, wfcDeckH: () => sh.deckH };
   }
 
   /** Cesium primitive interface. */

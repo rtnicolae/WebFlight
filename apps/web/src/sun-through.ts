@@ -137,3 +137,77 @@ export function deckLight(field: DeckField, d: DeckState, rel: { e: number; n: n
 export function cloudShadeRamp(sunElevationDeg: number): number {
   return Math.min(1, Math.max(0, (sunElevationDeg - 2) / 10));
 }
+
+/**
+ * The same on the GPU, for what is drawn on the ground (Google's tiles, our buildings, our
+ * water): wfSunThrough(relW) — the sun's light through the clouds at a point (relW: from the
+ * camera, world axes), 1 in the clear, the clouds' share of it ramped by the sun's height
+ * (cloudShadeRamp). The cumulus from their shadow map (google3d.ts setCloudShadows: cast onto
+ * the ground), the decks as deckLight. Uniforms (SUN_THROUGH_UNIFORMS):
+ *   wfcShadow   the cumulus' shadow map, metres east/north of the camera
+ *   wfcShadowP  its centre east, north of the camera [m], size [m], 1 when on
+ *   wfcDeckMap  the decks' field (cloud-noise.ts)
+ *   wfcDeck0/1  base, top, cover, field mix
+ *   wfcDeckP0/1 the camera east, north in the deck's frame [m], extinction
+ *   wfcDeckH    the camera's height [m], decks drawn, the ramp
+ */
+export const SUN_THROUGH_DECLS = /* glsl */ `
+uniform sampler2D wfcShadow;
+uniform vec4 wfcShadowP;
+uniform sampler2D wfcDeckMap;
+uniform vec4 wfcDeck0;
+uniform vec4 wfcDeck1;
+uniform vec4 wfcDeckP0;
+uniform vec4 wfcDeckP1;
+uniform vec4 wfcDeckH;
+`;
+export const SUN_THROUGH_GLSL = /* glsl */ `
+float wfcEqualize(float s) {
+  if (s < 0.25) return s * s / 0.375;
+  if (s < 0.75) return (s - 0.125) / 0.75;
+  return 1.0 - (1.0 - s) * (1.0 - s) / 0.375;
+}
+float wfSunThrough(vec3 relW) {
+  if (wfcShadowP.w < 0.5 && wfcDeckH.y < 0.5) return 1.0;
+  vec3 upW = normalize(czm_viewerPositionWC);
+  vec3 e = normalize(vec3(-upW.y, upW.x, 0.0));
+  vec3 nn = cross(upW, e);
+  vec2 en = vec2(dot(relW, e), dot(relW, nn));
+  float t = 1.0;
+  if (wfcShadowP.w > 0.5) {
+    vec2 uv = (en - wfcShadowP.xy) / wfcShadowP.z + 0.5;
+    if (uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0) t = 1.0 - texture(wfcShadow, uv).r;
+  }
+  if (wfcDeckH.y > 0.5) {
+    vec3 sunW = normalize(czm_inverseViewRotation * czm_lightDirectionEC);
+    float sunUp = max(dot(sunW, upW), 0.05);
+    vec2 sxy = vec2(dot(sunW, e), dot(sunW, nn)) / sunUp;
+    float h = wfcDeckH.x + dot(relW, upW), all = 1.0;
+    for (int k = 0; k < 2; k++) {
+      vec4 D = k == 0 ? wfcDeck0 : wfcDeck1, P = k == 0 ? wfcDeckP0 : wfcDeckP1;
+      float mid = 0.5 * (D.x + D.y);
+      if (D.z < 0.005 || mid <= h) continue;
+      vec2 xy = P.xy + en + sxy * (mid - h);
+      float cov = 1.0;
+      if (D.z <= 0.995) {
+        // (Mip levels for a 150 m footprint, as vclouds.ts deckSun's.)
+        vec2 a = textureLod(wfcDeckMap, xy / 32000.0, 1.263).rg;
+        vec2 b = textureLod(wfcDeckMap, mat2(0.8, 0.6, -0.6, 0.8) * xy / 9100.0 + 0.37, 3.077).gr;
+        cov = smoothstep(1.0 - D.z, 1.0 - D.z + 0.5, mix(wfcEqualize(0.75 * a.x + 0.25 * b.x), wfcEqualize(0.75 * a.y + 0.25 * b.y), D.w));
+      }
+      // Its depth there is H·cov; at its mean density, three quarters of the extinction
+      // (decks.ts deckTransmission).
+      all /= 1.0 + 0.1125 * P.z * 0.75 * (D.y - D.x) * cov / (0.5 + 0.75 * sunUp);
+    }
+    t = min(t, all);
+  }
+  return 1.0 - wfcDeckH.z * (1.0 - t);
+}
+`;
+
+/**
+ * Where something lit like the photos (all its light times it, as a cast shadow): the light
+ * left in a cloud's shade, 1 − 0.65 of what the clouds take (the photo's share of its light that
+ * is the sun's: under a cumulus, about the sky's third). sunThrough: wfSunThrough's.
+ */
+export const CLOUD_SHADE = 0.65;

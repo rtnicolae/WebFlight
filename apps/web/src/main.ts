@@ -13,6 +13,7 @@ import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
 import { addRunway, createViewer, followShadows, SHADOW_DARKNESS, ThermalLayer, thermalView } from "./scene.ts";
 import { cloudShadeRamp } from "./sun-through.ts";
+import { setBuildingShade } from "./osm-layer.ts";
 import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
@@ -550,6 +551,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     gliderAt = { latDeg: g("position/lat-geod-deg"), lonDeg: g("position/long-gc-deg") };
     followShadows(viewer, g("position/h-agl-ft") * M_PER_FT, cam.mode === "cockpit");
     google3d?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/h-agl-ft") * M_PER_FT);
+    // Our buildings in the clouds' shade as Google's ground round them.
+    if (google3d) setBuildingShade(google3d.shade, google3d.shadeTextures());
     // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).
     pinGround(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/geod-alt-ft") * M_PER_FT + 4);
     // Grass follows the glider, not the camera: looking around rebuilds nothing.
