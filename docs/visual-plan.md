@@ -130,7 +130,8 @@ Still open: the clouds' half-resolution edges (now jittered and averaged, but no
   - New clouds grow in over about 1.5 minutes.
   - A thermal first met dying gets no cloud.
   - Clouds dropped from the lists dissolve over 2 minutes.
-  - When the two skies place a thermal more than 300 m apart (up to ~2 km: other terrain detail and sun when each first had the cell), the drawn cloud dissolves in place while the other grows in.
+  - The page's far sky and the flight model often place the same thermal 0.3–3 km apart: their weather up to 5 minutes apart, other terrain detail, and the sun when each first had the cell. A cloud handed over at ~18 km drifts to its new place at no more than 15 m/s, and its base moves at no more than 3 m/s.
+  - A first try dissolved the old cloud and grew a new one there instead. After a hop flight, 200 of 716 volume clouds were such pairs, standing in each other, and one showed a hard cut.
 - **Unchanged:** the thermals and their lift. Their own cycle (grow over 3 minutes, die over 5) is within these rates.
 - **Volumes and far map:** the split is settled when the far map is redrawn (every 3 s). A cloud crossing 45 km used to leave the volumes at once and join the map up to 3 s later.
 - **Far skies:** they now age on the flight's clock, not the wall clock, so they no longer keep cycling while paused.

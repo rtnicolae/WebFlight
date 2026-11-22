@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DISSOLVE_S, DrawnClouds, FOLLOW_S, GROW_S, type CloudTarget } from "../src/cloud-follow.ts";
+import { DISSOLVE_S, DrawnClouds, FOLLOW_S, GROW_S, MOVE_MS, RISE_MS, type CloudTarget } from "../src/cloud-follow.ts";
 import type { CloudSpec } from "../src/clouds.ts";
 
 const cloud = (o: Partial<CloudSpec> = {}): CloudSpec => ({ id: "1:2:0", latDeg: 45.65, lonDeg: 25.5, baseM: 2300, radiusM: 800, size: 1, opacity: 1, groundM: 530, tall: 1, ...o });
@@ -46,24 +46,21 @@ describe("clouds as drawn follow their thermals' gradually", () => {
     expect(run(d, at(next), 120)[0]!.baseM).toBeCloseTo(2340, 0); // e^-6 of the 40 m left
   });
 
-  it("dissolves a cloud whose thermal is placed elsewhere and grows the new one there", () => {
+  it("drifts, no faster than the wind carries a cumulus, to a thermal placed elsewhere", () => {
     const d = new DrawnClouds();
     d.update(at(cloud()), 0, true);
-    // The flight model's copy of the thermal, 2 km off the far sky's.
-    const there = cloud({ latDeg: 45.65 + 2000 / 111_195 });
+    // The flight model's copy of the thermal, 2 km north of the far sky's and 300 m higher.
+    const there = cloud({ latDeg: 45.65 + 2000 / 111_195, baseM: 2600 });
     let out = d.update(at(there), 1, false);
-    expect(out).toHaveLength(1);
-    expect(out[0]!.latDeg).toBe(45.65); // the old one, where it was
-    expect(out[0]!.opacity).toBeCloseTo(1 - 1 / DISSOLVE_S, 6);
-    out = run(d, at(there), 60);
-    const old = out.find((c) => c.latDeg === 45.65)!, fresh = out.find((c) => c.latDeg !== 45.65)!;
-    expect(old.opacity).toBeCloseTo(1 - 61 / DISSOLVE_S, 6);
-    expect(fresh.latDeg).toBeCloseTo(there.latDeg, 9);
-    expect(fresh.opacity).toBeCloseTo(60 / GROW_S, 6);
-    expect(fresh.id).not.toBe(old.id); // each its own shape
-    out = run(d, at(there), 120);
-    expect(out).toHaveLength(1);
+    expect(out).toHaveLength(1); // one cloud, not two
+    expect((out[0]!.latDeg - 45.65) * 111_195).toBeCloseTo(MOVE_MS, 6);
+    expect(out[0]!.baseM).toBeCloseTo(2300 + RISE_MS, 6);
     expect(out[0]!.opacity).toBe(1);
+    out = run(d, at(there), 60);
+    expect((out[0]!.latDeg - 45.65) * 111_195).toBeCloseTo(61 * MOVE_MS, 6);
+    out = run(d, at(there), 240);
+    expect(out[0]!.latDeg).toBeCloseTo(there.latDeg, 5);
+    expect(out[0]!.baseM).toBeCloseTo(2600, 0);
   });
 
   it("dissolves a cloud gone from the thermals, and drops it once gone", () => {
