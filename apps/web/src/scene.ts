@@ -74,6 +74,9 @@ void main() {
 
 let fixedShadowReach = false;
 
+/** How much light the shadows leave (Cesium's darkness; in a cloud's shade less: main.ts). */
+export const SHADOW_DARKNESS = 0.35;
+
 /** How far shadows reach [m] at a height above the ground [m]: ~the ground in view, 1–4 km. */
 export function shadowReachFor(aglM: number): number {
   return Math.min(4000, Math.max(1000, 1000 + 3 * aglM));
@@ -172,7 +175,7 @@ export function createViewer(container: HTMLElement, opts: LookOptions): Viewer 
     sm.maximumDistance = opts.shadowDistanceM ?? shadowReachFor(0);
     const caps = (sm as unknown as { _maximumCascadeDistances?: number[] })._maximumCascadeDistances;
     if (caps?.length === 4) caps.splice(0, 3, ...CHASE_CASCADES);
-    sm.darkness = 0.35;
+    sm.darkness = SHADOW_DARKNESS;
     // More bias than Cesium's defaults: walls nearly edge-on to the sun showed diagonal
     // stripes (shadow acne). Internal, so guarded.
     const bias = (sm as unknown as { _primitiveBias?: { normalOffsetScale: number; depthBias: number } })._primitiveBias;
@@ -425,6 +428,10 @@ export class ThermalLayer {
   /** The weather's cloud decks, [low, mid] (vclouds.ts; only with the volumes). */
   setDecks(decks: (DeckTarget | undefined)[]): void {
     this.volumes?.setDecks(decks, !this.gradual);
+  }
+  /** The sun's light at a point through the clouds as drawn (vclouds.ts sunAt); without the volumes, none in the way. */
+  sunAt(p: Cartesian3, sunWC: Cartesian3): { cumulus: number; deck: number } {
+    return this.volumes?.sunAt(p, sunWC) ?? { cumulus: 0, deck: 1 };
   }
   /** Where the decks are drawn, for their shade on the ground (google3d.ts). */
   deckShade(): ReturnType<VolumetricClouds["deckShade"]> | undefined {

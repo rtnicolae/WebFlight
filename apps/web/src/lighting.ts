@@ -134,6 +134,8 @@ export function reflectionShader(): CustomShader {
       u_zenith: { type: UniformType.VEC3, value: c3([0.22 * amb[0]! * day, 0.42 * amb[1]! * day, 0.82 * amb[2]! * day]) },
       u_horizon: { type: UniformType.VEC3, value: c3([0.82 * amb[0]! * day + 0.03, 0.86 * amb[1]! * day + 0.03, 0.92 * amb[2]! * day + 0.05]) },
       u_ground: { type: UniformType.VEC3, value: c3([0.3 * g, 0.33 * g, 0.24 * g]) },
+      // In a cloud's shade, as all its light (aircraft.ts cloudShade).
+      u_skyK: { type: UniformType.FLOAT, value: 1 },
     },
     fragmentShaderText: /* glsl */ `
 void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
@@ -143,7 +145,7 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   vec3 r = czm_inverseViewRotation * reflect(-v, n * sign(dot(n, v) + 1e-6));
   float e = dot(normalize(r), normalize(czm_viewerPositionWC));
   vec3 sky = mix(u_horizon, u_zenith, smoothstep(0.0, 0.6, e));
-  vec3 env = mix(u_ground * (0.75 + 0.25 * smoothstep(-0.5, 0.0, e)), sky, smoothstep(-0.015, 0.015, e));
+  vec3 env = mix(u_ground * (0.75 + 0.25 * smoothstep(-0.5, 0.0, e)), sky, smoothstep(-0.015, 0.015, e)) * u_skyK;
   float F = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
 #ifdef USE_CLEARCOAT
   material.emissive += env * F * material.clearcoatFactor * material.occlusion * 0.9;
