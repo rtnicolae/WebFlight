@@ -1,5 +1,5 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
-import { JulianDate } from "cesium";
+import { Cartesian3, JulianDate } from "cesium";
 import { pinGroundToGlider } from "./ground-lod.ts";
 import { PoseSmoother } from "./pose-smoother.ts";
 import { applyLighting, reflectSky, setLook, setSunLight, tintGround } from "./lighting.ts";
@@ -11,7 +11,9 @@ import { ChaseCamera } from "./camera.ts";
 import { Hud } from "./hud.ts";
 import { PilotInput } from "./input.ts";
 import type { FromWorker, StartState, ToWorker, WorldConfig } from "./protocol.ts";
-import { addRunway, createViewer, followShadows, ThermalLayer, thermalView } from "./scene.ts";
+import { addRunway, createViewer, followShadows, SHADOW_DARKNESS, ThermalLayer, thermalView } from "./scene.ts";
+import { cloudShadeRamp } from "./sun-through.ts";
+import { setBuildingShade } from "./osm-layer.ts";
 import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
@@ -213,6 +215,26 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   };
   thermalLayer.setDecks(decksOf(F.weather));
   google3d?.setDeckShade(() => thermalLayer.deckShade());
+  /**
+   * The glider in a cloud's shade (sun-through.ts: the towers and holes drawn, whose shade is on
+   * the ground): lit as in a cast shadow, all its light times the ground's factor there (1 − 0.65
+   * of the light the cloud takes, cloudShadeRamp), and the shadows on and round it (Cesium's,
+   * the whole colour times their darkness) as much lighter, so the two don't stack: in full
+   * shade it casts none. The grass round it the same. m: the glider's model matrix (ECEF).
+   */
+  const gliderWC = new Cartesian3(), sunWC = new Cartesian3();
+  let cloudLight = 1;
+  const uniforms = (viewer.scene as unknown as { context: { uniformState: { lightDirectionWC: Cartesian3 } } }).context.uniformState;
+  const shadeGlider = (m: ArrayLike<number>) => {
+    Cartesian3.fromElements(m[12]!, m[13]!, m[14]!, gliderWC);
+    Cartesian3.normalize(uniforms.lightDirectionWC, sunWC);
+    const s = thermalLayer.sunAt(gliderWC, sunWC);
+    const k = 1 - 0.65 * cloudShadeRamp(sun.elevationDeg) * (1 - Math.min(1 - s.cumulus, s.deck));
+    aircraft.cloudShade(k, viewer.scene.light);
+    if (viewer.shadows) viewer.scene.shadowMap.darkness = Math.min(1, SHADOW_DARKNESS / k);
+    if (grass) grass.cloudK = k;
+    cloudLight = k;
+  };
   if (google3d) life.onClose(() => google3d.setDeckShade(undefined));
   // 3D scenery (Switzerland): buildings, trees, water. ?buildings=0 / trees=0 / water=0 to turn off.
   // After the imagery probe, so the scenery downloads don't starve it.
@@ -511,6 +533,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
 
     aircraft.showInterior(cam.mode === "cockpit");
     const m = aircraft.update(d, layout, dt);
+    shadeGlider(m);
     // The glider mirrors the sky drawn round it (once the atmosphere has read it, and again
     // as it re-reads it).
     const gm = aircraft.gltfModel?.customShader;
@@ -528,6 +551,8 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     gliderAt = { latDeg: g("position/lat-geod-deg"), lonDeg: g("position/long-gc-deg") };
     followShadows(viewer, g("position/h-agl-ft") * M_PER_FT, cam.mode === "cockpit");
     google3d?.update(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/h-agl-ft") * M_PER_FT);
+    // Our buildings in the clouds' shade as Google's ground round them.
+    if (google3d) setBuildingShade(google3d.shade, google3d.shadeTextures());
     // Ground tiles follow the glider too (eye 4 m above it: about the chase camera's height).
     pinGround(g("position/lat-geod-deg"), g("position/long-gc-deg"), g("position/geod-alt-ft") * M_PER_FT + 4);
     // Grass follows the glider, not the camera: looking around rebuilds nothing.
@@ -573,7 +598,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   });
   // Expose for debugging and automated checks.
   const w = window as unknown as { webflight: unknown };
-  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, windsocks, get layout() { return layout; }, get reader() { return reader; }, get air() { return air; }, get waveBuildMs() { return waveBuildMs; }, send };
+  w.webflight = { viewer, input, aircraft, cam, interaction, scenery, google3d, grass, thermalLayer, dynres, hdrFinish, taa, atmosphere, water, runways, windsocks, get layout() { return layout; }, get reader() { return reader; }, get air() { return air; }, get waveBuildMs() { return waveBuildMs; }, get cloudLight() { return cloudLight; }, send };
   life.onClose(() => (w.webflight = undefined));
 
   // Behind the loading screen until the ground under the glider is in: Google's tiles in view

@@ -3,8 +3,8 @@
  * FG properties published by fg-host in the same snapshot (defaults from the manifest),
  * with texture (UV) animations and cockpit picking.
  */
-import { ENVIRONMENT_MAP_ONCE, lightModel, reflectionShader } from "./lighting.ts";
-import { Axis, Matrix3, Matrix4, Model, type ModelNode, type Scene } from "cesium";
+import { ENVIRONMENT_MAP_ONCE, lightModel, LOOK, reflectionShader } from "./lighting.ts";
+import { Axis, Cartesian2, Cartesian3, Matrix3, Matrix4, Model, type ModelNode, type Scene } from "cesium";
 import { modelMatrixEcef, structuralToBodyFt, type BundleManifestCore, type SnapshotLayout } from "@webflight/fdm-core";
 import { AnimationRig, type PickEntry } from "./animations.ts";
 
@@ -60,6 +60,23 @@ export class AircraftView {
   get gltfModel(): Model | undefined {
     return this.model;
   }
+
+  /**
+   * In a cloud's shade (sun-through.ts, main.ts): the glider lit as in a cast shadow, all its
+   * light (the sun's, the sky's, its reflections) times k, as the ground's under the cloud.
+   */
+  cloudShade(k: number, light: { color: { red: number; green: number; blue: number }; intensity: number }): void {
+    const m = this.model;
+    if (!m) return;
+    const s = light.intensity * k;
+    // (Always set once loaded: switching it on or off rebuilds the model's shaders.)
+    m.lightColor = Cartesian3.fromElements(light.color.red * s, light.color.green * s, light.color.blue * s, this.lightColor);
+    m.imageBasedLighting.imageBasedLightingFactor = new Cartesian2(LOOK.ground * k, LOOK.ground * k);
+    if (k !== this.shadeK) m.customShader?.setUniform("u_skyK", k);
+    this.shadeK = k;
+  }
+  private shadeK = 1;
+  private readonly lightColor = new Cartesian3();
 
   /** The time of day's environment light again (after setLook, as the sun moves). */
   relight(): void {

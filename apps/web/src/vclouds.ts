@@ -37,6 +37,7 @@ import { LOOK } from "./lighting.ts";
 import { temporal } from "./temporal.ts";
 import { AERIAL_GLSL, SCENE_DIST_GLSL, type Atmosphere } from "./atmosphere.ts";
 import { cloudNoiseAsync } from "./cloud-noise.ts";
+import { cumulusShade, DeckField, deckLight, type TowerCloud } from "./sun-through.ts";
 import { DISSOLVE_S, FOLLOW_S, GROW_S, RISE_MS } from "./cloud-follow.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -818,6 +819,8 @@ export class VolumetricClouds {
       // (Mipmapped: a deck tens of kilometres off would sparkle.)
       deck.generateMipmap();
       this.tex.deck = deck;
+      // The same field on the CPU, for the light at a point (sunAt).
+      this.deckField = new DeckField(noise.deck, noise.deckSize);
     });
     const hasAp = !!atmosphere;
     const march = new PostProcessStage({
@@ -993,6 +996,42 @@ export class VolumetricClouds {
       haze *= 1 - d.cover * (1 - 1 / (1 + (0.1125 * tau) / 0.875));
     }
     if (this.atmosphere) this.atmosphere.hazeLight = haze;
+  }
+
+  private deckField: DeckField | undefined;
+
+  /**
+   * The sun's light at a point (world) through the clouds as drawn now (sun-through.ts): the
+   * cumulus' shade there (0–1) and the light through the decks (1: none in the way). sunWC:
+   * towards the sun (world, unit).
+   */
+  sunAt(p: Cartesian3, sunWC: Cartesian3): { cumulus: number; deck: number } {
+    const up = Cartesian3.normalize(p, new Cartesian3());
+    const east = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, up, new Cartesian3()), new Cartesian3());
+    const north = Cartesian3.cross(up, east, new Cartesian3());
+    const sun = { e: Cartesian3.dot(sunWC, east), n: Cartesian3.dot(sunWC, north), u: Cartesian3.dot(sunWC, up) };
+    const su = Math.max(sun.u, Math.sin((5 * Math.PI) / 180)), slope = Math.hypot(sun.e, sun.n) / su;
+    const near: TowerCloud[] = [], r = new Cartesian3();
+    for (const c of this.clouds) {
+      Cartesian3.subtract(c.base, p, r);
+      const e = Cartesian3.dot(r, east), n = Cartesian3.dot(r, north), u = Cartesian3.dot(r, up);
+      if (u + c.geo.height < 0) continue;
+      // Only those the ray to the sun can pass through (where it is at their base, within
+      // their reach and the slant to their tops).
+      const k = Math.max(0, u) / su;
+      if (Math.hypot(e - sun.e * k, n - sun.n * k) > c.geo.reach * 1.1 + c.geo.height * slope) continue;
+      near.push({ e, n, u, towers: c.geo.towers, opacity: c.spec.opacity });
+    }
+    const cumulus = cumulusShade(near, sun);
+    if (!this.deckField || this.nDecks === 0) return { cumulus, deck: 1 };
+    // The decks relative to the camera, in its frame (as deckShade's).
+    const cam = this.viewer.camera.positionWC, cu = Cartesian3.normalize(cam, new Cartesian3());
+    const ce = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, cu, new Cartesian3()), new Cartesian3());
+    const cn = Cartesian3.cross(cu, ce, new Cartesian3());
+    Cartesian3.subtract(p, cam, r);
+    const rel = { e: Cartesian3.dot(r, ce), n: Cartesian3.dot(r, cn), u: Cartesian3.dot(r, cu) };
+    const sc = { e: Cartesian3.dot(sunWC, ce), n: Cartesian3.dot(sunWC, cn), u: Cartesian3.dot(sunWC, cu) };
+    return { cumulus, deck: deckLight(this.deckField, this.deckShade(), rel, sc) };
   }
 
   /** The decks as the ground's shade needs them (google3d.ts): as this shader has them. */

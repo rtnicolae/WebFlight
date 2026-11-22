@@ -48,6 +48,7 @@ import { cloudNoiseAsync } from "./cloud-noise.ts";
 import { DETAIL_GLSL, detailSettings, detailTexturePixels, followCameraOnGround } from "./ground-detail.ts";
 import { LOOK } from "./lighting.ts";
 import { RUNWAY_GLSL, runwayUniforms } from "./runway-paint.ts";
+import { CLOUD_SHADE, cloudShadeRamp, SUN_THROUGH_GLSL } from "./sun-through.ts";
 
 type GroundFn = (latDeg: number, lonDeg: number) => number | undefined;
 
@@ -177,19 +178,16 @@ export class Google3D {
         wfMacro: { type: UniformType.VEC2, value: new Cartesian2(...st.macro) },
         wfStrength: { type: UniformType.VEC3, value: new Cartesian3(...st.strength) },
         wfGain: { type: UniformType.VEC3, value: new Cartesian3(...st.gain) },
-        u_cloudShadow: { type: UniformType.SAMPLER_2D, value: new TextureUniform({ typedArray: new Uint8Array([0, 0, 0, 255]), width: 1, height: 1, repeat: false }) },
-        u_shadowCentre: { type: UniformType.VEC2, value: new Cartesian2() },
-        u_shadowSize: { type: UniformType.FLOAT, value: SHADOW_M },
-        u_shadowK: { type: UniformType.FLOAT, value: 0 },
-        // The cloud decks' shade (vclouds.ts, setDeckShade).
-        u_deckMap: { type: UniformType.SAMPLER_2D, value: white() },
-        u_deck0: { type: UniformType.VEC4, value: new Cartesian4() },
-        u_deck1: { type: UniformType.VEC4, value: new Cartesian4() },
-        u_deckP0: { type: UniformType.VEC4, value: new Cartesian4() },
-        u_deckP1: { type: UniformType.VEC4, value: new Cartesian4() },
-        u_deckH: { type: UniformType.FLOAT, value: 0 },
-        u_deckN: { type: UniformType.FLOAT, value: 0 },
-        u_deckK: { type: UniformType.FLOAT, value: 0 },
+        // The clouds' shade (sun-through.ts): the cumulus' shadow map (setCloudShadows), the
+        // decks (vclouds.ts, setDeckShade).
+        wfcShadow: { type: UniformType.SAMPLER_2D, value: new TextureUniform({ typedArray: new Uint8Array([0, 0, 0, 255]), width: 1, height: 1, repeat: false }) },
+        wfcShadowP: { type: UniformType.VEC4, value: new Cartesian4() },
+        wfcDeckMap: { type: UniformType.SAMPLER_2D, value: white() },
+        wfcDeck0: { type: UniformType.VEC4, value: new Cartesian4() },
+        wfcDeck1: { type: UniformType.VEC4, value: new Cartesian4() },
+        wfcDeckP0: { type: UniformType.VEC4, value: new Cartesian4() },
+        wfcDeckP1: { type: UniformType.VEC4, value: new Cartesian4() },
+        wfcDeckH: { type: UniformType.VEC4, value: new Cartesian4() },
         // Runways painted on the tiles (runway-paint.ts).
         ...runwayUniforms(),
       },
@@ -224,37 +222,8 @@ vec3 wfGrade(vec3 s) {
   hsb.z *= 1.0 - 0.45 * water * u_grade;
   return czm_HSBToRGB(hsb);
 }
-// Under the cloud decks (vclouds.ts): the sun's light through each where its ray crosses it, from
-// the same holes as drawn (vclouds.ts deckField, deckCoverOf, deckSpan, deckSun: kept alike), the
-// direct and the forward-scattered light together (two-stream).
-float wfEqualize(float s) {
-  if (s < 0.25) return s * s / 0.375;
-  if (s < 0.75) return (s - 0.125) / 0.75;
-  return 1.0 - (1.0 - s) * (1.0 - s) / 0.375;
-}
-float wfDeckLight(vec3 relW, vec3 upW, vec3 e, vec3 nn) {
-  vec3 sunW = normalize(czm_inverseViewRotation * czm_lightDirectionEC);
-  float sunUp = max(dot(sunW, upW), 0.05);
-  vec2 sxy = vec2(dot(sunW, e), dot(sunW, nn)) / sunUp, en = vec2(dot(relW, e), dot(relW, nn));
-  float h = u_deckH + dot(relW, upW), all = 1.0;
-  for (int k = 0; k < 2; k++) {
-    vec4 D = k == 0 ? u_deck0 : u_deck1, P = k == 0 ? u_deckP0 : u_deckP1;
-    float mid = 0.5 * (D.x + D.y);
-    if (D.z < 0.005 || mid <= h) continue;
-    vec2 xy = P.xy + en + sxy * (mid - h);
-    float cov = 1.0;
-    if (D.z <= 0.995) {
-      // (Mip levels for a 150 m footprint, as deckSun's.)
-      vec2 a = textureLod(u_deckMap, xy / 32000.0, 1.263).rg;
-      vec2 b = textureLod(u_deckMap, mat2(0.8, 0.6, -0.6, 0.8) * xy / 9100.0 + 0.37, 3.077).gr;
-      cov = smoothstep(1.0 - D.z, 1.0 - D.z + 0.5, mix(wfEqualize(0.75 * a.x + 0.25 * b.x), wfEqualize(0.75 * a.y + 0.25 * b.y), D.w));
-    }
-    // Its depth there is H·cov; at its mean density, three quarters of the extinction
-    // (decks.ts deckTransmission).
-    all /= 1.0 + 0.1125 * P.z * 0.75 * (D.y - D.x) * cov / (0.5 + 0.75 * sunUp);
-  }
-  return all;
-}
+// Under the clouds (sun-through.ts): their shade, as on our buildings and water.
+${SUN_THROUGH_GLSL}
 void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   vec3 c = material.diffuse;
   if (u_grade > 0.0) c = czm_srgbToLinear(wfGrade(czm_linearToSrgb(c)));
@@ -275,18 +244,9 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     // The grain works on display values; the material is linear.
     c *= pow(mix(1.0, wfFactor(czm_linearToSrgb(c), w, d), level), 2.2);
   }
-  // Under a cloud: the cloud shadow map, in metres east/north of the camera; under a deck, its
-  // shade (where both, the darker).
-  if (u_shadowK > 0.0 || u_deckN > 0.5) {
-    vec3 relW = czm_inverseViewRotation * rel;
-    vec3 e = normalize(vec3(-upW.y, upW.x, 0.0));
-    vec3 nn = cross(upW, e);
-    vec2 uv = (vec2(dot(relW, e), dot(relW, nn)) - u_shadowCentre) / u_shadowSize + 0.5;
-    float shade = 0.0;
-    if (u_shadowK > 0.0 && uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0) shade = u_shadowK * texture(u_cloudShadow, uv).r;
-    if (u_deckN > 0.5) shade = max(shade, u_deckK * (1.0 - wfDeckLight(relW, upW, e, nn)));
-    c *= 1.0 - shade;
-  }
+  // Under a cumulus or a deck (where both, the darker): the photo's light, of which the sun's
+  // is ${CLOUD_SHADE}, by the share of the sun's that gets through.
+  if (wfcShadowP.w > 0.5 || wfcDeckH.y > 0.5) c *= 1.0 - ${CLOUD_SHADE.toFixed(2)} * (1.0 - wfSunThrough(czm_inverseViewRotation * rel));
   material.diffuse = c * u_photoLight;
 }`,
     });
@@ -298,9 +258,10 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
       g3?.followDecks();
     });
     // The decks' holes: the clouds' noise (cloud-noise.ts), shared with vclouds.ts.
-    void cloudNoiseAsync().then((noise) =>
-      shader.setUniform("u_deckMap", new TextureUniform({ typedArray: noise.deck, width: noise.deckSize, height: noise.deckSize, repeat: true, minificationFilter: TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR })),
-    );
+    void cloudNoiseAsync().then((noise) => {
+      shader.setUniform("wfcDeckMap", new TextureUniform({ typedArray: noise.deck, width: noise.deckSize, height: noise.deckSize, repeat: true, minificationFilter: TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
+      g3?.deckNoise(noise.deck, noise.deckSize);
+    });
     if (opts.texBase)
       void detailTexturePixels(opts.texBase)
         .then(({ data, size }) =>
@@ -348,12 +309,12 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   setCloudShadows(clouds: CloudSpec[], sun: { azimuthDeg: number; elevationDeg: number }): void {
     const shader = this.tileset.customShader as CustomShader | undefined;
     if (!shader) return;
-    // Under a cumulus the sunlit ground gets about a third of the light (the sky's): 0.65.
-    const k = 0.65 * Math.min(1, Math.max(0, (sun.elevationDeg - 2) / 10));
-    // Under a deck, the share of the photo's light it can take: the same.
-    this.deckK = k;
-    if (!clouds.length || k <= 0) {
-      shader.setUniform("u_shadowK", 0);
+    // The share of the sun's light the clouds take by its height (under a cumulus the sunlit
+    // ground then gets about a third of the light, the sky's: CLOUD_SHADE); the decks' too.
+    this.ramp = cloudShadeRamp(sun.elevationDeg);
+    if (!clouds.length || this.ramp <= 0) {
+      this.shade.shadowP.w = 0;
+      shader.setUniform("wfcShadowP", Cartesian4.clone(this.shade.shadowP));
       this.shadowAt = undefined;
       return;
     }
@@ -403,33 +364,78 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
       }
     }
     // Row y is (0.5 + north / size): texture rows bottom-up, as the shader reads them.
-    shader.setUniform("u_cloudShadow", new TextureUniform({ typedArray: buf, width: SHADOW_PX, height: SHADOW_PX, repeat: false, minificationFilter: TextureMinificationFilter.LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
-    shader.setUniform("u_shadowK", k);
+    shader.setUniform("wfcShadow", new TextureUniform({ typedArray: buf, width: SHADOW_PX, height: SHADOW_PX, repeat: false, minificationFilter: TextureMinificationFilter.LINEAR, magnificationFilter: TextureMagnificationFilter.LINEAR }));
+    this.shadowVersion++;
+    this.shade.shadowP.z = SHADOW_M;
+    this.shade.shadowP.w = 1;
     this.followShadow();
   }
 
-  private deckK = 0;
+  /**
+   * The clouds' shade as the shaders take it (sun-through.ts SUN_THROUGH_DECLS: wfcShadowP,
+   * wfcDeck0…, without the textures, shadeTextures): the tiles', and our buildings' and water's.
+   */
+  readonly shade = { shadowP: new Cartesian4(), deck0: new Cartesian4(), deck1: new Cartesian4(), deckP0: new Cartesian4(), deckP1: new Cartesian4(), deckH: new Cartesian4() };
+  private ramp = 0;
+  private shadowVersion = 0;
+  private texVersion = -1;
+  private deckData: { data: Uint8Array; size: number } | undefined;
+  private textures: { shadow: { copyFrom(o: unknown): void; destroy(): void }; deck: { destroy(): void } | undefined } | undefined;
+
+  /** The decks' field (cloud-noise.ts), for shadeTextures. */
+  deckNoise(data: Uint8Array, size: number): void {
+    this.deckData = { data, size };
+  }
+
+  /**
+   * The shade's textures for shaders outside the tiles (Cesium's renderer textures; the tiles'
+   * own are the custom shader's): the cumulus' shadow map (as last drawn) and the decks' field
+   * (undefined until it is made). Shared: a Cesium Material destroys a texture it is given when
+   * it gets another, so each is given once.
+   */
+  shadeTextures(): { shadow: unknown; deck: unknown | undefined } {
+    const C = CesiumAll as unknown as Record<string, any>, context = (this.viewer.scene as unknown as { context: unknown }).context;
+    const t = (this.textures ??= {
+      shadow: new C.Texture({ context, width: SHADOW_PX, height: SHADOW_PX, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, source: { arrayBufferView: this.shadowBuf }, flipY: false, sampler: new C.Sampler({ wrapS: C.TextureWrap.CLAMP_TO_EDGE, wrapT: C.TextureWrap.CLAMP_TO_EDGE, minificationFilter: C.TextureMinificationFilter.LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }) }),
+      deck: undefined,
+    });
+    if (this.texVersion !== this.shadowVersion) {
+      t.shadow.copyFrom({ source: { width: SHADOW_PX, height: SHADOW_PX, arrayBufferView: this.shadowBuf } });
+      this.texVersion = this.shadowVersion;
+    }
+    if (!t.deck && this.deckData) {
+      const d = new C.Texture({ context, width: this.deckData.size, height: this.deckData.size, pixelFormat: C.PixelFormat.RGBA, pixelDatatype: C.PixelDatatype.UNSIGNED_BYTE, source: { arrayBufferView: this.deckData.data }, flipY: false, sampler: new C.Sampler({ wrapS: C.TextureWrap.REPEAT, wrapT: C.TextureWrap.REPEAT, minificationFilter: C.TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: C.TextureMagnificationFilter.LINEAR }) });
+      d.generateMipmap();
+      t.deck = d;
+    }
+    return { shadow: t.shadow, deck: t.deck };
+  }
+
   private deckSource: (() => { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } | undefined) | undefined;
   /** Where the cloud decks are (vclouds.ts deckShade): their shade on the tiles. */
   setDeckShade(source: (() => { decks: Cartesian4[]; at: Cartesian4[]; camH: number; n: number } | undefined) | undefined): void {
     this.deckSource = source;
   }
 
-  /** Each frame: the decks' shade on the tiles. */
+  /** Each frame: the decks' shade on the tiles (and the ramp, the cumulus' too). */
   followDecks(): void {
-    const shader = this.tileset.customShader as CustomShader | undefined, d = this.deckSource?.();
+    const shader = this.tileset.customShader as CustomShader | undefined, d = this.deckSource?.(), sh = this.shade;
     if (!shader) return;
-    if (!d || d.n === 0 || this.deckK <= 0) {
-      shader.setUniform("u_deckN", 0);
-      return;
+    sh.deckH.z = this.ramp;
+    if (!d || d.n === 0 || this.ramp <= 0) sh.deckH.y = 0;
+    else {
+      Cartesian4.clone(d.decks[0]!, sh.deck0);
+      Cartesian4.clone(d.decks[1]!, sh.deck1);
+      Cartesian4.clone(d.at[0]!, sh.deckP0);
+      Cartesian4.clone(d.at[1]!, sh.deckP1);
+      sh.deckH.x = d.camH;
+      sh.deckH.y = d.n;
+      shader.setUniform("wfcDeck0", Cartesian4.clone(sh.deck0));
+      shader.setUniform("wfcDeck1", Cartesian4.clone(sh.deck1));
+      shader.setUniform("wfcDeckP0", Cartesian4.clone(sh.deckP0));
+      shader.setUniform("wfcDeckP1", Cartesian4.clone(sh.deckP1));
     }
-    shader.setUniform("u_deck0", Cartesian4.clone(d.decks[0]!));
-    shader.setUniform("u_deck1", Cartesian4.clone(d.decks[1]!));
-    shader.setUniform("u_deckP0", Cartesian4.clone(d.at[0]!));
-    shader.setUniform("u_deckP1", Cartesian4.clone(d.at[1]!));
-    shader.setUniform("u_deckH", d.camH);
-    shader.setUniform("u_deckN", d.n);
-    shader.setUniform("u_deckK", this.deckK);
+    shader.setUniform("wfcDeckH", Cartesian4.clone(sh.deckH));
   }
 
   /** Each frame: where the shadow map's centre is, in metres east/north of the camera. */
@@ -440,7 +446,9 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
     const east = Cartesian3.normalize(Cartesian3.cross(Cartesian3.UNIT_Z, up, new Cartesian3()), new Cartesian3());
     const north = Cartesian3.cross(up, east, new Cartesian3());
     const d = Cartesian3.subtract(this.shadowAt, cam, new Cartesian3());
-    (this.tileset.customShader as CustomShader).setUniform("u_shadowCentre", new Cartesian2(Cartesian3.dot(d, east), Cartesian3.dot(d, north)));
+    this.shade.shadowP.x = Cartesian3.dot(d, east);
+    this.shade.shadowP.y = Cartesian3.dot(d, north);
+    (this.tileset.customShader as CustomShader).setUniform("wfcShadowP", Cartesian4.clone(this.shade.shadowP));
   }
 
   /** Every frame, with the glider's position and height above our terrain. */

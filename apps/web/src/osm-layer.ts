@@ -13,6 +13,7 @@
  *  - trees: zoom-16 cells (~430 m) within ±`treeRings` cells, nearest first
  */
 import {
+  Cartesian4,
   Material,
   MaterialAppearance,
   BoundingSphere,
@@ -41,6 +42,7 @@ import type { OsmRequest, OsmResult } from "./osm-worker.ts";
 import { HAZE_FS, HAZE_VS, LOOK, lookGlsl } from "./lighting.ts";
 import { openFreeMapTiles } from "./osm-source.ts";
 import { photoTileUrl } from "./imagery.ts";
+import { CLOUD_SHADE, SUN_THROUGH_GLSL } from "./sun-through.ts";
 import { osmShift, osmShiftIfKnown } from "./photo-align.ts";
 import { loadTreeAtlas, treeImpostors, type TreeAtlas } from "./tree-impostors.ts";
 
@@ -333,6 +335,8 @@ void main() {
   // Walls also get light bounced off the sunlit ground (without it, shaded walls went dull grey).
   float sky = 0.42 + 0.16 * dot(n, up) + 0.11 * (1.0 - abs(dot(n, up)));
   vec3 c = base * (sky * LOOK_AMBIENT + 0.62 * sun * czm_lightColor) + spec * czm_lightColor + emis + glow;
+  // In a cloud's shade as the ground round it (sun-through.ts; with Google's tiles).
+  c *= 1.0 - ${CLOUD_SHADE.toFixed(2)} * (1.0 - wfSunThrough(czm_inverseViewRotation * v_positionEC));
   c = hazeFS(c, v_positionEC);
   out_FragColor = vec4(c, 1.0);
 }`;
@@ -374,11 +378,11 @@ function material(tex: Textures): Material {
   const m = new Material({
     fabric: {
       type: "BuildingDetail",
-      uniforms: Object.fromEntries(TEXTURES.map((k) => [k, Material.DefaultImageId])),
+      uniforms: { ...Object.fromEntries(TEXTURES.map((k) => [k, Material.DefaultImageId])), wfcShadow: Material.DefaultImageId, wfcDeckMap: Material.DefaultImageId, wfcShadowP: new Cartesian4(), wfcDeck0: new Cartesian4(), wfcDeck1: new Cartesian4(), wfcDeckP0: new Cartesian4(), wfcDeckP1: new Cartesian4(), wfcDeckH: new Cartesian4() },
       // str = (u, v [m], material + seed). Detail = photo / mid-grey (brick: the photo's own
       // colour). Roofs: two rotated samples mixed by noise (no visible repeat) and large
       // stains; emboss in shininess.
-      source: `
+      source: `${SUN_THROUGH_GLSL}
 float bh(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float bn(vec2 p) {
   vec2 i = floor(p), f = fract(p);
@@ -431,7 +435,32 @@ czm_material czm_getMaterial(czm_materialInput mi) {
     translucent: false,
   });
   for (const k of TEXTURES) m.uniforms[k] = tex[k];
-  return (buildingMaterial = m);
+  buildingMaterial = m;
+  if (shadeNow) setBuildingShade(...shadeNow);
+  return m;
+}
+
+let shadeNow: Parameters<typeof setBuildingShade> | undefined;
+/**
+ * The clouds' shade on our buildings (google3d.ts shade, shadeTextures): as on the tiles round
+ * them. The values are read as they change; each texture given once, when it is made (the
+ * material would destroy one it is given when given another).
+ */
+export function setBuildingShade(shade: Record<"shadowP" | "deck0" | "deck1" | "deckP0" | "deckP1" | "deckH", Cartesian4>, tex: { shadow: unknown; deck: unknown | undefined }): void {
+  shadeNow = [shade, tex];
+  const m = buildingMaterial;
+  if (!m) return;
+  const u = m.uniforms as Record<string, unknown>;
+  if (u["wfcShadowP"] !== shade.shadowP) {
+    u["wfcShadowP"] = shade.shadowP;
+    u["wfcDeck0"] = shade.deck0;
+    u["wfcDeck1"] = shade.deck1;
+    u["wfcDeckP0"] = shade.deckP0;
+    u["wfcDeckP1"] = shade.deckP1;
+    u["wfcDeckH"] = shade.deckH;
+  }
+  if (u["wfcShadow"] !== tex.shadow) u["wfcShadow"] = tex.shadow;
+  if (tex.deck && u["wfcDeckMap"] !== tex.deck) u["wfcDeckMap"] = tex.deck;
 }
 
 /**

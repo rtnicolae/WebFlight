@@ -265,6 +265,7 @@ in vec3 v_sideEC;
 in vec2 v_tu;
 in float v_kind;
 in float v_dry;
+uniform float u_cloudK;     // in a cloud's shade: all the light times this (main.ts shadeGlider)
 void main() {
   vec3 V = normalize(-v_positionEC);
   vec3 n = normalize(v_nEC);
@@ -294,7 +295,7 @@ void main() {
   // averages to (tips and shaded roots, no glints), a little darker than a lit blade.
   float far = smoothstep(6.0, 30.0, length(v_positionEC));
   vec3 avg = v_col * (sun * 0.62 + sky) * 0.74;
-  c = mix(c, avg, 0.85 * far);
+  c = mix(c, avg, 0.85 * far) * u_cloudK;
   // Display values; linear in HDR (czm_gammaCorrect).
   out_FragColor = czm_gammaCorrect(vec4(c, 1.0));
 }`;
@@ -372,6 +373,11 @@ export class GrassField {
   private readonly camLocal = new Cartesian3();
   private wind = { dir: new Cartesian2(1, 0), strength: 0.2 };
   private fade = 0;
+  /**
+   * In a cloud's shade, all its light times this (main.ts shadeGlider: the glider's, as the grass
+   * is drawn only round it, when it is low).
+   */
+  cloudK = 1;
   private readonly kx: number;
   private readonly t0 = performance.now();
   private corrApplied = 0;
@@ -721,6 +727,7 @@ export class GrassField {
         u_seg: () => ring.segments,
         u_strip: () => strip,
         u_stripSize: () => stripSize,
+        u_cloudK: () => this.cloudK,
       };
       frameState.commandList.push(rb.cmd);
     });

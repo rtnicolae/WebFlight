@@ -27,6 +27,7 @@
 import * as Cesium from "cesium";
 import { BoundingSphere, Cartesian2, Cartesian3, Cartesian4, Cartographic, Credit, Intersect, Matrix4, PostProcessStage, Transforms, type Viewer } from "cesium";
 import type { Google3D } from "./google3d.ts";
+import { CLOUD_SHADE, SUN_THROUGH_DECLS, SUN_THROUGH_GLSL } from "./sun-through.ts";
 import { decodeMvt } from "@webflight/scenery";
 import { SCENE_DIST_GLSL, SKY_LOOKUP_GLSL, type Atmosphere } from "./atmosphere.ts";
 
@@ -108,6 +109,7 @@ uniform vec4 u_wind;     // direction to (x east, y north), strength 0–1, time
 uniform vec3 u_body;     // the water's own colour, relative to the sky's light
 uniform float u_glint;   // the sun's glint strength
 uniform float u_hor[16]; // the terrain's horizon round this water: elevation [rad] every 22.5° from north
+${SUN_THROUGH_DECLS}${SUN_THROUGH_GLSL}
 ${RIPPLES_GLSL}
 void main() {
   // Only where the satellites have seen water (a little dilated, made on the CPU); the
@@ -143,7 +145,10 @@ void main() {
   // sometimes water (low occurrence: the margins), as in MSFS.
   // (Subtle: with the grade on top a strong tint made teal blotches like Google's photo.)
   vec3 bodyCol = mix(u_body, vec3(0.08, 0.16, 0.15), 0.45 * (1.0 - smoothstep(0.15, 0.7, occ)));
-  vec3 body = bodyCol * dot(skyUp, vec3(0.2126, 0.7152, 0.0722));
+  // In a cloud's shade (sun-through.ts): the light into the water as on the ground round it, the
+  // sun's glint as much as gets through (the sky it mirrors is the same).
+  float sunThrough = wfSunThrough(czm_inverseViewRotation * v_posEC);
+  vec3 body = bodyCol * dot(skyUp, vec3(0.2126, 0.7152, 0.0722)) * (1.0 - ${CLOUD_SHADE.toFixed(2)} * (1.0 - sunThrough));
   vec3 col = mix(body, sky, F);
   // The sun's glint: GGX. Where the ripples are too small to draw (far, grazing) they become
   // roughness. The glitter comes from the ripple normals themselves (a hashed grid of sparkles
@@ -157,7 +162,7 @@ void main() {
     float dd = NH * NH * (a2 - 1.0) + 1.0;
     float D = a2 / (3.14159265 * dd * dd);
     float Fs = 0.02 + 0.98 * pow(1.0 - max(dot(H, V), 0.0), 5.0);
-    col += min(czm_lightColorHdr * D * Fs / (4.0 * NV + 1e-3) * u_glint, vec3(15.0));
+    col += min(czm_lightColorHdr * D * Fs / (4.0 * NV + 1e-3) * u_glint * sunThrough, vec3(15.0));
   }
 #ifdef WATER_DEBUG
   col = vec3(4.0, 0.0, 0.0);
@@ -527,12 +532,36 @@ export class Water {
         // OSM's rivers only in the near tiles: in the far ones (zoom 11, ~54 m a pixel) a 40 m
         // river is under a pixel, drawn a pixel wide and levelled from coarse answers, so it
         // showed as dark dashes along the horizon (Google's photo has those rivers anyway).
-        this.osmUrl && z >= 13 ? riverMask(fill(this.osmUrl), z, tileLat(y + 0.5, z)).catch(() => undefined) : Promise.resolve(undefined),
+        this.osmUrl && z >= 13 ? this.majorRivers(z, x, y).then((major) => riverMask(fill(this.osmUrl!), z, tileLat(y + 0.5, z), major)).catch(() => undefined) : Promise.resolve(undefined),
       ]);
       if (!this.tiles.has(key) || (!jrc && !rivers)) return;
       const t = this.build(z, x, y, jrc, rivers);
       if (t) this.tiles.set(key, t);
     })().catch(() => {});
+  }
+
+  private readonly major = new Map<string, Promise<Set<string>>>();
+  /**
+   * The rivers OpenFreeMap keeps at zoom 8 round a tile (by name): its long ones (OpenMapTiles
+   * ranks them by length), here the Olt, not the Bârsa or the Ghimbășel.
+   */
+  private majorRivers(z: number, x: number, y: number): Promise<Set<string>> {
+    const s = 2 ** (z - 8), key = `${Math.floor(x / s)}/${Math.floor(y / s)}`;
+    let p = this.major.get(key);
+    if (!p) {
+      const url = this.osmUrl!.replace("{z}", "8").replace("{x}", String(Math.floor(x / s))).replace("{y}", String(Math.floor(y / s)));
+      p = fetch(url)
+        .then(async (r) => {
+          const out = new Set<string>();
+          if (!r.ok) return out;
+          for (const l of decodeMvt(new Uint8Array(await r.arrayBuffer())))
+            if (l.name === "waterway") for (const f of l.features) if (f.properties["class"] === "river" && typeof f.properties["name"] === "string") out.add(f.properties["name"]);
+          return out;
+        })
+        .catch(() => new Set<string>());
+      this.major.set(key, p);
+    }
+    return p;
   }
 
   private build(z: number, x: number, y: number, rgba: Uint8ClampedArray | undefined, rivers: Uint8Array | undefined): Tile | undefined {
@@ -775,7 +804,13 @@ export class Water {
 
   /** One tile's uniforms (all of them, in one place). */
   private uniforms(t: Tile, wind: Cartesian4): Record<string, () => unknown> {
-    return { ...this.sky, u_origin: () => t.origin, u_tile: () => new Cartesian4(t.size.x, t.size.y, 0, 0), u_level: () => t.levelTex, u_occ: () => t.occ, u_cut: () => t.cut, u_wind: () => wind, u_normals: () => this.normals ?? this.blank(), u_body: () => this.body, u_glint: () => this.glint, u_hor: () => t.horizon };
+    return { ...this.sky, u_origin: () => t.origin, u_tile: () => new Cartesian4(t.size.x, t.size.y, 0, 0), u_level: () => t.levelTex, u_occ: () => t.occ, u_cut: () => t.cut, u_wind: () => wind, u_normals: () => this.normals ?? this.blank(), u_body: () => this.body, u_glint: () => this.glint, u_hor: () => t.horizon, ...this.shadeUniforms() };
+  }
+
+  /** The clouds' shade (google3d.ts shade: as on the ground round the water). */
+  private shadeUniforms(): Record<string, () => unknown> {
+    const sh = this.google3d.shade, tex = () => this.google3d.shadeTextures();
+    return { wfcShadow: () => tex().shadow, wfcDeckMap: () => tex().deck ?? this.blank(), wfcShadowP: () => sh.shadowP, wfcDeck0: () => sh.deck0, wfcDeck1: () => sh.deck1, wfcDeckP0: () => sh.deckP0, wfcDeckP1: () => sh.deckP1, wfcDeckH: () => sh.deckH };
   }
 
   /** Cesium primitive interface. */
@@ -857,9 +892,12 @@ export class Water {
  * Rivers and canals from an OpenMapTiles tile's waterway lines, drawn into a 256² mask at
  * their width (OSM gives none in these tiles: rivers 40 m, canals 15 m; streams left out),
  * soft-edged, 230 where water. JRC Global Surface Water misses most rivers narrower than about
- * 60 m (the Olt at Feldioara: nothing); OSM's river *areas* cover whole gravel beds.
+ * 60 m (the Olt at Feldioara: nothing); OSM's river *areas* cover whole gravel beds. Rivers only
+ * the major ones (Water.majorRivers): OSM calls a brook a few metres wide a river too (the
+ * Ghimbășel), and drawn 40 m wide, levelled from Google's tiles draped over the roofs round
+ * it, it flooded the town.
  */
-async function riverMask(url: string, z: number, latDeg: number): Promise<Uint8Array | undefined> {
+async function riverMask(url: string, z: number, latDeg: number, major: Set<string>): Promise<Uint8Array | undefined> {
   const r = await fetch(url);
   if (!r.ok) return undefined;
   const layers = decodeMvt(new Uint8Array(await r.arrayBuffer()));
@@ -874,6 +912,7 @@ async function riverMask(url: string, z: number, latDeg: number): Promise<Uint8A
     for (const f of l.features) {
       const w = { river: 40, canal: 15 }[String(f.properties["class"])];
       if (!w || f.properties["intermittent"] === 1) continue;
+      if (f.properties["class"] === "river" && !major.has(String(f.properties["name"]))) continue;
       g.lineWidth = Math.max(1, w / mPerPx);
       g.beginPath();
       for (const line of f.geometry) line.forEach(([px, py], i) => (i ? g.lineTo(px! * k, py! * k) : g.moveTo(px! * k, py! * k)));
