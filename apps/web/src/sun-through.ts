@@ -7,6 +7,11 @@
  * Points are in a local frame: metres east, north and up of the point (or of the camera).
  */
 
+/** The decks' depth factor by place (deckDepthScale's range), coded in a byte logarithmically. */
+export const PLACE_SCALE_MIN = 0.02, PLACE_SCALE_MAX = 5;
+export const placeScaleByte = (s: number) => Math.round((255 * Math.log(Math.min(PLACE_SCALE_MAX, Math.max(PLACE_SCALE_MIN, s)) / PLACE_SCALE_MIN)) / Math.log(PLACE_SCALE_MAX / PLACE_SCALE_MIN));
+export const placeScaleOf = (b: number) => PLACE_SCALE_MIN * Math.exp((b / 255) * Math.log(PLACE_SCALE_MAX / PLACE_SCALE_MIN));
+
 /** A drawn cumulus, relative to the point: its base centre and towers (vclouds.ts cloudGeometry). */
 export interface TowerCloud {
   /** Base centre east, north, up of the point [m]. */
@@ -102,6 +107,24 @@ export interface DeckState {
   /** The camera's height [m]. */
   camH: number;
   n: number;
+  /** The decks by place (vclouds.ts DeckPlaces as its u_place: RGBA bytes) and the camera on it. */
+  place?: Uint8Array;
+  placeCols?: number;
+  placeRows?: number;
+  placeP?: { x: number; y: number; z: number; w: number };
+}
+
+/**
+ * The decks at a place en [m east/north of the camera], as the GPU samples u_place (linear,
+ * clamped): low and mid cover, the factor on their extinction. Without a map: everywhere 1.
+ */
+export function deckPlace(d: DeckState, e: number, n: number): [number, number, number] {
+  const b = d.place, P = d.placeP, cols = d.placeCols ?? 1, rows = d.placeRows ?? 1;
+  if (!b || !P || b.length < cols * rows * 4) return [1, 1, 1];
+  const x = Math.min(cols - 1, Math.max(0, (P.x + e * P.z) * cols - 0.5)), y = Math.min(rows - 1, Math.max(0, (P.y + n * P.w) * rows - 0.5));
+  const j0 = Math.floor(x), i0 = Math.floor(y), j1 = Math.min(cols - 1, j0 + 1), i1 = Math.min(rows - 1, i0 + 1), fx = x - j0, fy = y - i0;
+  const v = (c: number) => ((b[4 * (i0 * cols + j0) + c]! * (1 - fx) + b[4 * (i0 * cols + j1) + c]! * fx) * (1 - fy) + (b[4 * (i1 * cols + j0) + c]! * (1 - fx) + b[4 * (i1 * cols + j1) + c]! * fx) * fy) / 255;
+  return [v(0), v(1), PLACE_SCALE_MIN * Math.exp(v(2) * Math.log(PLACE_SCALE_MAX / PLACE_SCALE_MIN))];
 }
 
 /**
@@ -115,16 +138,19 @@ export function deckLight(field: DeckField, d: DeckState, rel: { e: number; n: n
   for (let k = 0; k < Math.min(2, d.n); k++) {
     const D = d.decks[k]!, P = d.at[k]!, mid = 0.5 * (D.x + D.y);
     if (D.z < 0.005 || mid <= h) continue;
-    const x = P.x + rel.e + sx * (mid - h), y = P.y + rel.n + sy * (mid - h);
+    // Where the sun's ray crosses it: its cover and depth there.
+    const ae = rel.e + sx * (mid - h), an = rel.n + sy * (mid - h), pl = deckPlace(d, ae, an), c = k === 0 ? pl[0] : pl[1];
+    const x = P.x + ae, y = P.y + an;
+    if (c < 0.005) continue;
     let cov = 1;
-    if (D.z <= 0.995) {
+    if (c <= 0.995) {
       const a = field.sample(x / 32000, y / 32000, 1.263);
       const b = field.sample((0.8 * x - 0.6 * y) / 9100 + 0.37, (0.6 * x + 0.8 * y) / 9100 + 0.37, 3.077);
       // (The second scale's channels swapped, as the shader's .gr.)
       const f0 = equalize(0.75 * a[0] + 0.25 * b[1]), f1 = equalize(0.75 * a[1] + 0.25 * b[0]);
-      cov = smoothstep(1 - D.z, 1 - D.z + 0.5, f0 + (f1 - f0) * D.w);
+      cov = smoothstep(1 - c, 1 - c + 0.5, f0 + (f1 - f0) * D.w);
     }
-    all /= 1 + (0.1125 * P.z * 0.75 * (D.y - D.x) * cov) / (0.5 + 0.75 * sunUp);
+    all /= 1 + (0.1125 * P.z * pl[2] * 0.75 * (D.y - D.x) * cov) / (0.5 + 0.75 * sunUp);
   }
   return all;
 }
@@ -150,6 +176,7 @@ export function cloudShadeRamp(sunElevationDeg: number): number {
  *   wfcDeck0/1  base, top, cover, field mix
  *   wfcDeckP0/1 the camera east, north in the deck's frame [m], extinction
  *   wfcDeckH    the camera's height [m], decks drawn, the ramp
+ *   wfcPlace    the decks by place (vclouds.ts u_place), wfcPlaceP the camera on it
  */
 export const SUN_THROUGH_DECLS = /* glsl */ `
 uniform sampler2D wfcShadow;
@@ -160,6 +187,8 @@ uniform vec4 wfcDeck1;
 uniform vec4 wfcDeckP0;
 uniform vec4 wfcDeckP1;
 uniform vec4 wfcDeckH;
+uniform sampler2D wfcPlace;
+uniform vec4 wfcPlaceP;
 `;
 export const SUN_THROUGH_GLSL = /* glsl */ `
 float wfcEqualize(float s) {
@@ -187,17 +216,22 @@ float wfSunThrough(vec3 relW) {
       vec4 D = k == 0 ? wfcDeck0 : wfcDeck1, P = k == 0 ? wfcDeckP0 : wfcDeckP1;
       float mid = 0.5 * (D.x + D.y);
       if (D.z < 0.005 || mid <= h) continue;
-      vec2 xy = P.xy + en + sxy * (mid - h);
+      // Where the sun's ray crosses it: its cover and depth there (vclouds.ts deckPlace).
+      vec2 at = en + sxy * (mid - h), xy = P.xy + at;
+      vec4 pl = textureLod(wfcPlace, wfcPlaceP.xy + at * wfcPlaceP.zw, 0.0);
+      float c = k == 0 ? pl.r : pl.g;
+      if (c < 0.005) continue;
       float cov = 1.0;
-      if (D.z <= 0.995) {
+      if (c <= 0.995) {
         // (Mip levels for a 150 m footprint, as vclouds.ts deckSun's.)
         vec2 a = textureLod(wfcDeckMap, xy / 32000.0, 1.263).rg;
         vec2 b = textureLod(wfcDeckMap, mat2(0.8, 0.6, -0.6, 0.8) * xy / 9100.0 + 0.37, 3.077).gr;
-        cov = smoothstep(1.0 - D.z, 1.0 - D.z + 0.5, mix(wfcEqualize(0.75 * a.x + 0.25 * b.x), wfcEqualize(0.75 * a.y + 0.25 * b.y), D.w));
+        cov = smoothstep(1.0 - c, 1.0 - c + 0.5, mix(wfcEqualize(0.75 * a.x + 0.25 * b.x), wfcEqualize(0.75 * a.y + 0.25 * b.y), D.w));
       }
       // Its depth there is H·cov; at its mean density, three quarters of the extinction
-      // (decks.ts deckTransmission).
-      all /= 1.0 + 0.1125 * P.z * 0.75 * (D.y - D.x) * cov / (0.5 + 0.75 * sunUp);
+      // (decks.ts deckTransmission), times the place's factor.
+      float scale = exp(${Math.log(PLACE_SCALE_MIN).toFixed(6)} + pl.b * ${Math.log(PLACE_SCALE_MAX / PLACE_SCALE_MIN).toFixed(6)});
+      all /= 1.0 + 0.1125 * P.z * scale * 0.75 * (D.y - D.x) * cov / (0.5 + 0.75 * sunUp);
     }
     t = min(t, all);
   }

@@ -155,11 +155,18 @@ Still open: the clouds' half-resolution edges (now jittered and averaged, but no
   - Contour rings: samples are lit from where the ray entered.
   - Stripes: steps now 1/16 of the deck's depth near by, growing with distance.
 - **Cost:** 85 → 75 fps under a deck (about 1.6 ms), with the nearer deck marched first and the other skipped behind an opaque one. Nothing on days without decks. `?decks=0` turns them off; `?deckstep=` scales the steps.
+- **By place (23 Nov):** each node of the weather grid (5 × 5, 16.5 km apart, moving with the flight) has its own low and mid cover and its own depth, solved so its decks pass its own share of the clear-sky light; between nodes they blend, beyond the grid its edge's. On 5 Nov 12:00 the model's low cover runs from 29 % (east) to 100 % (south-west) and its radiation from 82 to 422 W/m²: from 4 km up the deck is closed to the south-west and broken to the north-east, from below dark to the west and clearing to the north-east. Each node's values ease as the decks do; when the grid moves, the new nodes start from what was drawn there. The heights stay the glider's: the mid deck is joined to the low one (~2 km) at some nodes and a separate altostratus (~7 km) at others, and those don't blend. Same cost as one deck everywhere (67.6 vs 67.1 fps in one page).
 - **Not yet:**
-  - The glider model and OSM buildings keep their sunlight under a deck.
-  - Decks are the glider's weather everywhere, not by place.
+  - Deck heights by place.
   - No rain or snow.
-  - Cumulus are drawn over a deck below the camera.
+- **Cumulus seen over a deck from above** are towers reaching above its top (the cumulus' heights don't depend on the deck). Those below it are already behind it: the layers are put together by where each ray first meets them. Splitting each cumulus where its ray enters a deck changed no pixel in level views just above the 5 Nov deck and cost 1–2 fps, so it was not kept.
+
+**Cloud shade on everything, 22 Nov 2026:** under a cumulus or a deck, the glider, the grass, our OSM buildings and our water are now shaded like Google's ground there (`sun-through.ts`).
+- **Where the light goes through:** the same cumulus towers and deck holes as drawn. On the CPU for the glider; one GLSL function (`wfSunThrough`) for the tiles, the buildings and the water.
+- **The glider:** lit as in a cast shadow. All its light (sun, sky, reflections) times the ground's factor there (1 − 0.65 of what the cloud takes, by the sun's height). Cesium's shadow darkness rises by as much, so the two don't stack, and in full shade it casts no shadow. (Lifting only the darkness made the shaded flank brighter: Cesium's darkness scales the sky's light too.)
+- **Water:** the light into it and the sun's glint dimmed as the shade says; the sky it mirrors is unchanged.
+
+**Water through Ghimbav, 22 Nov 2026:** OSM tags the Ghimbășel, a brook a few metres wide, as a river. Drawn 40 m wide and levelled from Google's mesh, which in a town is draped over the roofs, it flooded the streets and gardens. Comparing Google's heights on the river with those on its banks could not tell it from a real river (0.0 m apart at the Olt too: the picks there are on coarse tiles). OSM rivers are now drawn only if OpenFreeMap keeps them at zoom 8, i.e. its long rivers: here the Olt, which keeps its water.
 
 ## What already works
 - Google 3D over towns from about 200 m up. Brașov at 300 m looks photographic.

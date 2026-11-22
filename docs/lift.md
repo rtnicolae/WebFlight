@@ -88,6 +88,11 @@ height (`blendWeather`): each column's 2 m air and surface pressure at the blend
   the browser's Cache Storage (archive days kept, forecasts an hour); each counts as one of
   Open-Meteo's free calls (× ~6 for the number of variables): ~150 for the first grid, ~30 a
   move (one every ~16 km flown away from the start).
+- **When Open-Meteo fails on some fields** (22 Nov 2026: ICON-EU's 800 hPa dew point, HTTP 500
+  for that day, and the whole request with it), the start, the archive fallback and the grid ask
+  again in groups of about √n fields, a failing group's one by one, and keep what answers; what
+  still fails falls back as any missing value does and is named in the weather's note
+  (`fetchFields`). Offline, the rate limit and bad requests go to the estimate as before.
 
 ## The air's temperature, humidity and pressure
 

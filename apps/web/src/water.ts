@@ -810,7 +810,7 @@ export class Water {
   /** The clouds' shade (google3d.ts shade: as on the ground round the water). */
   private shadeUniforms(): Record<string, () => unknown> {
     const sh = this.google3d.shade, tex = () => this.google3d.shadeTextures();
-    return { wfcShadow: () => tex().shadow, wfcDeckMap: () => tex().deck ?? this.blank(), wfcShadowP: () => sh.shadowP, wfcDeck0: () => sh.deck0, wfcDeck1: () => sh.deck1, wfcDeckP0: () => sh.deckP0, wfcDeckP1: () => sh.deckP1, wfcDeckH: () => sh.deckH };
+    return { wfcShadow: () => tex().shadow, wfcDeckMap: () => tex().deck ?? this.blank(), wfcShadowP: () => sh.shadowP, wfcDeck0: () => sh.deck0, wfcDeck1: () => sh.deck1, wfcDeckP0: () => sh.deckP0, wfcDeckP1: () => sh.deckP1, wfcDeckH: () => sh.deckH, wfcPlace: () => tex().place ?? this.blank(), wfcPlaceP: () => sh.placeP };
   }
 
   /** Cesium primitive interface. */

@@ -378,7 +378,7 @@ function material(tex: Textures): Material {
   const m = new Material({
     fabric: {
       type: "BuildingDetail",
-      uniforms: { ...Object.fromEntries(TEXTURES.map((k) => [k, Material.DefaultImageId])), wfcShadow: Material.DefaultImageId, wfcDeckMap: Material.DefaultImageId, wfcShadowP: new Cartesian4(), wfcDeck0: new Cartesian4(), wfcDeck1: new Cartesian4(), wfcDeckP0: new Cartesian4(), wfcDeckP1: new Cartesian4(), wfcDeckH: new Cartesian4() },
+      uniforms: { ...Object.fromEntries(TEXTURES.map((k) => [k, Material.DefaultImageId])), wfcShadow: Material.DefaultImageId, wfcDeckMap: Material.DefaultImageId, wfcPlace: Material.DefaultImageId, wfcPlaceP: new Cartesian4(0.5, 0.5, 0, 0), wfcShadowP: new Cartesian4(), wfcDeck0: new Cartesian4(), wfcDeck1: new Cartesian4(), wfcDeckP0: new Cartesian4(), wfcDeckP1: new Cartesian4(), wfcDeckH: new Cartesian4() },
       // str = (u, v [m], material + seed). Detail = photo / mid-grey (brick: the photo's own
       // colour). Roofs: two rotated samples mixed by noise (no visible repeat) and large
       // stains; emboss in shininess.
@@ -446,7 +446,7 @@ let shadeNow: Parameters<typeof setBuildingShade> | undefined;
  * them. The values are read as they change; each texture given once, when it is made (the
  * material would destroy one it is given when given another).
  */
-export function setBuildingShade(shade: Record<"shadowP" | "deck0" | "deck1" | "deckP0" | "deckP1" | "deckH", Cartesian4>, tex: { shadow: unknown; deck: unknown | undefined }): void {
+export function setBuildingShade(shade: Record<"shadowP" | "deck0" | "deck1" | "deckP0" | "deckP1" | "deckH" | "placeP", Cartesian4>, tex: { shadow: unknown; deck: unknown | undefined; place: unknown | undefined }): void {
   shadeNow = [shade, tex];
   const m = buildingMaterial;
   if (!m) return;
@@ -458,7 +458,9 @@ export function setBuildingShade(shade: Record<"shadowP" | "deck0" | "deck1" | "
     u["wfcDeckP0"] = shade.deckP0;
     u["wfcDeckP1"] = shade.deckP1;
     u["wfcDeckH"] = shade.deckH;
+    u["wfcPlaceP"] = shade.placeP;
   }
+  if (tex.place && u["wfcPlace"] !== tex.place) u["wfcPlace"] = tex.place;
   if (u["wfcShadow"] !== tex.shadow) u["wfcShadow"] = tex.shadow;
   if (tex.deck && u["wfcDeckMap"] !== tex.deck) u["wfcDeckMap"] = tex.deck;
 }

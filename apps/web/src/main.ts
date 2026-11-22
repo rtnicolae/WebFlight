@@ -18,8 +18,8 @@ import { Google3D } from "./google3d.ts";
 import { Lifetime } from "./lifetime.ts";
 import { resolveFlight, type Flight } from "./world.ts";
 import { addImagery, S2CLOUDLESS, type ImageryMode } from "./imagery.ts";
-import { clearSkyGhi, cloudDecks, deckDepthScale, distanceM, soaringFrom, sounding, sunPosition, windAt, type WaveFieldData, type Weather, type WeatherGrid } from "@webflight/environment";
-import type { DeckTarget } from "./vclouds.ts";
+import { clearSkyGhi, cloudDecks, deckDepthScale, distanceM, soaringFrom, sounding, sunPosition, weatherAt, windAt, type WaveFieldData, type Weather, type WeatherGrid } from "@webflight/environment";
+import type { DeckPlaces, DeckTarget } from "./vclouds.ts";
 import { showMenu } from "./menu.ts";
 import type { Viewer } from "cesium";
 import { Scenery } from "./scenery.ts";
@@ -190,17 +190,15 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const thermalLayer = new ThermalLayer(viewer, params.get("columns") === "1", sun, cumulus, google3d ? (clouds) => google3d.setCloudShadows(clouds, sun) : undefined, atmosphere);
   if (google3d) life.onClose(() => google3d.setCloudShadows([], sun));
   /**
-   * The cloud decks where the glider is (decks.ts): stratus to altostratus from the model's low
-   * and mid cover, at the heights its humidity profile gives; drawn only, drifting with the wind
-   * at their height. Fog: the haze has the visibility in the lowest layer (atmosphere.ts), so the
-   * deck starts on its top. Extinction at full density: stratocumulus ~0.05 /m (in-cloud
-   * visibility ~100 m), altostratus less, all scaled so the decks pass the weather's share of
-   * the clear-sky light (its radiation: decks.ts deckDepthScale). ?decks=0: none.
+   * The cloud decks (decks.ts): stratus to altostratus from the model's low and mid cover, at the
+   * heights its humidity profile gives; drawn only, drifting with the wind at their height. Fog:
+   * the haze has the visibility in the lowest layer (atmosphere.ts), so the deck starts on its
+   * top. Extinction at full density: stratocumulus ~0.05 /m (in-cloud visibility ~100 m),
+   * altostratus less. ?decks=0: none.
    */
-  const decksOf = (w: Weather): (DeckTarget | undefined)[] => {
-    if (params.get("decks") === "0") return [undefined, undefined];
+  const columnDecks = (w: Weather): (DeckTarget | undefined)[] => {
     const s = soaringFrom(w), ds = cloudDecks(w, { cumulus: s.cumulus && s.wStarMs >= 0.5 });
-    const out = (["low", "mid"] as const).map((band) => {
+    return (["low", "mid"] as const).map((band) => {
       const d = ds.find((x) => x.band === band);
       if (!d) return undefined;
       const base = d.fog ? Math.max(d.baseM, airOf(w).hazeTopM) : d.baseM;
@@ -208,12 +206,47 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
       const wind = windAt(w, (base + d.topM) / 2), to = ((wind.fromDeg + 180) * Math.PI) / 180, ms = wind.kt * (1852 / 3600);
       return { baseM: base, topM: d.topM, cover: d.cover, field: band === "low" || d.joined ? 0 : 1, extinction: band === "low" ? 0.05 : 0.03, windE: ms * Math.sin(to), windN: ms * Math.cos(to) };
     });
-    const live = out.filter((d): d is DeckTarget => !!d);
-    const k = deckDepthScale(live.map((d) => ({ cover: d.cover, tau: d.extinction * 0.75 * (d.topM - d.baseM) })), w.shortwaveWm2 / Math.max(1, clearSkyGhi(sun.elevationDeg)), sun.elevationDeg);
-    for (const d of live) d.extinction *= k;
-    return out;
   };
-  thermalLayer.setDecks(decksOf(F.weather));
+  /** The weather grid as it is now (moved with the flight), and the last weather. */
+  let wxGrid = F.grid, lastWeather = F.weather;
+  /**
+   * The decks by place: each node of the weather grid its own low and mid cover, and the depth
+   * that passes its own share of the clear-sky light (its radiation: decks.ts deckDepthScale) as
+   * drawn there; their heights the glider's (a band it has none of: the node's with the most).
+   * The model's cover varies a lot over the grid's 66 km (5 Nov 2026 12:00: low 29–100 %, its
+   * radiation 82–422 W/m²); its mid deck is joined to the low one at some nodes (~2 km) and a
+   * separate one at others (~7 km), whose heights would not blend.
+   */
+  const decksOf = (w: Weather): { decks: (DeckTarget | undefined)[]; places?: DeckPlaces } => {
+    if (params.get("decks") === "0") return { decks: [undefined, undefined] };
+    const here = columnDecks(w), g = wxGrid, t = new Date(w.timeUtc);
+    const nodes = g ? g.nodes.map((series) => {
+      const nw = weatherAt(series, t);
+      return { w: nw, d: columnDecks(nw) };
+    }) : [{ w, d: here }];
+    const slots = [0, 1].map((b) => here[b] ?? nodes.reduce<DeckTarget | undefined>((best, n) => (n.d[b] && (!best || n.d[b]!.cover > best.cover) ? n.d[b] : best), undefined));
+    const cover = (b: number) => Float32Array.from(nodes, (n) => (slots[b] ? n.d[b]?.cover ?? 0 : 0));
+    const low = cover(0), mid = cover(1);
+    const clear = (nw: Weather) => nw.shortwaveWm2 / Math.max(1, clearSkyGhi(sun.elevationDeg));
+    const scale = Float32Array.from(nodes, (n, k) =>
+      deckDepthScale(slots.flatMap((d, b) => {
+        const c = (b === 0 ? low : mid)[k]!;
+        return d && c > 0 ? [{ cover: c, tau: d.extinction * 0.75 * (d.topM - d.baseM) }] : [];
+      }), clear(n.w), sun.elevationDeg),
+    );
+    const places: DeckPlaces = g ? { lat0: g.lat0, lon0: g.lon0, dLat: g.dLat, dLon: g.dLon, rows: g.rows, cols: g.cols, low, mid, scale } : { lat0: F.latDeg, lon0: F.lonDeg, dLat: 1, dLon: 1, rows: 1, cols: 1, low, mid, scale };
+    const decks = slots.map((d, b) => {
+      const most = Math.max(...(b === 0 ? low : mid));
+      return d && most > 0.005 ? { ...d, cover: most } : undefined;
+    });
+    return { decks, places };
+  };
+  const setDecks = (w: Weather) => {
+    lastWeather = w;
+    const r = decksOf(w);
+    thermalLayer.setDecks(r.decks, r.places);
+  };
+  setDecks(F.weather);
   google3d?.setDeckShade(() => thermalLayer.deckShade());
   /**
    * The glider in a cloud's shade (sun-through.ts: the towers and holes drawn, whose shade is on
@@ -286,7 +319,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
   const worker = new Worker(new URL("./fdm-worker.ts", import.meta.url), { type: "module" });
   const send = (m: ToWorker) => worker.postMessage(m);
   /** The weather by place moved with the glider: the flight model's, and the far skies'. */
-  const gridHooks: ((g: WeatherGrid) => void)[] = [(g) => send({ type: "grid", grid: g })];
+  const gridHooks: ((g: WeatherGrid) => void)[] = [(g) => send({ type: "grid", grid: g }), (g) => ((wxGrid = g), setDecks(lastWeather))];
   const gridMoved = (g: WeatherGrid) => gridHooks.forEach((f) => f(g));
   life.onClose(() => worker.terminate());
   let reader: SnapshotReader | undefined;
@@ -387,7 +420,7 @@ async function startFlight(params: URLSearchParams, life: Lifetime, a: App, F: F
     // The haze and the cirrus of the hour; the tints of the sun's height (dusk, night) on the
     // ground: Google's tiles (their light and haze), the globe and its imagery.
     atmosphere?.setAir(airOf(w));
-    thermalLayer.setDecks(decksOf(w));
+    setDecks(w);
     setLook(sun.elevationDeg);
     tintGround(viewer);
     google3d?.relight();
