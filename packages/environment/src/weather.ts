@@ -241,9 +241,12 @@ const HOURLY = [
   "boundary_layer_height",
 ];
 
+/** The hourly fields asked for: the forecast's, or the reanalysis'. */
+export const openMeteoFields = (archive = false): readonly string[] => (archive ? ARCHIVE_HOURLY : HOURLY);
+
 /** Hourly data for local days `from`..`to` (yyyy-mm-dd; forecast range, ~3 months back to 16 days ahead). */
-export function openMeteoUrl(latDeg: number, lonDeg: number, from: string, to: string, archive = false): string {
-  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${latDeg.toFixed(4)}&longitude=${lonDeg.toFixed(4)}&hourly=${(archive ? ARCHIVE_HOURLY : HOURLY).join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
+export function openMeteoUrl(latDeg: number, lonDeg: number, from: string, to: string, archive = false, fields: readonly string[] = openMeteoFields(archive)): string {
+  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${latDeg.toFixed(4)}&longitude=${lonDeg.toFixed(4)}&hourly=${fields.join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
 }
 
 interface OpenMeteoResponse {
@@ -468,12 +471,12 @@ const gridPoints = (g: Omit<WeatherGrid, "nodes">): [number, number][] => {
 };
 
 /** One request for model columns at several points (Open-Meteo takes lists of coordinates), each on the model's own ground. */
-export function openMeteoPointsUrl(points: [number, number][], from: string, to: string, archive = false): string {
-  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${points.map((p) => p[0].toFixed(4)).join(",")}&longitude=${points.map((p) => p[1].toFixed(4)).join(",")}&elevation=${points.map(() => "nan").join(",")}&hourly=${(archive ? ARCHIVE_HOURLY : HOURLY).join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
+export function openMeteoPointsUrl(points: [number, number][], from: string, to: string, archive = false, fields: readonly string[] = openMeteoFields(archive)): string {
+  return `${archive ? OPEN_METEO_ARCHIVE : OPEN_METEO}?latitude=${points.map((p) => p[0].toFixed(4)).join(",")}&longitude=${points.map((p) => p[1].toFixed(4)).join(",")}&elevation=${points.map(() => "nan").join(",")}&hourly=${fields.join(",")}&wind_speed_unit=kn&timezone=auto&timeformat=unixtime&start_date=${from}&end_date=${to}`;
 }
 
 /** One request for every node of a grid. */
-export const openMeteoGridUrl = (g: Omit<WeatherGrid, "nodes">, from: string, to: string, archive = false): string => openMeteoPointsUrl(gridPoints(g), from, to, archive);
+export const openMeteoGridUrl = (g: Omit<WeatherGrid, "nodes">, from: string, to: string, archive = false, fields: readonly string[] = openMeteoFields(archive)): string => openMeteoPointsUrl(gridPoints(g), from, to, archive, fields);
 
 /** Each point's hours from Open-Meteo's answer (one response per point, in the order asked). */
 function parsePoints(json: unknown, points: [number, number][], source: "forecast" | "archive", utcOffsetH: number, note = ""): Weather[][] {
@@ -570,7 +573,9 @@ export class GridFollower {
     const moves = this.moves;
     try {
       const pts = l.missing.map(([i, j]) => [this.lat00 + i * this.grid.dLat, this.lon00 + j * this.grid.dLon] as [number, number]);
-      const cols = parsePoints(await this.fetchJson(openMeteoPointsUrl(pts, r.from, r.to, r.source === "archive")), pts, r.source, r.utcOffsetH, r.note);
+      const archive = r.source === "archive";
+      const { json } = await fetchFields((f) => openMeteoPointsUrl(pts, r.from, r.to, archive, f), openMeteoFields(archive), this.fetchJson);
+      const cols = parsePoints(json, pts, r.source, r.utcOffsetH, r.note);
       l.missing.forEach(([i, j], k) => this.known.set(`${i}:${j}`, cols[k]!.map(this.map)));
     } catch (e) {
       this.retryMs = nowMs + 60_000;
@@ -803,11 +808,18 @@ export async function weatherFor(
   const localDay = when.kind === "local" && when.date ? when.date : ymd(new Date(now.getTime() + guessH * 3600_000));
   const d0 = new Date(`${localDay}T00:00:00Z`);
   const archive = now.getTime() - d0.getTime() > FORECAST_PAST_DAYS * 86400_000;
-  const url = openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), archive);
+  const from = ymd(new Date(d0.getTime() - 86400_000)), to = ymd(new Date(d0.getTime() + 86400_000));
+  const fetchJson = opts.fetchJson ?? fetchOpenMeteo;
   let json: OpenMeteoResponse | undefined;
   let note = "";
+  /** Fields the server could not give (fetchFields), for the note. */
+  const unavailable = (missing: string[]) => {
+    if (missing.length) note = `Open-Meteo could not give ${missing.length > 3 ? `${missing.length} fields` : missing.join(", ")}`;
+  };
   try {
-    json = (await (opts.fetchJson ?? fetchOpenMeteo)(url)) as OpenMeteoResponse;
+    const r = await fetchFields((f) => openMeteoUrl(latDeg, lonDeg, from, to, archive, f), openMeteoFields(archive), fetchJson);
+    json = r.json as OpenMeteoResponse;
+    unavailable(r.missing);
   } catch (e) {
     note = `Open-Meteo: ${e instanceof Error ? e.message : String(e)}`;
   }
@@ -833,8 +845,11 @@ export async function weatherFor(
   let source: "forecast" | "archive" = archive ? "archive" : "forecast";
   if (json && !archive && time.getTime() < now.getTime() - 86400_000 && !hasSurface(json, time)) {
     try {
-      json = (await (opts.fetchJson ?? fetchOpenMeteo)(openMeteoUrl(latDeg, lonDeg, ymd(new Date(d0.getTime() - 86400_000)), ymd(new Date(d0.getTime() + 86400_000)), true))) as OpenMeteoResponse;
+      const r = await fetchFields((f) => openMeteoUrl(latDeg, lonDeg, from, to, true, f), openMeteoFields(true), fetchJson);
+      json = r.json as OpenMeteoResponse;
       source = "archive";
+      note = "";
+      unavailable(r.missing);
     } catch (e) {
       note = `Open-Meteo archive: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -848,9 +863,10 @@ export async function weatherFor(
       let grid: WeatherGrid | undefined, gridError: string | undefined;
       if (opts.grid) {
         const g = gridAround(latDeg, lonDeg);
-        const request: GridRequest = { from: ymd(new Date(d0.getTime() - 86400_000)), to: ymd(new Date(d0.getTime() + 86400_000)), source, utcOffsetH: offsetH, ...(note ? { note } : {}) };
+        const request: GridRequest = { from, to, source, utcOffsetH: offsetH, ...(note ? { note } : {}) };
         try {
-          grid = { ...parseWeatherGrid(await (opts.fetchJson ?? fetchOpenMeteo)(openMeteoGridUrl(g, request.from, request.to, source === "archive")), g, source, offsetH, note), request };
+          const r = await fetchFields((f) => openMeteoGridUrl(g, from, to, source === "archive", f), openMeteoFields(source === "archive"), fetchJson);
+          grid = { ...parseWeatherGrid(r.json, g, source, offsetH, note), request };
         } catch (e) {
           gridError = `Open-Meteo grid: ${e instanceof Error ? e.message : String(e)}`;
         }
@@ -878,7 +894,7 @@ function hasSurface(json: OpenMeteoResponse, when: Date): boolean {
  * errors; throws with Open-Meteo's `reason` (e.g. "Daily API request limit exceeded").
  */
 export async function fetchOpenMeteo(url: string): Promise<unknown> {
-  let last = "unreachable";
+  let last = "unreachable", status: number | undefined;
   for (let i = 0; i < 3; i++) {
     if (i) await new Promise<void>((r) => setTimeout(r, i === 1 ? 1000 : 3000));
     try {
@@ -889,12 +905,69 @@ export async function fetchOpenMeteo(url: string): Promise<unknown> {
       const body = (await r.json().catch(() => ({}))) as { reason?: string };
       if (r.ok) return body;
       last = body.reason ?? `HTTP ${r.status}`;
+      status = r.status;
       if (r.status !== 429 && r.status < 500) break;
     } catch (e) {
       last = e instanceof Error && e.name === "AbortError" ? "timed out" : "unreachable";
+      status = undefined;
     }
   }
-  throw new Error(last);
+  throw new OpenMeteoError(last, status);
+}
+
+/** An Open-Meteo request that failed: its reason, and the HTTP status if it answered at all. */
+export class OpenMeteoError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = "OpenMeteoError";
+  }
+}
+
+/** The server's own failure (not the rate limit, a bad request, or no answer). */
+const serverFailed = (e: unknown) => e instanceof OpenMeteoError && e.status !== undefined && e.status >= 500;
+
+/** Responses for the same place(s) and hours with different fields: one, with all the fields. */
+function mergeResponses(a: unknown, b: unknown): unknown {
+  if (Array.isArray(a) && Array.isArray(b)) return a.map((x, i) => mergeResponses(x, b[i]));
+  const A = a as OpenMeteoResponse, B = b as OpenMeteoResponse;
+  return { ...A, hourly: { ...A.hourly, ...B.hourly } };
+}
+
+/**
+ * Open-Meteo for a list of fields, keeping what it can give when the server fails on some
+ * (2026-11-22: ICON-EU's 800 hPa dew point "Something went wrong" for that day, and with it the
+ * whole request: the flight had the estimate). Asked again in groups of about √n fields, a
+ * failing group's one by one; those still failing are left out (each then falls back as any
+ * missing value does: parseHour), and listed. Not on other failures (offline, the rate limit,
+ * a bad request), nor if nothing answers.
+ */
+export async function fetchFields(
+  urlFor: (fields: readonly string[]) => string,
+  fields: readonly string[],
+  fetchJson: (url: string) => Promise<unknown> = fetchOpenMeteo,
+): Promise<{ json: unknown; missing: string[] }> {
+  try {
+    return { json: await fetchJson(urlFor(fields)), missing: [] };
+  } catch (e) {
+    if (!serverFailed(e) || fields.length < 2) throw e;
+    const n = Math.ceil(Math.sqrt(fields.length)), groups: (readonly string[])[] = [];
+    for (let i = 0; i < fields.length; i += n) groups.push(fields.slice(i, i + n));
+    const one = (f: readonly string[]): Promise<{ json: unknown; missing: string[]; err?: unknown }> => fetchJson(urlFor(f)).then((json) => ({ json, missing: [] }), (err: unknown) => ({ json: undefined, missing: [...f], err }));
+    const parts = (
+      await Promise.all(
+        groups.map(async (g) => {
+          const r = await one(g);
+          return r.json !== undefined || g.length < 2 || !serverFailed(r.err) ? [r] : Promise.all(g.map((f) => one([f])));
+        }),
+      )
+    ).flat();
+    const got = parts.filter((p) => p.json !== undefined);
+    if (!got.length) throw e;
+    return { json: got.map((p) => p.json).reduce(mergeResponses), missing: parts.flatMap((p) => p.missing) };
+  }
 }
 
 /** One line for the HUD / menu: source, wind, cloud base or blue, thermal strength. */

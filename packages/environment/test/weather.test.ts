@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateSeries, estimateWeather, mixedLayerLcl, WeatherClock, openMeteoUrl, parseOpenMeteoHours, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherAt, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
+import { estimateSeries, estimateWeather, fetchFields, mixedLayerLcl, OpenMeteoError, WeatherClock, openMeteoUrl, parseOpenMeteoHours, parseWhen, parseOpenMeteo, soaringFrom, surfaceLayerFactor, weatherAt, weatherFor, windAt, windLevels, zoneOffsetH, type Weather } from "../src/index.ts";
 
 // Shape of an Open-Meteo /v1/forecast response with timezone=auto&timeformat=unixtime.
 const fixture = {
@@ -275,5 +275,53 @@ describe("local time", () => {
     const json = { ...fixture, utc_offset_seconds: 7200, hourly: { ...fixture.hourly, time: [Date.UTC(2024, 0, 10, 10) / 1000] } };
     const r = await weatherFor(45.7, 25.53, parseWhen("2024-01-10T12:00"), 530, new Date("2026-11-17T08:00:00Z"), { fetchJson: async () => json });
     expect(r.time.toISOString()).toBe("2024-01-10T10:00:00.000Z");
+  });
+
+  describe("when Open-Meteo fails on some fields", () => {
+    /** Open-Meteo as the fixture, answering only the fields asked; failing (as on 2026-11-22) on `bad`. */
+    const server = (urls: string[], fail: (url: string) => OpenMeteoError | undefined) => async (url: string): Promise<unknown> => {
+      urls.push(url);
+      const e = fail(url);
+      if (e) throw e;
+      const asked = new URL(url).searchParams.get("hourly")!.split(",");
+      const h = fixture.hourly as Record<string, unknown>;
+      return { ...fixture, hourly: { time: fixture.hourly.time, ...Object.fromEntries(asked.filter((k) => k in h).map((k) => [k, h[k]])) } };
+    };
+    const at = parseWhen("2026-07-15T13:00"), now = new Date("2026-07-20T08:00:00Z");
+
+    it("asks again in parts and keeps every field it gives", async () => {
+      const urls: string[] = [];
+      const r = await weatherFor(45.7, 25.53, at, 530, now, { fetchJson: server(urls, (u) => (u.includes("geopotential_height_700hPa") ? new OpenMeteoError("Something went wrong", 500) : undefined)) });
+      expect(r.weather.source).toBe("forecast");
+      // The 850 hPa level whole; at 700 hPa its wind, its height the fallback any missing one gets.
+      expect(r.weather.aloft.map((l) => [l.hPa, Math.round(l.altM)])).toEqual([[850, 1532], [700, 3000]]);
+      expect(r.weather.aloft[1]!.kt).toBeCloseTo(19, 6);
+      expect(r.weather.windKt).toBeCloseTo(7.2, 6);
+      expect(r.weather.note).toContain("geopotential_height_700hPa");
+      // One request, the groups (about √n fields each), the failing group's fields one by one.
+      const n = new URL(urls[0]!).searchParams.get("hourly")!.split(",").length, g = Math.ceil(Math.sqrt(n));
+      expect(urls).toHaveLength(1 + Math.ceil(n / g) + g);
+    });
+
+    it("does not when it is unreachable or rate-limited, or nothing answers", async () => {
+      for (const e of [new OpenMeteoError("unreachable"), new OpenMeteoError("Minutely API request limit exceeded", 429)]) {
+        const urls: string[] = [];
+        const r = await weatherFor(45.7, 25.53, at, 530, now, { fetchJson: server(urls, () => e) });
+        expect(r.weather.source).toBe("estimated");
+        expect(urls).toHaveLength(1);
+      }
+      await expect(fetchFields((f) => `https://x/?hourly=${f.join(",")}`, ["a", "b", "c", "d"], async () => Promise.reject(new OpenMeteoError("down", 503)))).rejects.toThrow("down");
+    });
+
+    it("puts the parts of a many-place answer together place by place", async () => {
+      const answer = (url: string) => {
+        const f = new URL(url).searchParams.get("hourly")!.split(",");
+        if (f.length > 1 && f.includes("b")) throw new OpenMeteoError("Something went wrong", 500);
+        return [0, 1].map((k) => ({ hourly: { time: [1], ...Object.fromEntries(f.map((x) => [x, [k]])) } }));
+      };
+      const r = await fetchFields((f) => `https://x/?hourly=${f.join(",")}`, ["a", "b", "c", "d", "e"], async (u) => answer(u));
+      expect(r.missing).toEqual([]);
+      expect(r.json).toEqual([0, 1].map((k) => ({ hourly: { time: [1], a: [k], b: [k], c: [k], d: [k], e: [k] } })));
+    });
   });
 });
